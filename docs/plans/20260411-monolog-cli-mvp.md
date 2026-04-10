@@ -163,7 +163,7 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 
 ## Development Approach
 
-- **Testing approach:** Regular (code first, then tests)
+- **Testing approach:** TDD (tests first, then implementation)
 - Complete each task fully before moving to the next
 - Make small, focused changes
 - **CRITICAL: every task MUST include new/updated tests**
@@ -202,17 +202,19 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 
 - [ ] Define `Task` struct in `internal/model/task.go` with JSON tags
 - [ ] Add ULID generation dependency (`github.com/oklog/ulid/v2`)
+- [ ] Write tests for Create, Get, Update, Delete (failing — Store not yet implemented)
 - [ ] Implement `Store` in `internal/store/store.go` — manages the tasks directory
 - [ ] Implement `Store.Create(task)` — writes task JSON file
 - [ ] Implement `Store.Get(id)` — reads a single task file
-- [ ] Implement `Store.GetByPrefix(prefix)` — prefix-match lookup
 - [ ] Implement `Store.Update(task)` — overwrites task file, updates `updated_at`
 - [ ] Implement `Store.Delete(id)` — removes task file
+- [ ] Run tests — Create/Get/Update/Delete must pass
+- [ ] Write tests for GetByPrefix (exact, ambiguous, not found — failing)
+- [ ] Implement `Store.GetByPrefix(prefix)` — prefix-match lookup
+- [ ] Run tests — GetByPrefix must pass
+- [ ] Write tests for List with various filter combinations (failing)
 - [ ] Implement `Store.List(filters)` — reads all tasks, applies filters (schedule, status, tag), sorts by position
-- [ ] Write tests for Create, Get, GetByPrefix, Update, Delete
-- [ ] Write tests for List with various filter combinations
-- [ ] Write tests for ULID prefix matching (exact, ambiguous, not found)
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — all must pass before next task
 
 ### Task 3: Position management
 
@@ -220,12 +222,14 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `internal/ordering/ordering.go`
 - Create: `internal/ordering/ordering_test.go`
 
+- [ ] Write tests for NextPosition, PositionBetween, PositionTop (empty list, single item, multiple items — failing)
 - [ ] Implement `NextPosition(tasks)` — returns position after the last task
 - [ ] Implement `PositionBetween(a, b)` — returns midpoint for inserting between two tasks
 - [ ] Implement `PositionTop(tasks)` — returns position before the first task
+- [ ] Run tests — position functions must pass
+- [ ] Write tests for Rebalance (tight gaps, already balanced — failing)
 - [ ] Implement `Rebalance(tasks)` — evenly redistributes positions (gap threshold < 1)
-- [ ] Write tests for all position operations including edge cases (empty list, single item, tight gaps)
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — all must pass before next task
 
 ### Task 4: `monolog init` command
 
@@ -234,13 +238,16 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/init.go`
 - Create: `cmd/init_test.go`
 
+- [ ] Write tests for git.Init (creates expected directory structure — failing)
 - [ ] Implement `git.Init(path)` — runs `git init`, creates `.monolog/tasks/` and `.monolog/config.json`
+- [ ] Write `.gitignore` during init
+- [ ] Run tests — basic init must pass
+- [ ] Write tests for init with remote flag (failing)
 - [ ] Implement `git.Init` with `--remote` flag — adds origin and does initial commit+push
+- [ ] Run tests — init with remote must pass
 - [ ] Create `cmd/init.go` with `monolog init [--remote <url>]` cobra command
-- [ ] Write `.gitignore` during init (nothing to ignore yet, but scaffold is there)
-- [ ] Write tests for init (creates expected directory structure)
-- [ ] Write tests for init with remote flag
-- [ ] Run tests — must pass before next task
+- [ ] Write tests for init command integration
+- [ ] Run tests — all must pass before next task
 
 ### Task 5: `monolog add` command
 
@@ -248,13 +255,14 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/add.go`
 - Create: `cmd/add_test.go`
 
+- [ ] Write tests for add command (default schedule, custom schedule, tags — failing)
 - [ ] Create `cmd/add.go` — accepts title as positional arg
 - [ ] Support `-s` / `--schedule` flag (default: `today`)
 - [ ] Support `-t` / `--tags` flag (comma-separated)
-- [ ] Auto-commit after adding: `git add <file> && git commit -m "add: <title>"`
-- [ ] Write tests for add with various flag combinations
-- [ ] Write tests for auto-commit behavior
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — add command logic must pass
+- [ ] Write tests for auto-commit behavior (failing)
+- [ ] Implement auto-commit after adding: `git add <file> && git commit -m "add: <title>"`
+- [ ] Run tests — all must pass before next task
 
 ### Task 6: `monolog ls` command
 
@@ -263,15 +271,16 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/ls_test.go`
 - Create: `internal/display/table.go`
 
+- [ ] Write tests for display formatting (table output — failing)
 - [ ] Create `internal/display/table.go` — formats tasks as a clean terminal table (position indicator, short ID, title, schedule, tags)
+- [ ] Run tests — display formatting must pass
+- [ ] Write tests for ls command with different filters (failing)
 - [ ] Create `cmd/ls.go` — default shows today's open tasks sorted by position
 - [ ] Support `--all` flag to show all open tasks
 - [ ] Support `--schedule <value>` filter
 - [ ] Support `--tag <value>` filter
 - [ ] Support `--done` flag to show completed tasks
-- [ ] Write tests for ls output with different filters
-- [ ] Write tests for display formatting
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — all must pass before next task
 
 ### Task 7: `monolog done`, `monolog edit`, `monolog rm` commands
 
@@ -281,13 +290,15 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/rm.go`
 - Create: `cmd/task_commands_test.go`
 
+- [ ] Write tests for done (status change, auto-commit, error on bad prefix — failing)
 - [ ] Implement `monolog done <id-prefix>` — sets status to `done`, auto-commits
+- [ ] Run tests — done must pass
+- [ ] Write tests for rm (file deletion, auto-commit, error on bad prefix — failing)
 - [ ] Implement `monolog rm <id-prefix>` — deletes task file, auto-commits
-- [ ] Implement `monolog edit <id-prefix>` — opens `$EDITOR` with task JSON or supports inline flags (`--title`, `--schedule`, `--tags`), auto-commits
-- [ ] Write tests for done (status change, error on bad prefix)
-- [ ] Write tests for rm (file deletion, error on bad prefix)
-- [ ] Write tests for edit with inline flags
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — rm must pass
+- [ ] Write tests for edit with inline flags (failing)
+- [ ] Implement `monolog edit <id-prefix>` — supports inline flags (`--title`, `--schedule`, `--tags`), auto-commits
+- [ ] Run tests — all must pass before next task
 
 ### Task 8: `monolog mv` command (reordering)
 
@@ -295,15 +306,18 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/mv.go`
 - Create: `cmd/mv_test.go`
 
+- [ ] Write tests for mv --top and --bottom (failing)
 - [ ] Implement `monolog mv <id> --top` — moves task to top of its schedule group
 - [ ] Implement `monolog mv <id> --bottom` — moves to bottom
+- [ ] Run tests — top/bottom must pass
+- [ ] Write tests for mv --before and --after (failing)
 - [ ] Implement `monolog mv <id> --before <id>` — inserts before target
 - [ ] Implement `monolog mv <id> --after <id>` — inserts after target
+- [ ] Run tests — before/after must pass
+- [ ] Write tests for rebalance trigger and auto-commit (failing)
 - [ ] Trigger rebalance if position gap drops below threshold
 - [ ] Auto-commit after move
-- [ ] Write tests for all move operations
-- [ ] Write tests for rebalance trigger
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — all must pass before next task
 
 ### Task 9: `monolog bump` and `monolog log`
 
@@ -312,12 +326,13 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/log.go`
 - Create: `cmd/bump_test.go`
 
+- [ ] Write tests for bump (tomorrow→today, past ISO→today, today stays, week stays — failing)
 - [ ] Implement `monolog bump` — promotes `tomorrow` → `today`, past ISO dates → `today`
 - [ ] Auto-commit all changes in one commit: `"bump: promote N tasks to today"`
+- [ ] Run tests — bump must pass
+- [ ] Write tests for log output (last 7 days, empty — failing)
 - [ ] Implement `monolog log` — lists recently completed tasks (last 7 days by default)
-- [ ] Write tests for bump with various schedule states
-- [ ] Write tests for log output
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — all must pass before next task
 
 ### Task 10: `monolog sync` (git remote sync)
 
@@ -325,12 +340,12 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/sync.go`
 - Create: `cmd/sync_test.go`
 
+- [ ] Write tests for sync (with changes, nothing to commit, no remote — failing)
 - [ ] Implement `monolog sync` — `git add -A && git commit -m "sync" && git pull --rebase && git push`
 - [ ] Handle case where nothing to commit (skip commit step)
 - [ ] Handle case where no remote configured (warn and skip)
 - [ ] Surface git errors clearly to user
-- [ ] Write tests for sync command logic
-- [ ] Run tests — must pass before next task
+- [ ] Run tests — all must pass before next task
 
 ### Task 11: Verify acceptance criteria
 
