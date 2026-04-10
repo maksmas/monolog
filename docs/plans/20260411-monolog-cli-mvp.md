@@ -185,13 +185,13 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `main.go`
 - Create: `cmd/root.go`
 
-- [ ] Run `go mod init github.com/mmaksmas/monolog`
-- [ ] Create `main.go` with entrypoint calling cobra root command
-- [ ] Create `cmd/root.go` with root cobra command (version flag, help text)
-- [ ] Add cobra dependency
-- [ ] Verify `go build` produces working binary with `--help`
-- [ ] Write test for root command execution
-- [ ] Run tests — must pass before next task
+- [x] Run `go mod init github.com/mmaksmas/monolog`
+- [x] Create `main.go` with entrypoint calling cobra root command
+- [x] Create `cmd/root.go` with root cobra command (version flag, help text)
+- [x] Add cobra dependency
+- [x] Verify `go build` produces working binary with `--help`
+- [x] Write test for root command execution
+- [x] Run tests — must pass before next task
 
 ### Task 2: Data model and task storage
 
