@@ -255,14 +255,14 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/add.go`
 - Create: `cmd/add_test.go`
 
-- [ ] Write tests for add command (default schedule, custom schedule, tags — failing)
-- [ ] Create `cmd/add.go` — accepts title as positional arg
-- [ ] Support `-s` / `--schedule` flag (default: `today`)
-- [ ] Support `-t` / `--tags` flag (comma-separated)
-- [ ] Run tests — add command logic must pass
-- [ ] Write tests for auto-commit behavior (failing)
-- [ ] Implement auto-commit after adding: `git add <file> && git commit -m "add: <title>"`
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for add command (default schedule, custom schedule, tags — failing)
+- [x] Create `cmd/add.go` — accepts title as positional arg
+- [x] Support `-s` / `--schedule` flag (default: `today`)
+- [x] Support `-t` / `--tags` flag (comma-separated)
+- [x] Run tests — add command logic must pass
+- [x] Write tests for auto-commit behavior (failing)
+- [x] Implement auto-commit after adding: `git add <file> && git commit -m "add: <title>"`
+- [x] Run tests — all must pass before next task
 
 ### Task 6: `monolog ls` command
 
