@@ -326,13 +326,13 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/log.go`
 - Create: `cmd/bump_test.go`
 
-- [ ] Write tests for bump (tomorrow→today, past ISO→today, today stays, week stays — failing)
-- [ ] Implement `monolog bump` — promotes `tomorrow` → `today`, past ISO dates → `today`
-- [ ] Auto-commit all changes in one commit: `"bump: promote N tasks to today"`
-- [ ] Run tests — bump must pass
-- [ ] Write tests for log output (last 7 days, empty — failing)
-- [ ] Implement `monolog log` — lists recently completed tasks (last 7 days by default)
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for bump (tomorrow→today, past ISO→today, today stays, week stays — failing)
+- [x] Implement `monolog bump` — promotes `tomorrow` → `today`, past ISO dates → `today`
+- [x] Auto-commit all changes in one commit: `"bump: promote N tasks to today"`
+- [x] Run tests — bump must pass
+- [x] Write tests for log output (last 7 days, empty — failing)
+- [x] Implement `monolog log` — lists recently completed tasks (last 7 days by default)
+- [x] Run tests — all must pass before next task
 
 ### Task 10: `monolog sync` (git remote sync)
 
