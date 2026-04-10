@@ -200,21 +200,21 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `internal/store/store.go`
 - Create: `internal/store/store_test.go`
 
-- [ ] Define `Task` struct in `internal/model/task.go` with JSON tags
-- [ ] Add ULID generation dependency (`github.com/oklog/ulid/v2`)
-- [ ] Write tests for Create, Get, Update, Delete (failing — Store not yet implemented)
-- [ ] Implement `Store` in `internal/store/store.go` — manages the tasks directory
-- [ ] Implement `Store.Create(task)` — writes task JSON file
-- [ ] Implement `Store.Get(id)` — reads a single task file
-- [ ] Implement `Store.Update(task)` — overwrites task file, updates `updated_at`
-- [ ] Implement `Store.Delete(id)` — removes task file
-- [ ] Run tests — Create/Get/Update/Delete must pass
-- [ ] Write tests for GetByPrefix (exact, ambiguous, not found — failing)
-- [ ] Implement `Store.GetByPrefix(prefix)` — prefix-match lookup
-- [ ] Run tests — GetByPrefix must pass
-- [ ] Write tests for List with various filter combinations (failing)
-- [ ] Implement `Store.List(filters)` — reads all tasks, applies filters (schedule, status, tag), sorts by position
-- [ ] Run tests — all must pass before next task
+- [x] Define `Task` struct in `internal/model/task.go` with JSON tags
+- [x] Add ULID generation dependency (`github.com/oklog/ulid/v2`)
+- [x] Write tests for Create, Get, Update, Delete (failing — Store not yet implemented)
+- [x] Implement `Store` in `internal/store/store.go` — manages the tasks directory
+- [x] Implement `Store.Create(task)` — writes task JSON file
+- [x] Implement `Store.Get(id)` — reads a single task file
+- [x] Implement `Store.Update(task)` — overwrites task file, updates `updated_at`
+- [x] Implement `Store.Delete(id)` — removes task file
+- [x] Run tests — Create/Get/Update/Delete must pass
+- [x] Write tests for GetByPrefix (exact, ambiguous, not found — failing)
+- [x] Implement `Store.GetByPrefix(prefix)` — prefix-match lookup
+- [x] Run tests — GetByPrefix must pass
+- [x] Write tests for List with various filter combinations (failing)
+- [x] Implement `Store.List(filters)` — reads all tasks, applies filters (schedule, status, tag), sorts by position
+- [x] Run tests — all must pass before next task
 
 ### Task 3: Position management
 
