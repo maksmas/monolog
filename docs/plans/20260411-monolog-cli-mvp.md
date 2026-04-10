@@ -271,16 +271,16 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/ls_test.go`
 - Create: `internal/display/table.go`
 
-- [ ] Write tests for display formatting (table output — failing)
-- [ ] Create `internal/display/table.go` — formats tasks as a clean terminal table (position indicator, short ID, title, schedule, tags)
-- [ ] Run tests — display formatting must pass
-- [ ] Write tests for ls command with different filters (failing)
-- [ ] Create `cmd/ls.go` — default shows today's open tasks sorted by position
-- [ ] Support `--all` flag to show all open tasks
-- [ ] Support `--schedule <value>` filter
-- [ ] Support `--tag <value>` filter
-- [ ] Support `--done` flag to show completed tasks
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for display formatting (table output — failing)
+- [x] Create `internal/display/table.go` — formats tasks as a clean terminal table (position indicator, short ID, title, schedule, tags)
+- [x] Run tests — display formatting must pass
+- [x] Write tests for ls command with different filters (failing)
+- [x] Create `cmd/ls.go` — default shows today's open tasks sorted by position
+- [x] Support `--all` flag to show all open tasks
+- [x] Support `--schedule <value>` filter
+- [x] Support `--tag <value>` filter
+- [x] Support `--done` flag to show completed tasks
+- [x] Run tests — all must pass before next task
 
 ### Task 7: `monolog done`, `monolog edit`, `monolog rm` commands
 
