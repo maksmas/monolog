@@ -222,14 +222,14 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `internal/ordering/ordering.go`
 - Create: `internal/ordering/ordering_test.go`
 
-- [ ] Write tests for NextPosition, PositionBetween, PositionTop (empty list, single item, multiple items — failing)
-- [ ] Implement `NextPosition(tasks)` — returns position after the last task
-- [ ] Implement `PositionBetween(a, b)` — returns midpoint for inserting between two tasks
-- [ ] Implement `PositionTop(tasks)` — returns position before the first task
-- [ ] Run tests — position functions must pass
-- [ ] Write tests for Rebalance (tight gaps, already balanced — failing)
-- [ ] Implement `Rebalance(tasks)` — evenly redistributes positions (gap threshold < 1)
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for NextPosition, PositionBetween, PositionTop (empty list, single item, multiple items — failing)
+- [x] Implement `NextPosition(tasks)` — returns position after the last task
+- [x] Implement `PositionBetween(a, b)` — returns midpoint for inserting between two tasks
+- [x] Implement `PositionTop(tasks)` — returns position before the first task
+- [x] Run tests — position functions must pass
+- [x] Write tests for Rebalance (tight gaps, already balanced — failing)
+- [x] Implement `Rebalance(tasks)` — evenly redistributes positions (gap threshold < 1)
+- [x] Run tests — all must pass before next task
 
 ### Task 4: `monolog init` command
 
