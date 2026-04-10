@@ -14,6 +14,9 @@ func NewRootCmd() *cobra.Command {
 		Long:    "Monolog is a CLI tool that provides a unified personal backlog.\nTasks are stored as individual JSON files in a git repo for conflict-free cross-device sync.",
 		Version: Version,
 	}
+
+	rootCmd.AddCommand(newInitCmd())
+
 	return rootCmd
 }
 

@@ -238,16 +238,16 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/init.go`
 - Create: `cmd/init_test.go`
 
-- [ ] Write tests for git.Init (creates expected directory structure — failing)
-- [ ] Implement `git.Init(path)` — runs `git init`, creates `.monolog/tasks/` and `.monolog/config.json`
-- [ ] Write `.gitignore` during init
-- [ ] Run tests — basic init must pass
-- [ ] Write tests for init with remote flag (failing)
-- [ ] Implement `git.Init` with `--remote` flag — adds origin and does initial commit+push
-- [ ] Run tests — init with remote must pass
-- [ ] Create `cmd/init.go` with `monolog init [--remote <url>]` cobra command
-- [ ] Write tests for init command integration
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for git.Init (creates expected directory structure — failing)
+- [x] Implement `git.Init(path)` — runs `git init`, creates `.monolog/tasks/` and `.monolog/config.json`
+- [x] Write `.gitignore` during init
+- [x] Run tests — basic init must pass
+- [x] Write tests for init with remote flag (failing)
+- [x] Implement `git.Init` with `--remote` flag — adds origin and does initial commit+push
+- [x] Run tests — init with remote must pass
+- [x] Create `cmd/init.go` with `monolog init [--remote <url>]` cobra command
+- [x] Write tests for init command integration
+- [x] Run tests — all must pass before next task
 
 ### Task 5: `monolog add` command
 
