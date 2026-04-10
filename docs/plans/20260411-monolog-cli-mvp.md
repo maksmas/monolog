@@ -306,18 +306,18 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/mv.go`
 - Create: `cmd/mv_test.go`
 
-- [ ] Write tests for mv --top and --bottom (failing)
-- [ ] Implement `monolog mv <id> --top` — moves task to top of its schedule group
-- [ ] Implement `monolog mv <id> --bottom` — moves to bottom
-- [ ] Run tests — top/bottom must pass
-- [ ] Write tests for mv --before and --after (failing)
-- [ ] Implement `monolog mv <id> --before <id>` — inserts before target
-- [ ] Implement `monolog mv <id> --after <id>` — inserts after target
-- [ ] Run tests — before/after must pass
-- [ ] Write tests for rebalance trigger and auto-commit (failing)
-- [ ] Trigger rebalance if position gap drops below threshold
-- [ ] Auto-commit after move
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for mv --top and --bottom (failing)
+- [x] Implement `monolog mv <id> --top` — moves task to top of its schedule group
+- [x] Implement `monolog mv <id> --bottom` — moves to bottom
+- [x] Run tests — top/bottom must pass
+- [x] Write tests for mv --before and --after (failing)
+- [x] Implement `monolog mv <id> --before <id>` — inserts before target
+- [x] Implement `monolog mv <id> --after <id>` — inserts after target
+- [x] Run tests — before/after must pass
+- [x] Write tests for rebalance trigger and auto-commit (failing)
+- [x] Trigger rebalance if position gap drops below threshold
+- [x] Auto-commit after move
+- [x] Run tests — all must pass before next task
 
 ### Task 9: `monolog bump` and `monolog log`
 
