@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Init initializes a new monolog repository at the given path.
@@ -93,6 +94,56 @@ func AutoCommit(repoPath string, message string, files ...string) error {
 	}
 	if err := run(repoPath, "git", "commit", "-m", message); err != nil {
 		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
+}
+
+// HasChanges returns true if the working tree has uncommitted changes
+// (untracked files, modified files, or staged changes).
+func HasChanges(repoPath string) (bool, error) {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	return len(strings.TrimSpace(string(out))) > 0, nil
+}
+
+// HasRemote returns true if the repository has at least one remote configured.
+func HasRemote(repoPath string) (bool, error) {
+	cmd := exec.Command("git", "remote")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git remote: %w", err)
+	}
+	return len(strings.TrimSpace(string(out))) > 0, nil
+}
+
+// SyncCommit stages all changes and commits with "sync" message.
+func SyncCommit(repoPath string) error {
+	if err := run(repoPath, "git", "add", "-A"); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+	if err := run(repoPath, "git", "commit", "-m", "sync"); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
+}
+
+// PullRebase runs git pull --rebase.
+func PullRebase(repoPath string) error {
+	if err := run(repoPath, "git", "pull", "--rebase"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Push runs git push.
+func Push(repoPath string) error {
+	if err := run(repoPath, "git", "push"); err != nil {
+		return err
 	}
 	return nil
 }

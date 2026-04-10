@@ -340,12 +340,12 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/sync.go`
 - Create: `cmd/sync_test.go`
 
-- [ ] Write tests for sync (with changes, nothing to commit, no remote — failing)
-- [ ] Implement `monolog sync` — `git add -A && git commit -m "sync" && git pull --rebase && git push`
-- [ ] Handle case where nothing to commit (skip commit step)
-- [ ] Handle case where no remote configured (warn and skip)
-- [ ] Surface git errors clearly to user
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for sync (with changes, nothing to commit, no remote — failing)
+- [x] Implement `monolog sync` — `git add -A && git commit -m "sync" && git pull --rebase && git push`
+- [x] Handle case where nothing to commit (skip commit step)
+- [x] Handle case where no remote configured (warn and skip)
+- [x] Surface git errors clearly to user
+- [x] Run tests — all must pass before next task
 
 ### Task 11: Verify acceptance criteria
 
