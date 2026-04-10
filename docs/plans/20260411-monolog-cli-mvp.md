@@ -290,15 +290,15 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `cmd/rm.go`
 - Create: `cmd/task_commands_test.go`
 
-- [ ] Write tests for done (status change, auto-commit, error on bad prefix — failing)
-- [ ] Implement `monolog done <id-prefix>` — sets status to `done`, auto-commits
-- [ ] Run tests — done must pass
-- [ ] Write tests for rm (file deletion, auto-commit, error on bad prefix — failing)
-- [ ] Implement `monolog rm <id-prefix>` — deletes task file, auto-commits
-- [ ] Run tests — rm must pass
-- [ ] Write tests for edit with inline flags (failing)
-- [ ] Implement `monolog edit <id-prefix>` — supports inline flags (`--title`, `--schedule`, `--tags`), auto-commits
-- [ ] Run tests — all must pass before next task
+- [x] Write tests for done (status change, auto-commit, error on bad prefix — failing)
+- [x] Implement `monolog done <id-prefix>` — sets status to `done`, auto-commits
+- [x] Run tests — done must pass
+- [x] Write tests for rm (file deletion, auto-commit, error on bad prefix — failing)
+- [x] Implement `monolog rm <id-prefix>` — deletes task file, auto-commits
+- [x] Run tests — rm must pass
+- [x] Write tests for edit with inline flags (failing)
+- [x] Implement `monolog edit <id-prefix>` — supports inline flags (`--title`, `--schedule`, `--tags`), auto-commits
+- [x] Run tests — all must pass before next task
 
 ### Task 8: `monolog mv` command (reordering)
 
