@@ -349,12 +349,12 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 
 ### Task 11: Verify acceptance criteria
 
-- [ ] Verify full workflow: init → add tasks → list → reorder → done → sync
-- [ ] Verify schedule filtering works correctly
-- [ ] Verify prefix matching with ambiguous and exact inputs
-- [ ] Verify bump logic across schedule types
-- [ ] Run full test suite: `go test ./...`
-- [ ] Verify `go build` produces clean binary
+- [x] Verify full workflow: init → add tasks → list → reorder → done → sync
+- [x] Verify schedule filtering works correctly
+- [x] Verify prefix matching with ambiguous and exact inputs
+- [x] Verify bump logic across schedule types
+- [x] Run full test suite: `go test ./...`
+- [x] Verify `go build` produces clean binary
 
 ### Task 12: [Final] Documentation and polish
 
