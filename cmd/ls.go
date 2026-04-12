@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/store"
@@ -22,12 +21,9 @@ func newLsCmd() *cobra.Command {
 		Short: "List tasks",
 		Long:  "Lists tasks from the backlog. Default: shows today's open tasks sorted by position.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoPath := monologDir()
-			tasksDir := filepath.Join(repoPath, ".monolog", "tasks")
-
-			s, err := store.New(tasksDir)
+			s, _, err := openStore()
 			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+				return err
 			}
 
 			opts := store.ListOptions{}
@@ -38,10 +34,14 @@ func newLsCmd() *cobra.Command {
 				opts.Status = "open"
 			}
 
-			// --schedule flag takes precedence; if not set and not --all, default to today
+			// --schedule flag takes precedence; if not set and not --all and not --done, default to today.
+			// When --done is used, show all done tasks across all schedules unless --schedule is explicit.
 			if schedule != "" {
+				if err := validateSchedule(schedule); err != nil {
+					return err
+				}
 				opts.Schedule = schedule
-			} else if !all {
+			} else if !all && !done {
 				opts.Schedule = "today"
 			}
 

@@ -358,9 +358,9 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 
 ### Task 12: [Final] Documentation and polish
 
-- [ ] Write README.md with install instructions, quick start, command reference
-- [ ] Add CLAUDE.md with project conventions
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Write README.md with install instructions, quick start, command reference
+- [x] Add CLAUDE.md with project conventions
+- [x] Move this plan to `docs/plans/completed/`
 
 ## Technical Details
 

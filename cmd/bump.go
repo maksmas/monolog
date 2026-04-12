@@ -3,16 +3,12 @@ package cmd
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/spf13/cobra"
 )
-
-// isoDateRegexp matches ISO date format YYYY-MM-DD.
-var isoDateRegexp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 func newBumpCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -21,12 +17,9 @@ func newBumpCmd() *cobra.Command {
 		Long:  "Promotes tasks with schedule 'tomorrow' to 'today', and tasks with past ISO dates to 'today'. Tasks with 'today', 'week', 'someday', or future ISO dates are left unchanged.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoPath := monologDir()
-			tasksDir := filepath.Join(repoPath, ".monolog", "tasks")
-
-			s, err := store.New(tasksDir)
+			s, repoPath, err := openStore()
 			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+				return err
 			}
 
 			// List all open tasks
@@ -35,7 +28,7 @@ func newBumpCmd() *cobra.Command {
 				return fmt.Errorf("list tasks: %w", err)
 			}
 
-			today := time.Now().Format("2006-01-02")
+			today := time.Now().UTC().Format("2006-01-02")
 			var promoted int
 			var changedFiles []string
 
@@ -44,7 +37,7 @@ func newBumpCmd() *cobra.Command {
 
 				if task.Schedule == "tomorrow" {
 					shouldBump = true
-				} else if isoDateRegexp.MatchString(task.Schedule) && task.Schedule < today {
+				} else if isISODate(task.Schedule) && task.Schedule < today {
 					shouldBump = true
 				}
 

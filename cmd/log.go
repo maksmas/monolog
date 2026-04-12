@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -19,12 +18,9 @@ func newLogCmd() *cobra.Command {
 		Long:  "Lists tasks completed in the last 7 days, sorted by most recently completed first.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoPath := monologDir()
-			tasksDir := filepath.Join(repoPath, ".monolog", "tasks")
-
-			s, err := store.New(tasksDir)
+			s, _, err := openStore()
 			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+				return err
 			}
 
 			// List all done tasks
@@ -39,7 +35,7 @@ func newLogCmd() *cobra.Command {
 			for _, task := range tasks {
 				updatedAt, err := time.Parse(time.RFC3339, task.UpdatedAt)
 				if err != nil {
-					continue // skip tasks with unparseable timestamps
+					return fmt.Errorf("task %s has unparseable updated_at timestamp %q: %w", task.ID, task.UpdatedAt, err)
 				}
 				if updatedAt.After(cutoff) {
 					recent = append(recent, task)

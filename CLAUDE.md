@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Monolog is a CLI personal backlog tool written in Go. Tasks are stored as individual JSON files in a git repo for conflict-free cross-device sync. See `docs/plans/20260411-monolog-cli-mvp.md` for the full MVP spec.
+Monolog is a CLI personal backlog tool written in Go. Tasks are stored as individual JSON files in a git repo for conflict-free cross-device sync. See `docs/plans/completed/20260411-monolog-cli-mvp.md` for the MVP spec.
 
 ## Build & Test Commands
 
@@ -44,5 +44,5 @@ Minimal: cobra (CLI framework), oklog/ulid/v2 (ID generation), Go stdlib for eve
 
 ## Development Rules
 
-- Every task in the plan must include tests. All tests must pass before starting the next task.
-- Update the plan file (`docs/plans/20260411-monolog-cli-mvp.md`) when scope changes during implementation.
+- Every change must include tests. All tests must pass before merging.
+- Completed plan lives in `docs/plans/completed/`.

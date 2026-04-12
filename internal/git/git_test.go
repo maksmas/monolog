@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -155,7 +156,7 @@ func TestAutoCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git log failed: %v", err)
 	}
-	if got := string(out); !contains(got, "add: test task") {
+	if got := string(out); !strings.Contains(got, "add: test task") {
 		t.Errorf("commit log should contain 'add: test task', got: %s", got)
 	}
 }
@@ -192,8 +193,124 @@ func TestAutoCommit_MultipleFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git log failed: %v", err)
 	}
-	if got := string(out); !contains(got, "add: two tasks") {
+	if got := string(out); !strings.Contains(got, "add: two tasks") {
 		t.Errorf("commit log should contain 'add: two tasks', got: %s", got)
+	}
+}
+
+func TestHasChanges_NoChanges(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	has, err := HasChanges(repoPath)
+	if err != nil {
+		t.Fatalf("HasChanges() error = %v", err)
+	}
+	if has {
+		t.Error("expected no changes in clean repo")
+	}
+}
+
+func TestHasChanges_WithChanges(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Create an untracked file
+	if err := os.WriteFile(filepath.Join(repoPath, "new.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	has, err := HasChanges(repoPath)
+	if err != nil {
+		t.Fatalf("HasChanges() error = %v", err)
+	}
+	if !has {
+		t.Error("expected changes after adding untracked file")
+	}
+}
+
+func TestHasRemote_NoRemote(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	has, err := HasRemote(repoPath)
+	if err != nil {
+		t.Fatalf("HasRemote() error = %v", err)
+	}
+	if has {
+		t.Error("expected no remote in repo without remote")
+	}
+}
+
+func TestHasRemote_WithRemote(t *testing.T) {
+	remoteDir := t.TempDir()
+	bareRepo := filepath.Join(remoteDir, "remote.git")
+	cmd := exec.Command("git", "init", "--bare", bareRepo)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to create bare repo: %v\n%s", err, out)
+	}
+
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+
+	if err := Init(repoPath, bareRepo); err != nil {
+		t.Fatalf("Init() with remote error = %v", err)
+	}
+
+	has, err := HasRemote(repoPath)
+	if err != nil {
+		t.Fatalf("HasRemote() error = %v", err)
+	}
+	if !has {
+		t.Error("expected remote to exist in repo initialized with remote")
+	}
+}
+
+func TestSyncCommit(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Create a file
+	if err := os.WriteFile(filepath.Join(repoPath, ".monolog", "tasks", "sync.json"), []byte(`{"id":"sync"}`), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if err := SyncCommit(repoPath); err != nil {
+		t.Fatalf("SyncCommit() error = %v", err)
+	}
+
+	// Working tree should be clean after sync commit
+	has, err := HasChanges(repoPath)
+	if err != nil {
+		t.Fatalf("HasChanges() error = %v", err)
+	}
+	if has {
+		t.Error("expected clean working tree after SyncCommit")
+	}
+
+	// Verify commit message
+	out, err := exec.Command("git", "-C", repoPath, "log", "--oneline", "-1").Output()
+	if err != nil {
+		t.Fatalf("git log failed: %v", err)
+	}
+	if !strings.Contains(string(out), "sync") {
+		t.Errorf("expected commit message to contain 'sync', got: %s", string(out))
 	}
 }
 
@@ -231,20 +348,8 @@ func TestAutoCommit_DeletedFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git log failed: %v", err)
 	}
-	if got := string(out); !contains(got, "rm: del task") {
+	if got := string(out); !strings.Contains(got, "rm: del task") {
 		t.Errorf("commit log should contain 'rm: del task', got: %s", got)
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -18,17 +18,20 @@ func newDoneCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			prefix := args[0]
-			repoPath := monologDir()
-			tasksDir := filepath.Join(repoPath, ".monolog", "tasks")
 
-			s, err := store.New(tasksDir)
+			s, repoPath, err := openStore()
 			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+				return err
 			}
 
 			task, err := s.GetByPrefix(prefix)
 			if err != nil {
 				return fmt.Errorf("resolve task: %w", err)
+			}
+
+			if task.Status == "done" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Already done: %s [%s]\n", task.Title, display.ShortID(task.ID))
+				return nil
 			}
 
 			task.Status = "done"
@@ -43,7 +46,7 @@ func newDoneCmd() *cobra.Command {
 				return fmt.Errorf("auto-commit: %w", err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Done: %s [%s]\n", task.Title, task.ID[:8])
+			fmt.Fprintf(cmd.OutOrStdout(), "Done: %s [%s]\n", task.Title, display.ShortID(task.ID))
 			return nil
 		},
 	}

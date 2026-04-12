@@ -162,6 +162,39 @@ func TestBumpCommand_SomedayStaysSomeday(t *testing.T) {
 	}
 }
 
+func TestBumpCommand_TodayISODateStays(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	todayDate := time.Now().UTC().Format("2006-01-02")
+	id := addTestTaskWithSchedule(t, dir, "Today ISO task", todayDate)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"bump"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("bump command error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after bump")
+	}
+	// Today's ISO date should NOT be promoted (it's not "past")
+	if task.Schedule != todayDate {
+		t.Errorf("Schedule: got %q, want %q (today's date should not be bumped)", task.Schedule, todayDate)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "nothing to bump") {
+		t.Errorf("expected 'nothing to bump' for today's ISO date, got: %s", output)
+	}
+}
+
 func TestBumpCommand_FutureISODateStays(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
@@ -407,6 +440,50 @@ func TestLogCommand_EmptyLog(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "No tasks.") {
 		t.Errorf("expected empty log message, got: %s", output)
+	}
+}
+
+func TestLogCommand_MultipleScheduleGroups(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create tasks in different schedule groups
+	id1 := addTestTaskWithSchedule(t, dir, "Today done log", "today")
+	id2 := addTestTaskWithSchedule(t, dir, "Tomorrow done log", "tomorrow")
+	id3 := addTestTaskWithSchedule(t, dir, "Week done log", "week")
+
+	// Mark all as done
+	for _, id := range []string{id1, id2, id3} {
+		rootCmd := NewRootCmd()
+		rootCmd.SetOut(new(bytes.Buffer))
+		rootCmd.SetErr(new(bytes.Buffer))
+		rootCmd.SetArgs([]string{"done", id})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("done command error = %v", err)
+		}
+	}
+
+	// Run log
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"log"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("log command error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Today done log") {
+		t.Errorf("log should show 'Today done log', got:\n%s", output)
+	}
+	if !strings.Contains(output, "Tomorrow done log") {
+		t.Errorf("log should show 'Tomorrow done log', got:\n%s", output)
+	}
+	if !strings.Contains(output, "Week done log") {
+		t.Errorf("log should show 'Week done log', got:\n%s", output)
 	}
 }
 

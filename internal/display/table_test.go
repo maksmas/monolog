@@ -176,9 +176,9 @@ func TestShortID(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := shortID(tt.id)
+		got := ShortID(tt.id)
 		if got != tt.want {
-			t.Errorf("shortID(%q) = %q, want %q", tt.id, got, tt.want)
+			t.Errorf("ShortID(%q) = %q, want %q", tt.id, got, tt.want)
 		}
 	}
 }

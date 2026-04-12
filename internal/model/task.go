@@ -2,6 +2,7 @@ package model
 
 import (
 	"crypto/rand"
+	"fmt"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -22,6 +23,11 @@ type Task struct {
 }
 
 // NewID generates a new ULID string.
-func NewID() string {
-	return ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+// It returns an error if the random source fails.
+func NewID() (string, error) {
+	id, err := ulid.New(ulid.Timestamp(time.Now()), rand.Reader)
+	if err != nil {
+		return "", fmt.Errorf("generate ULID: %w", err)
+	}
+	return id.String(), nil
 }

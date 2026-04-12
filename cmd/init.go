@@ -38,13 +38,16 @@ func newInitCmd() *cobra.Command {
 
 // monologDir returns the path to the monolog data directory.
 // It uses MONOLOG_DIR env var if set, otherwise defaults to ~/.monolog/.
+// Panics if the home directory cannot be determined and MONOLOG_DIR is not set.
 func monologDir() string {
 	if dir := os.Getenv("MONOLOG_DIR"); dir != "" {
 		return dir
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".", ".monolog")
+		// This should never happen on any supported OS. Failing loudly is better
+		// than silently using a working-directory-dependent relative path.
+		panic(fmt.Sprintf("cannot determine home directory (set MONOLOG_DIR to override): %v", err))
 	}
 	return filepath.Join(home, ".monolog")
 }

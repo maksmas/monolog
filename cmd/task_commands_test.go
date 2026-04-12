@@ -148,6 +148,51 @@ func TestDoneCommand_ErrorOnBadPrefix(t *testing.T) {
 	}
 }
 
+func TestDoneCommand_DoubleDone(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Double done test")
+
+	// First done
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("first done command error = %v", err)
+	}
+
+	// Count commits after first done
+	gitCmd := exec.Command("git", "-C", dir, "log", "--oneline")
+	outBefore, _ := gitCmd.Output()
+	commitsBefore := len(strings.Split(strings.TrimSpace(string(outBefore)), "\n"))
+
+	// Second done — should be a no-op (no extra commit)
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("second done command error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Already done") {
+		t.Errorf("expected 'Already done' message, got: %s", output)
+	}
+
+	// Verify no new commit was made
+	gitCmd2 := exec.Command("git", "-C", dir, "log", "--oneline")
+	outAfter, _ := gitCmd2.Output()
+	commitsAfter := len(strings.Split(strings.TrimSpace(string(outAfter)), "\n"))
+
+	if commitsAfter != commitsBefore {
+		t.Errorf("expected no new commits on double-done, before=%d after=%d", commitsBefore, commitsAfter)
+	}
+}
+
 func TestDoneCommand_ErrorNoArgs(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
@@ -465,6 +510,123 @@ func TestEditCommand_ErrorNoArgs(t *testing.T) {
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Fatal("expected error when no args provided, got nil")
+	}
+}
+
+func TestEditCommand_ChangeBody(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Body test")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--body", "Some detailed notes"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("edit command error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after edit")
+	}
+	if task.Body != "Some detailed notes" {
+		t.Errorf("Body: got %q, want %q", task.Body, "Some detailed notes")
+	}
+}
+
+func TestEditCommand_ClearBody(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Clear body test")
+
+	// First set a body
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--body", "Has body"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit body set error = %v", err)
+	}
+
+	// Now clear it
+	rootCmd2 := NewRootCmd()
+	rootCmd2.SetOut(new(bytes.Buffer))
+	rootCmd2.SetErr(new(bytes.Buffer))
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--body", ""})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("edit body clear error = %v", err)
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after edit")
+	}
+	if task.Body != "" {
+		t.Errorf("Body should be empty after clearing, got %q", task.Body)
+	}
+}
+
+func TestEditCommand_InvalidSchedule(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Bad schedule edit")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--schedule", "garbage"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid schedule in edit, got nil")
+	}
+}
+
+func TestEditCommand_EditDoneTask(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Done task edit")
+
+	// Mark as done
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done command error = %v", err)
+	}
+
+	// Edit the done task's title
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--title", "Updated done task"})
+
+	err := rootCmd2.Execute()
+	if err != nil {
+		t.Fatalf("edit done task error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after edit")
+	}
+	if task.Title != "Updated done task" {
+		t.Errorf("Title: got %q, want %q", task.Title, "Updated done task")
+	}
+	// Status should remain done
+	if task.Status != "done" {
+		t.Errorf("Status should remain 'done', got %q", task.Status)
 	}
 }
 

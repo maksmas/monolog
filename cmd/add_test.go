@@ -348,6 +348,80 @@ func TestAddCommand_AutoCommitIncludesTaskFile(t *testing.T) {
 	}
 }
 
+func TestAddCommand_InvalidSchedule(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	invalid := []string{"garbage", "next-week", "2026-13-01", "yesterday", ""}
+	for _, sched := range invalid {
+		t.Run(sched, func(t *testing.T) {
+			rootCmd := NewRootCmd()
+			buf := new(bytes.Buffer)
+			rootCmd.SetOut(buf)
+			rootCmd.SetErr(buf)
+			rootCmd.SetArgs([]string{"add", "Task", "-s", sched})
+
+			err := rootCmd.Execute()
+			if err == nil {
+				t.Errorf("expected error for invalid schedule %q, got nil", sched)
+			}
+		})
+	}
+}
+
+func TestAddCommand_TagSanitization(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"add", "Tag test", "-t", ",,work,,urgent,,"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+
+	if len(tasks[0].Tags) != 2 {
+		t.Fatalf("expected 2 tags after sanitization, got %d: %v", len(tasks[0].Tags), tasks[0].Tags)
+	}
+	if tasks[0].Tags[0] != "work" || tasks[0].Tags[1] != "urgent" {
+		t.Errorf("Tags: got %v, want [work urgent]", tasks[0].Tags)
+	}
+}
+
+func TestAddCommand_EmptyTagsProducesNil(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"add", "No tags", "-t", ",,"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+
+	if len(tasks[0].Tags) != 0 {
+		t.Errorf("expected no tags for all-empty input, got: %v", tasks[0].Tags)
+	}
+}
+
 func TestAddCommand_MultipleAddsCreateSeparateCommits(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

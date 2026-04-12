@@ -8,8 +8,8 @@ import (
 	"github.com/mmaksmas/monolog/internal/model"
 )
 
-// shortID returns the first 8 characters of a task ID, or the full ID if shorter.
-func shortID(id string) string {
+// ShortID returns the first 8 characters of a task ID, or the full ID if shorter.
+func ShortID(id string) string {
 	if len(id) <= 8 {
 		return id
 	}
@@ -37,7 +37,7 @@ func FormatTasks(w io.Writer, tasks []model.Task) {
 
 		fmt.Fprintf(w, "%-4s %-8s  %-40s %-10s %s\n",
 			marker,
-			shortID(task.ID),
+			ShortID(task.ID),
 			task.Title,
 			task.Schedule,
 			tags,

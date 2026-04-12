@@ -5,12 +5,101 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
 	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/spf13/cobra"
 )
+
+// findTargetIndex looks up the target task in the others slice and returns its index.
+// Returns an error if the target is not in the same schedule group (distinguishing
+// done targets from different-schedule targets).
+func findTargetIndex(s *store.Store, prefix string, others []model.Task, taskSchedule string) (model.Task, int, error) {
+	target, err := s.GetByPrefix(prefix)
+	if err != nil {
+		return model.Task{}, -1, fmt.Errorf("resolve target task: %w", err)
+	}
+	for i, o := range others {
+		if o.ID == target.ID {
+			return target, i, nil
+		}
+	}
+	if target.Status == "done" {
+		return model.Task{}, -1, fmt.Errorf("target task is done, not in an open schedule group")
+	}
+	return model.Task{}, -1, fmt.Errorf("target task is in schedule %q, not %q", target.Schedule, taskSchedule)
+}
+
+// calcPosition computes the new position and label for a move operation.
+func calcPosition(s *store.Store, others []model.Task, taskSchedule string, top, bottom bool, before, after string) (float64, string, error) {
+	switch {
+	case top:
+		return ordering.PositionTop(others), "top", nil
+
+	case bottom:
+		return ordering.NextPosition(others), "bottom", nil
+
+	case before != "":
+		target, idx, err := findTargetIndex(s, before, others, taskSchedule)
+		if err != nil {
+			return 0, "", err
+		}
+		var pos float64
+		if idx == 0 {
+			pos = ordering.PositionTop(others)
+		} else {
+			pos = ordering.PositionBetween(others[idx-1].Position, others[idx].Position)
+		}
+		return pos, fmt.Sprintf("before %s", display.ShortID(target.ID)), nil
+
+	default: // after != ""
+		target, idx, err := findTargetIndex(s, after, others, taskSchedule)
+		if err != nil {
+			return 0, "", err
+		}
+		var pos float64
+		if idx == len(others)-1 {
+			pos = ordering.NextPosition(others)
+		} else {
+			pos = ordering.PositionBetween(others[idx].Position, others[idx+1].Position)
+		}
+		return pos, fmt.Sprintf("after %s", display.ShortID(target.ID)), nil
+	}
+}
+
+// rebalanceAndCommit checks if rebalancing is needed, performs it, and commits all changes.
+func rebalanceAndCommit(s *store.Store, repoPath string, task model.Task, posLabel string) error {
+	commitFiles := []string{filepath.Join(".monolog", "tasks", task.ID+".json")}
+
+	allGroup, err := s.List(store.ListOptions{Schedule: task.Schedule, Status: "open"})
+	if err != nil {
+		return fmt.Errorf("list tasks for rebalance check: %w", err)
+	}
+	if ordering.NeedsRebalance(allGroup) {
+		rebalanced := ordering.Rebalance(allGroup)
+		for _, rt := range rebalanced {
+			rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			if err := s.Update(rt); err != nil {
+				return fmt.Errorf("rebalance update: %w", err)
+			}
+			commitFiles = append(commitFiles, filepath.Join(".monolog", "tasks", rt.ID+".json"))
+		}
+	}
+
+	// Deduplicate commit files
+	seen := make(map[string]bool)
+	var uniqueFiles []string
+	for _, f := range commitFiles {
+		if !seen[f] {
+			seen[f] = true
+			uniqueFiles = append(uniqueFiles, f)
+		}
+	}
+
+	return git.AutoCommit(repoPath, fmt.Sprintf("mv: %s to %s", task.Title, posLabel), uniqueFiles...)
+}
 
 func newMvCmd() *cobra.Command {
 	var (
@@ -48,12 +137,10 @@ func newMvCmd() *cobra.Command {
 			}
 
 			prefix := args[0]
-			repoPath := monologDir()
-			tasksDir := filepath.Join(repoPath, ".monolog", "tasks")
 
-			s, err := store.New(tasksDir)
+			s, repoPath, err := openStore()
 			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+				return err
 			}
 
 			task, err := s.GetByPrefix(prefix)
@@ -73,63 +160,15 @@ func newMvCmd() *cobra.Command {
 					others = append(others, gt)
 				}
 			}
-			// others is already sorted by position (store.List sorts)
 
-			var newPos float64
-			var posLabel string
+			newPos, posLabel, err := calcPosition(s, others, task.Schedule, top, bottom, before, after)
+			if err != nil {
+				return err
+			}
 
-			switch {
-			case top:
-				newPos = ordering.PositionTop(others)
-				posLabel = "top"
-
-			case bottom:
-				newPos = ordering.NextPosition(others)
-				posLabel = "bottom"
-
-			case before != "":
-				target, err := s.GetByPrefix(before)
-				if err != nil {
-					return fmt.Errorf("resolve target task: %w", err)
-				}
-				targetIdx := -1
-				for i, o := range others {
-					if o.ID == target.ID {
-						targetIdx = i
-						break
-					}
-				}
-				if targetIdx == -1 {
-					return fmt.Errorf("target task is not in the same schedule group")
-				}
-				if targetIdx == 0 {
-					newPos = ordering.PositionTop(others)
-				} else {
-					newPos = ordering.PositionBetween(others[targetIdx-1].Position, others[targetIdx].Position)
-				}
-				posLabel = fmt.Sprintf("before %s", target.ID[:8])
-
-			case after != "":
-				target, err := s.GetByPrefix(after)
-				if err != nil {
-					return fmt.Errorf("resolve target task: %w", err)
-				}
-				targetIdx := -1
-				for i, o := range others {
-					if o.ID == target.ID {
-						targetIdx = i
-						break
-					}
-				}
-				if targetIdx == -1 {
-					return fmt.Errorf("target task is not in the same schedule group")
-				}
-				if targetIdx == len(others)-1 {
-					newPos = ordering.NextPosition(others)
-				} else {
-					newPos = ordering.PositionBetween(others[targetIdx].Position, others[targetIdx+1].Position)
-				}
-				posLabel = fmt.Sprintf("after %s", target.ID[:8])
+			if newPos == task.Position {
+				fmt.Fprintf(cmd.OutOrStdout(), "Already at %s: %s [%s]\n", posLabel, task.Title, display.ShortID(task.ID))
+				return nil
 			}
 
 			task.Position = newPos
@@ -139,40 +178,11 @@ func newMvCmd() *cobra.Command {
 				return fmt.Errorf("update task: %w", err)
 			}
 
-			// Collect files to commit
-			commitFiles := []string{filepath.Join(".monolog", "tasks", task.ID+".json")}
-
-			// Check if rebalance is needed
-			allGroup, err := s.List(store.ListOptions{Schedule: task.Schedule, Status: "open"})
-			if err != nil {
-				return fmt.Errorf("list tasks for rebalance check: %w", err)
-			}
-			if ordering.NeedsRebalance(allGroup) {
-				rebalanced := ordering.Rebalance(allGroup)
-				for _, rt := range rebalanced {
-					rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-					if err := s.Update(rt); err != nil {
-						return fmt.Errorf("rebalance update: %w", err)
-					}
-					commitFiles = append(commitFiles, filepath.Join(".monolog", "tasks", rt.ID+".json"))
-				}
+			if err := rebalanceAndCommit(s, repoPath, task, posLabel); err != nil {
+				return fmt.Errorf("rebalance/commit: %w", err)
 			}
 
-			// Deduplicate commit files
-			seen := make(map[string]bool)
-			var uniqueFiles []string
-			for _, f := range commitFiles {
-				if !seen[f] {
-					seen[f] = true
-					uniqueFiles = append(uniqueFiles, f)
-				}
-			}
-
-			if err := git.AutoCommit(repoPath, fmt.Sprintf("mv: %s to %s", task.Title, posLabel), uniqueFiles...); err != nil {
-				return fmt.Errorf("auto-commit: %w", err)
-			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "Moved: %s to %s [%s]\n", task.Title, posLabel, task.ID[:8])
+			fmt.Fprintf(cmd.OutOrStdout(), "Moved: %s to %s [%s]\n", task.Title, posLabel, display.ShortID(task.ID))
 			return nil
 		},
 	}

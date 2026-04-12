@@ -219,6 +219,70 @@ func TestLsCommand_SortedByPosition(t *testing.T) {
 	}
 }
 
+func TestLsCommand_DoneShowsAllSchedules(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Add tasks with different schedules
+	id1 := addTestTask(t, dir, "Today done")
+	id2 := addTestTaskWithSchedule(t, dir, "Tomorrow done", "tomorrow")
+
+	// Mark both as done
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"done", id1})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done command error = %v", err)
+	}
+
+	rootCmd2 := NewRootCmd()
+	rootCmd2.SetOut(new(bytes.Buffer))
+	rootCmd2.SetErr(new(bytes.Buffer))
+	rootCmd2.SetArgs([]string{"done", id2})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("done command error = %v", err)
+	}
+
+	// ls --done should show both (not filtered to today)
+	rootCmd3 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd3.SetOut(buf)
+	rootCmd3.SetErr(buf)
+	rootCmd3.SetArgs([]string{"ls", "--done"})
+
+	if err := rootCmd3.Execute(); err != nil {
+		t.Fatalf("ls --done error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Today done") {
+		t.Errorf("--done should show 'Today done', got:\n%s", output)
+	}
+	if !strings.Contains(output, "Tomorrow done") {
+		t.Errorf("--done should show 'Tomorrow done', got:\n%s", output)
+	}
+}
+
+func TestLsCommand_InvalidSchedule(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--schedule", "garbage"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid schedule in ls, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid schedule") {
+		t.Errorf("error should mention 'invalid schedule', got: %v", err)
+	}
+}
+
 func TestLsCommand_ScheduleAndTagCombined(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

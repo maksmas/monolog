@@ -49,7 +49,7 @@ func writeTestTask(t *testing.T, dir string, task model.Task) {
 // --- mv --top / --bottom tests ---
 
 func TestMvCommand_MoveToTop(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	// Add three tasks — they get positions 1000, 2000, 3000
@@ -81,7 +81,7 @@ func TestMvCommand_MoveToTop(t *testing.T) {
 }
 
 func TestMvCommand_MoveToBottom(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id1 := addTestTask(t, dir, "First")
@@ -112,7 +112,7 @@ func TestMvCommand_MoveToBottom(t *testing.T) {
 }
 
 func TestMvCommand_TopWithinScheduleGroup(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	// Add tasks in different schedule groups
@@ -149,7 +149,7 @@ func TestMvCommand_TopWithinScheduleGroup(t *testing.T) {
 // --- mv --before / --after tests ---
 
 func TestMvCommand_MoveAfter(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id1 := addTestTask(t, dir, "First")
@@ -180,7 +180,7 @@ func TestMvCommand_MoveAfter(t *testing.T) {
 }
 
 func TestMvCommand_MoveAfterLast(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id1 := addTestTask(t, dir, "First")
@@ -210,7 +210,7 @@ func TestMvCommand_MoveAfterLast(t *testing.T) {
 }
 
 func TestMvCommand_MoveBefore(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id1 := addTestTask(t, dir, "First")
@@ -241,7 +241,7 @@ func TestMvCommand_MoveBefore(t *testing.T) {
 }
 
 func TestMvCommand_MoveBeforeFirst(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id1 := addTestTask(t, dir, "First")
@@ -273,7 +273,7 @@ func TestMvCommand_MoveBeforeFirst(t *testing.T) {
 // --- rebalance trigger and auto-commit tests ---
 
 func TestMvCommand_AutoCommit(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id1 := addTestTask(t, dir, "Move me")
@@ -300,7 +300,7 @@ func TestMvCommand_AutoCommit(t *testing.T) {
 }
 
 func TestMvCommand_RebalanceTrigger(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	// Create tasks with very tight positions by manually editing their positions
@@ -357,7 +357,7 @@ func TestMvCommand_RebalanceTrigger(t *testing.T) {
 // --- error cases ---
 
 func TestMvCommand_ErrorNoFlags(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id := addTestTask(t, dir, "No flags")
@@ -375,7 +375,7 @@ func TestMvCommand_ErrorNoFlags(t *testing.T) {
 }
 
 func TestMvCommand_ErrorMultipleFlags(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	id := addTestTask(t, dir, "Multiple flags")
@@ -394,7 +394,7 @@ func TestMvCommand_ErrorMultipleFlags(t *testing.T) {
 }
 
 func TestMvCommand_ErrorBadPrefix(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	rootCmd := NewRootCmd()
@@ -409,8 +409,134 @@ func TestMvCommand_ErrorBadPrefix(t *testing.T) {
 	}
 }
 
+func TestMvCommand_ErrorBeforeDifferentScheduleGroup(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	idToday := addTestTaskWithSchedule(t, dir, "Today task", "today")
+	idTomorrow := addTestTaskWithSchedule(t, dir, "Tomorrow task", "tomorrow")
+
+	// Try to move today task --before tomorrow task (different schedule group)
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"mv", idToday, "--before", idTomorrow})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --before target is in a different schedule group")
+	}
+	if !strings.Contains(err.Error(), "schedule") {
+		t.Errorf("error should mention schedule mismatch, got: %v", err)
+	}
+}
+
+func TestMvCommand_ErrorAfterDifferentScheduleGroup(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	idToday := addTestTaskWithSchedule(t, dir, "Today task", "today")
+	idTomorrow := addTestTaskWithSchedule(t, dir, "Tomorrow task", "tomorrow")
+
+	// Try to move today task --after tomorrow task (different schedule group)
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"mv", idToday, "--after", idTomorrow})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --after target is in a different schedule group")
+	}
+	if !strings.Contains(err.Error(), "schedule") {
+		t.Errorf("error should mention schedule mismatch, got: %v", err)
+	}
+}
+
+func TestMvCommand_SoleMemberTop(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Add a single task in the tomorrow group
+	id := addTestTaskWithSchedule(t, dir, "Lone task", "tomorrow")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"mv", id, "--top"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("mv --top error = %v\noutput: %s", err, buf.String())
+	}
+
+	// Sole member at same position: should report "already at" and not crash
+	output := buf.String()
+	if !strings.Contains(output, "Already at") {
+		t.Errorf("expected 'Already at' message for sole member, got: %s", output)
+	}
+}
+
+func TestMvCommand_SoleMemberBottom(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTaskWithSchedule(t, dir, "Lone bottom", "tomorrow")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"mv", id, "--bottom"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("mv --bottom error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Already at") {
+		t.Errorf("expected 'Already at' message for sole member, got: %s", output)
+	}
+}
+
+func TestMvCommand_ErrorBeforeDoneTarget(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id1 := addTestTask(t, dir, "Open task")
+	id2 := addTestTask(t, dir, "Done target")
+
+	// Mark id2 as done
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"done", id2})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done command error = %v", err)
+	}
+
+	// Try to move id1 --before the done task
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"mv", id1, "--before", id2})
+
+	err := rootCmd2.Execute()
+	if err == nil {
+		t.Fatal("expected error when --before target is done")
+	}
+	if !strings.Contains(err.Error(), "done") {
+		t.Errorf("error should mention target is done, got: %v", err)
+	}
+}
+
 func TestMvCommand_ErrorNoArgs(t *testing.T) {
-	dir := t.TempDir() + "/monolog"
+	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
 	rootCmd := NewRootCmd()

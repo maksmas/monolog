@@ -74,7 +74,10 @@ func Init(path string, remote string) error {
 		if err != nil {
 			return fmt.Errorf("get branch name: %w", err)
 		}
-		branch := string(branchOut[:len(branchOut)-1]) // trim newline
+		branch := strings.TrimSpace(string(branchOut))
+		if branch == "" {
+			return fmt.Errorf("could not determine current branch name")
+		}
 		if err := run(path, "git", "push", "-u", "origin", branch); err != nil {
 			return fmt.Errorf("git push: %w", err)
 		}
@@ -134,18 +137,12 @@ func SyncCommit(repoPath string) error {
 
 // PullRebase runs git pull --rebase.
 func PullRebase(repoPath string) error {
-	if err := run(repoPath, "git", "pull", "--rebase"); err != nil {
-		return err
-	}
-	return nil
+	return run(repoPath, "git", "pull", "--rebase")
 }
 
 // Push runs git push.
 func Push(repoPath string) error {
-	if err := run(repoPath, "git", "push"); err != nil {
-		return err
-	}
-	return nil
+	return run(repoPath, "git", "push")
 }
 
 // run executes a command in the given directory, returning an error with

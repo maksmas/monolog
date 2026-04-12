@@ -78,6 +78,9 @@ func (s *Store) Delete(id string) error {
 // GetByPrefix resolves a partial ID prefix to a single task.
 // Returns ErrNotFound if no match, ErrAmbiguous if multiple matches.
 func (s *Store) GetByPrefix(prefix string) (model.Task, error) {
+	if prefix == "" {
+		return model.Task{}, fmt.Errorf("empty prefix: %w", ErrNotFound)
+	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return model.Task{}, fmt.Errorf("read tasks dir: %w", err)
@@ -85,7 +88,7 @@ func (s *Store) GetByPrefix(prefix string) (model.Task, error) {
 
 	var matches []string
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".json")

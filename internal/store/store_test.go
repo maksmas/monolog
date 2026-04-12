@@ -226,6 +226,32 @@ func TestGetByPrefixEmptyStore(t *testing.T) {
 	}
 }
 
+func TestGetByPrefixEmptyString(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01AAA", "Task A")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err := s.GetByPrefix("")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for empty prefix, got: %v", err)
+	}
+}
+
+func TestGetByPrefixIgnoresNonJSON(t *testing.T) {
+	s := newTestStore(t)
+	// Write a .gitkeep file that would match prefix "." if not filtered
+	gitkeep := filepath.Join(s.dir, ".gitkeep")
+	if err := os.WriteFile(gitkeep, []byte{}, 0o644); err != nil {
+		t.Fatalf("write .gitkeep: %v", err)
+	}
+
+	_, err := s.GetByPrefix(".git")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for non-JSON prefix match, got: %v", err)
+	}
+}
+
 // --- List tests ---
 
 func TestListEmpty(t *testing.T) {
@@ -370,8 +396,14 @@ func TestListIgnoresNonJSON(t *testing.T) {
 // --- ULID generation test ---
 
 func TestNewID(t *testing.T) {
-	id1 := model.NewID()
-	id2 := model.NewID()
+	id1, err := model.NewID()
+	if err != nil {
+		t.Fatalf("NewID returned error: %v", err)
+	}
+	id2, err := model.NewID()
+	if err != nil {
+		t.Fatalf("NewID returned error: %v", err)
+	}
 
 	if id1 == "" {
 		t.Error("NewID returned empty string")
