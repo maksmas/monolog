@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mmaksmas/monolog/internal/model"
 )
 
+// fixedNow is a deterministic reference time for all table tests.
+var fixedNow = time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+
 func TestFormatTasks_Empty(t *testing.T) {
 	var buf bytes.Buffer
-	FormatTasks(&buf, nil)
+	FormatTasks(&buf, nil, fixedNow)
 	output := buf.String()
 	if output != "No tasks.\n" {
 		t.Errorf("expected 'No tasks.\\n', got %q", output)
@@ -20,16 +24,17 @@ func TestFormatTasks_Empty(t *testing.T) {
 func TestFormatTasks_SingleTask(t *testing.T) {
 	tasks := []model.Task{
 		{
-			ID:       "01ABCDEFGHIJKLMNOPQRSTUVWX",
-			Title:    "Buy milk",
-			Schedule: "today",
-			Status:   "open",
-			Position: 1000,
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Buy milk",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Add(-2 * 24 * time.Hour).Format(time.RFC3339),
 		},
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks)
+	FormatTasks(&buf, tasks, fixedNow)
 	output := buf.String()
 
 	// Should contain short ID (first 8 chars)
@@ -63,7 +68,7 @@ func TestFormatTasks_WithTags(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks)
+	FormatTasks(&buf, tasks, fixedNow)
 	output := buf.String()
 
 	if !strings.Contains(output, "work") {
@@ -101,7 +106,7 @@ func TestFormatTasks_MultipleTasks(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks)
+	FormatTasks(&buf, tasks, fixedNow)
 	output := buf.String()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 
@@ -134,7 +139,7 @@ func TestFormatTasks_NoTags(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks)
+	FormatTasks(&buf, tasks, fixedNow)
 	output := buf.String()
 
 	// Should still produce valid output without tags
@@ -155,7 +160,7 @@ func TestFormatTasks_DoneStatus(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks)
+	FormatTasks(&buf, tasks, fixedNow)
 	output := buf.String()
 
 	// Done tasks should show a done indicator
@@ -180,5 +185,50 @@ func TestShortID(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("ShortID(%q) = %q, want %q", tt.id, got, tt.want)
 		}
+	}
+}
+
+func TestFormatTasks_OpenWithRecentDate(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Recent task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Add(-2 * 24 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow)
+	output := buf.String()
+
+	// Should contain the compact date "2d" for a task created 2 days ago
+	if !strings.Contains(output, "2d") {
+		t.Errorf("output should contain date '2d' for task created 2 days ago, got:\n%s", output)
+	}
+}
+
+func TestFormatTasks_DoneWithBothDates(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Done task",
+			Schedule:  "today",
+			Status:    "done",
+			Position:  1000,
+			CreatedAt: fixedNow.Add(-5 * 24 * time.Hour).Format(time.RFC3339),
+			UpdatedAt: fixedNow.Add(-1 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow)
+	output := buf.String()
+
+	// Should contain the compact dates "5d→1h" for a done task
+	if !strings.Contains(output, "5d\u21921h") {
+		t.Errorf("output should contain '5d\u21921h' for done task, got:\n%s", output)
 	}
 }

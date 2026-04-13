@@ -3,6 +3,8 @@ package display
 import (
 	"fmt"
 	"time"
+
+	"github.com/mmaksmas/monolog/internal/model"
 )
 
 // FormatRelDate returns a compact representation of ts relative to now.
@@ -54,4 +56,21 @@ func FormatRelDate(now time.Time, ts string) string {
 		}
 		return fmt.Sprintf("%02d-%02d", t.Month(), t.Day())
 	}
+}
+
+// FormatTaskDates returns the compact date column value for a task:
+//
+//	open: "<created>"
+//	done: "<created>→<updated>"
+//	both empty -> ""
+func FormatTaskDates(now time.Time, t model.Task) string {
+	created := FormatRelDate(now, t.CreatedAt)
+	if t.Status == "done" {
+		updated := FormatRelDate(now, t.UpdatedAt)
+		if created == "" && updated == "" {
+			return ""
+		}
+		return created + "→" + updated
+	}
+	return created
 }

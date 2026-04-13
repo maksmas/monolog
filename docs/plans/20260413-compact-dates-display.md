@@ -150,12 +150,12 @@ Simple append with the same `"  "` separator.
 - Modify: `cmd/ls.go` (pass `time.Now()` to `FormatTasks`)
 - Modify: `cmd/log.go` (pass `time.Now()` to `FormatTasks`)
 
-- [ ] write tests for `FormatTaskDates` with a fixed `now`: open task → single `"<created>"`, done task → `"<created>→<updated>"`, task with both timestamps empty → `""`, task with only CreatedAt empty and done → `"→<updated>"` (graceful)
-- [ ] implement `FormatTaskDates(now time.Time, t model.Task) string`
-- [ ] change signature: `FormatTasks(w io.Writer, tasks []model.Task, now time.Time)`; update format string to include the 8-char dates column immediately before tags; call `FormatTaskDates(now, task)` per row
-- [ ] update `cmd/ls.go` and `cmd/log.go` call sites to pass `time.Now()`
-- [ ] update existing `FormatTasks` tests: pass a fixed `now`, set `CreatedAt`/`UpdatedAt` on fixture tasks relative to that `now` so expected column values are deterministic; add two new cases (open with recent CreatedAt → e.g. `"2d"`, done with both timestamps → e.g. `"5d→1h"`)
-- [ ] run `go test ./internal/display/ ./cmd/` — must pass before next task
+- [x] write tests for `FormatTaskDates` with a fixed `now`: open task → single `"<created>"`, done task → `"<created>→<updated>"`, task with both timestamps empty → `""`, task with only CreatedAt empty and done → `"→<updated>"` (graceful)
+- [x] implement `FormatTaskDates(now time.Time, t model.Task) string`
+- [x] change signature: `FormatTasks(w io.Writer, tasks []model.Task, now time.Time)`; update format string to include the 8-char dates column immediately before tags; call `FormatTaskDates(now, task)` per row
+- [x] update `cmd/ls.go` and `cmd/log.go` call sites to pass `time.Now()`
+- [x] update existing `FormatTasks` tests: pass a fixed `now`, set `CreatedAt`/`UpdatedAt` on fixture tasks relative to that `now` so expected column values are deterministic; add two new cases (open with recent CreatedAt → e.g. `"2d"`, done with both timestamps → e.g. `"5d→1h"`)
+- [x] run `go test ./internal/display/ ./cmd/` — must pass before next task
 
 ### Task 3: Show compact dates in TUI item description
 

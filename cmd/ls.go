@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/store"
@@ -54,7 +55,7 @@ func newLsCmd() *cobra.Command {
 				return fmt.Errorf("list tasks: %w", err)
 			}
 
-			display.FormatTasks(cmd.OutOrStdout(), tasks)
+			display.FormatTasks(cmd.OutOrStdout(), tasks, time.Now())
 			return nil
 		},
 	}

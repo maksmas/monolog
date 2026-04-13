@@ -47,7 +47,7 @@ func newLogCmd() *cobra.Command {
 				return recent[i].UpdatedAt > recent[j].UpdatedAt
 			})
 
-			display.FormatTasks(cmd.OutOrStdout(), recent)
+			display.FormatTasks(cmd.OutOrStdout(), recent, time.Now())
 			return nil
 		},
 	}

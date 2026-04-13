@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/mmaksmas/monolog/internal/model"
 )
@@ -17,8 +18,9 @@ func ShortID(id string) string {
 }
 
 // FormatTasks writes tasks as a clean terminal table to w.
-// Each line shows: position indicator, short ID, title, schedule, tags.
-func FormatTasks(w io.Writer, tasks []model.Task) {
+// Each line shows: position indicator, short ID, title, schedule, dates, tags.
+// The now parameter is used to compute compact relative dates.
+func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 	if len(tasks) == 0 {
 		fmt.Fprintln(w, "No tasks.")
 		return
@@ -35,11 +37,14 @@ func FormatTasks(w io.Writer, tasks []model.Task) {
 			tags = "[" + strings.Join(task.Tags, ", ") + "]"
 		}
 
-		fmt.Fprintf(w, "%-4s %-8s  %-40s %-10s %s\n",
+		dates := FormatTaskDates(now, task)
+
+		fmt.Fprintf(w, "%-4s %-8s  %-40s %-10s %-8s %s\n",
 			marker,
 			ShortID(task.ID),
 			task.Title,
 			task.Schedule,
+			dates,
 			tags,
 		)
 	}

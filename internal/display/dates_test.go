@@ -3,6 +3,8 @@ package display
 import (
 	"testing"
 	"time"
+
+	"github.com/mmaksmas/monolog/internal/model"
 )
 
 func TestFormatRelDate(t *testing.T) {
@@ -57,6 +59,81 @@ func TestFormatRelDate(t *testing.T) {
 			got := FormatRelDate(now, tt.ts)
 			if got != tt.want {
 				t.Errorf("FormatRelDate(now, %q) = %q, want %q", tt.ts, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatTaskDates(t *testing.T) {
+	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		task model.Task
+		want string
+	}{
+		{
+			name: "open task with recent CreatedAt",
+			task: model.Task{
+				Status:    "open",
+				CreatedAt: now.Add(-2 * 24 * time.Hour).Format(time.RFC3339),
+			},
+			want: "2d",
+		},
+		{
+			name: "done task with both timestamps",
+			task: model.Task{
+				Status:    "done",
+				CreatedAt: now.Add(-5 * 24 * time.Hour).Format(time.RFC3339),
+				UpdatedAt: now.Add(-1 * time.Hour).Format(time.RFC3339),
+			},
+			want: "5d\u2192" + "1h",
+		},
+		{
+			name: "both timestamps empty on open task",
+			task: model.Task{
+				Status: "open",
+			},
+			want: "",
+		},
+		{
+			name: "done task with both timestamps empty",
+			task: model.Task{
+				Status: "done",
+			},
+			want: "",
+		},
+		{
+			name: "done task with only CreatedAt empty",
+			task: model.Task{
+				Status:    "done",
+				UpdatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+			},
+			want: "\u2192" + "30m",
+		},
+		{
+			name: "done task with only UpdatedAt empty",
+			task: model.Task{
+				Status:    "done",
+				CreatedAt: now.Add(-3 * 24 * time.Hour).Format(time.RFC3339),
+			},
+			want: "3d\u2192",
+		},
+		{
+			name: "open task with old CreatedAt shows date",
+			task: model.Task{
+				Status:    "open",
+				CreatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339),
+			},
+			want: "03-01",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatTaskDates(now, tt.task)
+			if got != tt.want {
+				t.Errorf("FormatTaskDates() = %q, want %q", got, tt.want)
 			}
 		})
 	}
