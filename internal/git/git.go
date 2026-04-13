@@ -151,6 +151,67 @@ func Push(repoPath string) error {
 	return run(repoPath, "git", "push")
 }
 
+// SyncResult summarizes what happened during a Sync call.
+type SyncResult struct {
+	// Committed is true if pending local changes were committed before the pull.
+	Committed bool
+	// HasRemote is false when no remote is configured (the sync becomes a
+	// local-commit-only operation).
+	HasRemote bool
+	// Resolved is the number of task files where a conflict was auto-resolved.
+	Resolved int
+}
+
+// Sync commits pending changes, pulls with rebase (auto-resolving conflicts
+// via ResolveConflicts), and pushes. If no remote is configured, it stops
+// after the local commit. Used by both the `monolog sync` CLI command and
+// the TUI's sync key.
+func Sync(repoPath string) (SyncResult, error) {
+	var res SyncResult
+
+	hasChanges, err := HasChanges(repoPath)
+	if err != nil {
+		return res, fmt.Errorf("check changes: %w", err)
+	}
+	if hasChanges {
+		if err := SyncCommit(repoPath); err != nil {
+			return res, fmt.Errorf("commit: %w", err)
+		}
+		res.Committed = true
+	}
+
+	hasRemote, err := HasRemote(repoPath)
+	if err != nil {
+		return res, fmt.Errorf("check remote: %w", err)
+	}
+	if !hasRemote {
+		return res, nil
+	}
+	res.HasRemote = true
+
+	if err := PullRebase(repoPath); err != nil {
+		rebasing, rbErr := IsRebasing(repoPath)
+		if rbErr != nil || !rebasing {
+			return res, fmt.Errorf("pull: %w", err)
+		}
+		n, resErr := ResolveConflicts(repoPath)
+		if resErr != nil {
+			_ = RebaseAbort(repoPath)
+			return res, fmt.Errorf("resolve conflicts: %w", resErr)
+		}
+		if err := RebaseContinue(repoPath); err != nil {
+			_ = RebaseAbort(repoPath)
+			return res, fmt.Errorf("rebase continue: %w", err)
+		}
+		res.Resolved = n
+	}
+
+	if err := Push(repoPath); err != nil {
+		return res, fmt.Errorf("push: %w", err)
+	}
+	return res, nil
+}
+
 // IsRebasing returns true if the repository is currently in the middle of a
 // rebase (either standard or merge-based). Used after a failed PullRebase to
 // decide whether to attempt automatic conflict resolution.

@@ -258,6 +258,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "e":
 		return m, m.openEdit()
+	case "s":
+		m.statusMsg = "Syncing..."
+		return m, m.syncCmd()
 	}
 
 	var cmd tea.Cmd
@@ -885,6 +888,25 @@ func (m *Model) createCmd(title string) tea.Cmd {
 	}
 }
 
+// syncCmd runs a full sync (commit + pull + auto-resolve + push) in the
+// background and surfaces the result in the status bar.
+func (m *Model) syncCmd() tea.Cmd {
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		res, err := git.Sync(repoPath)
+		if err != nil {
+			return taskSavedMsg{err: err}
+		}
+		if !res.HasRemote {
+			return taskSavedMsg{status: "No remote configured; committed locally"}
+		}
+		if res.Resolved > 0 {
+			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved)}
+		}
+		return taskSavedMsg{status: "Synced"}
+	}
+}
+
 // deleteCmd removes a task and commits the deletion.
 func (m *Model) deleteCmd(task model.Task) tea.Cmd {
 	return func() tea.Msg {
@@ -932,7 +954,7 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r reschedule  t tag  a add  x del  m grab  q quit")
+		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r resched  t tag  a add  x del  m grab  s sync  q quit")
 	case modeGrab:
 		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
 	case modeReschedule:
