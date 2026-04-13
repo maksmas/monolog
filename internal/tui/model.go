@@ -85,6 +85,7 @@ type Model struct {
 // item wraps a model.Task for display in a bubbles/list.
 type item struct {
 	task model.Task
+	now  time.Time // render-time clock for compact date display
 }
 
 func (i item) Title() string { return i.task.Title }
@@ -96,6 +97,9 @@ func (i item) Description() string {
 	}
 	if len(i.task.Tags) > 0 {
 		parts = append(parts, "["+strings.Join(i.task.Tags, ", ")+"]")
+	}
+	if dates := display.FormatTaskDates(i.now, i.task); dates != "" {
+		parts = append(parts, dates)
 	}
 	return strings.Join(parts, "  ")
 }
@@ -160,9 +164,10 @@ func (m *Model) reloadTab(idx int) error {
 			return tasks[i].UpdatedAt > tasks[j].UpdatedAt
 		})
 	}
+	now := time.Now()
 	items := make([]list.Item, len(tasks))
 	for i, task := range tasks {
-		items[i] = item{task: task}
+		items[i] = item{task: task, now: now}
 	}
 	m.lists[idx].SetItems(items)
 	return nil

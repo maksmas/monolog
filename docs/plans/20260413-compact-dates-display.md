@@ -163,12 +163,12 @@ Simple append with the same `"  "` separator.
 - Modify: `internal/tui/model.go` (`item` struct + `Description`, `setTabTasks` / wherever items are built)
 - Modify: `internal/tui/model_test.go` (new test for item rendering with fixed `now`)
 
-- [ ] add `now time.Time` field to the `item` struct (alongside `task`)
-- [ ] update every place that constructs an `item{...}` to set `now: time.Now()` (single call site to check: the `tasks → []list.Item` conversion around `model.go:163`)
-- [ ] update `item.Description()` to append `display.FormatTaskDates(i.now, i.task)` when non-empty, using the existing `"  "` separator — no `time.Now()` call inside `Description`
-- [ ] preserve existing description ordering (shortID, schedule, tags, then dates)
-- [ ] write a test: construct `item{task: Task{CreatedAt: <2d before fixed now>, Status: "open"}, now: fixedNow}`, call `Description()`, assert suffix `"  2d"`; and a done variant asserting `"  <created>→<updated>"`
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] add `now time.Time` field to the `item` struct (alongside `task`)
+- [x] update every place that constructs an `item{...}` to set `now: time.Now()` (single call site to check: the `tasks → []list.Item` conversion around `model.go:163`)
+- [x] update `item.Description()` to append `display.FormatTaskDates(i.now, i.task)` when non-empty, using the existing `"  "` separator — no `time.Now()` call inside `Description`
+- [x] preserve existing description ordering (shortID, schedule, tags, then dates)
+- [x] write a test: construct `item{task: Task{CreatedAt: <2d before fixed now>, Status: "open"}, now: fixedNow}`, call `Description()`, assert suffix `"  2d"`; and a done variant asserting `"  <created>→<updated>"`
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 4: Verify acceptance criteria
 

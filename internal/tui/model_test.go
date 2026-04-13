@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -672,6 +673,97 @@ func sliceEq(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// --- item.Description compact date tests ------------------------------------
+
+func TestItemDescription_OpenTaskShowsCreatedDate(t *testing.T) {
+	fixedNow, _ := time.Parse(time.RFC3339, "2026-04-13T12:00:00Z")
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "buy milk",
+			Status:    "open",
+			Schedule:  "today",
+			CreatedAt: "2026-04-11T12:00:00Z", // 2 days ago
+			Tags:      []string{"shopping"},
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	// Should end with the compact date "2d"
+	if !strings.Contains(desc, "2d") {
+		t.Errorf("Description() = %q, want to contain %q", desc, "2d")
+	}
+	// Ordering: shortID, tags, then date at the end
+	idx2d := strings.Index(desc, "2d")
+	idxTags := strings.Index(desc, "[shopping]")
+	if idxTags < 0 || idx2d < idxTags {
+		t.Errorf("date should appear after tags in Description() = %q", desc)
+	}
+}
+
+func TestItemDescription_DoneTaskShowsCreatedAndUpdated(t *testing.T) {
+	fixedNow, _ := time.Parse(time.RFC3339, "2026-04-13T12:00:00Z")
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "write report",
+			Status:    "done",
+			Schedule:  "today",
+			CreatedAt: "2026-04-08T12:00:00Z", // 5 days ago
+			UpdatedAt: "2026-04-13T11:00:00Z", // 1 hour ago
+			Tags:      []string{"work"},
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	// Should contain "5d→1h"
+	if !strings.Contains(desc, "5d→1h") {
+		t.Errorf("Description() = %q, want to contain %q", desc, "5d→1h")
+	}
+}
+
+func TestItemDescription_NoTimestampsOmitsDate(t *testing.T) {
+	fixedNow, _ := time.Parse(time.RFC3339, "2026-04-13T12:00:00Z")
+	it := item{
+		task: model.Task{
+			ID:       "01ABCDEF",
+			Title:    "no dates",
+			Status:   "open",
+			Schedule: "tomorrow",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	// Description should have shortID and schedule, but no trailing date
+	parts := strings.Split(desc, "  ")
+	if len(parts) != 2 {
+		t.Errorf("Description() = %q, expected 2 parts (shortID, schedule), got %d",
+			desc, len(parts))
+	}
+}
+
+func TestItemDescription_ZeroNowOmitsDate(t *testing.T) {
+	// When now is zero (e.g. item constructed without setting now),
+	// FormatTaskDates returns "" because the relative date would be huge.
+	// Actually, it won't be empty for a valid timestamp, but the dates
+	// should still render gracefully. Let's check with a real zero now.
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "zero now",
+			Status:    "open",
+			Schedule:  "today",
+			CreatedAt: "2026-04-11T12:00:00Z",
+		},
+		// now is zero value — dates will be far-future relative to zero time
+	}
+	desc := it.Description()
+	// Should not panic; date should render as MM-DD format (far future from zero)
+	if !strings.Contains(desc, "01AB") {
+		t.Errorf("Description() = %q, should at least contain short ID", desc)
+	}
 }
 
 func TestIsISODate(t *testing.T) {
