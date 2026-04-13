@@ -47,14 +47,43 @@ func TestRootCommandVersion(t *testing.T) {
 	}
 }
 
-func TestRootCommandNoArgs(t *testing.T) {
+func TestRootCommandNoArgs_InvokesTUI(t *testing.T) {
+	// Stub the TUI hook so the test doesn't try to open a real terminal.
+	called := false
+	orig := runTUI
+	runTUI = func() error { called = true; return nil }
+	defer func() { runTUI = orig }()
+
 	rootCmd := NewRootCmd()
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
 	rootCmd.SetArgs([]string{})
 
-	err := rootCmd.Execute()
-	if err != nil {
-		t.Fatalf("expected no error running root with no args, got %v", err)
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("root with no args should succeed, got %v", err)
+	}
+	if !called {
+		t.Error("runTUI was not invoked by no-arg root command")
+	}
+}
+
+func TestRootCommandSubcommandsStillWork(t *testing.T) {
+	// With Args: NoArgs + RunE on root, subcommands should still dispatch
+	// without invoking the TUI.
+	called := false
+	orig := runTUI
+	runTUI = func() error { called = true; return nil }
+	defer func() { runTUI = orig }()
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetArgs([]string{"--help"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("--help should succeed, got %v", err)
+	}
+	if called {
+		t.Error("runTUI should not be invoked when a subcommand runs")
 	}
 }
