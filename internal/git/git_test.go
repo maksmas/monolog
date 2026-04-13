@@ -90,6 +90,27 @@ func TestInit_AlreadyExists(t *testing.T) {
 	}
 }
 
+func TestInit_MonologDirExistsButNoGit(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+
+	// Pre-create .monolog directory without git
+	if err := os.MkdirAll(filepath.Join(repoPath, ".monolog"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Init should succeed since there's no .git
+	err := Init(repoPath, "")
+	if err != nil {
+		t.Fatalf("Init() should succeed when .monolog exists but .git does not: %v", err)
+	}
+
+	// Verify git was initialized
+	if _, err := os.Stat(filepath.Join(repoPath, ".git")); os.IsNotExist(err) {
+		t.Error(".git directory should exist after init")
+	}
+}
+
 func TestInit_WithRemote(t *testing.T) {
 	// Create a bare repo to act as the remote
 	remoteDir := t.TempDir()

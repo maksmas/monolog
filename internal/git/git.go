@@ -13,8 +13,8 @@ import (
 // runs git init, and makes an initial commit.
 // If remote is non-empty, it adds the remote as origin and pushes the initial commit.
 func Init(path string, remote string) error {
-	// Check if already initialized
-	if _, err := os.Stat(filepath.Join(path, ".monolog")); err == nil {
+	// Check if already initialized (a valid repo has a .git directory)
+	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
 		return fmt.Errorf("monolog repo already initialized at %s", path)
 	}
 
