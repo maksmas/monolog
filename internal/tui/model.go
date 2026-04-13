@@ -83,6 +83,9 @@ type Model struct {
 }
 
 // item wraps a model.Task for display in a bubbles/list.
+// now is captured at reloadTab time. Dates won't refresh in a tab until the
+// next mutation or tab switch triggers a reload — acceptable tradeoff for a
+// personal CLI tool.
 type item struct {
 	task model.Task
 	now  time.Time // render-time clock for compact date display

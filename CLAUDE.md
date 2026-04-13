@@ -24,7 +24,7 @@ cmd/                    → One file per CLI command (add.go, ls.go, etc.)
 internal/model/task.go  → Task struct with JSON tags, ULID generation
 internal/store/         → File-based CRUD, prefix-match ID lookup, filtering/sorting
 internal/ordering/      → Fractional position math and rebalancing
-internal/display/       → Terminal table formatting
+internal/display/       → Terminal table formatting and compact date helpers
 internal/git/           → Git operations (init, auto-commit wrapper)
 ```
 

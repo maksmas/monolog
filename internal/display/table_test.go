@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mmaksmas/monolog/internal/model"
 )
@@ -49,9 +50,10 @@ func TestFormatTasks_SingleTask(t *testing.T) {
 	if !strings.Contains(output, "today") {
 		t.Errorf("output should contain schedule 'today', got:\n%s", output)
 	}
-	// Should contain position indicator
-	if !strings.Contains(output, "1") {
-		t.Errorf("output should contain position indicator, got:\n%s", output)
+	// Should contain position indicator as leading column
+	line := strings.TrimSpace(strings.Split(strings.TrimSpace(output), "\n")[0])
+	if !strings.HasPrefix(line, "1 ") {
+		t.Errorf("output should start with position indicator '1 ', got: %s", line)
 	}
 }
 
@@ -115,15 +117,15 @@ func TestFormatTasks_MultipleTasks(t *testing.T) {
 		t.Errorf("expected 3 lines, got %d:\n%s", len(lines), output)
 	}
 
-	// Position indicators should be sequential
-	if !strings.Contains(lines[0], "1") {
-		t.Errorf("first line should have position 1, got: %s", lines[0])
+	// Position indicators should be sequential — check leading column
+	if !strings.HasPrefix(strings.TrimSpace(lines[0]), "1 ") {
+		t.Errorf("first line should start with position '1 ', got: %s", lines[0])
 	}
-	if !strings.Contains(lines[1], "2") {
-		t.Errorf("second line should have position 2, got: %s", lines[1])
+	if !strings.HasPrefix(strings.TrimSpace(lines[1]), "2 ") {
+		t.Errorf("second line should start with position '2 ', got: %s", lines[1])
 	}
-	if !strings.Contains(lines[2], "3") {
-		t.Errorf("third line should have position 3, got: %s", lines[2])
+	if !strings.HasPrefix(strings.TrimSpace(lines[2]), "3 ") {
+		t.Errorf("third line should start with position '3 ', got: %s", lines[2])
 	}
 }
 
@@ -163,9 +165,10 @@ func TestFormatTasks_DoneStatus(t *testing.T) {
 	FormatTasks(&buf, tasks, fixedNow)
 	output := buf.String()
 
-	// Done tasks should show a done indicator
-	if !strings.Contains(output, "x") && !strings.Contains(output, "X") && !strings.Contains(output, "done") {
-		t.Errorf("done task should have a done indicator, got:\n%s", output)
+	// Done tasks should show "x" as the leading marker column
+	line := strings.TrimSpace(strings.Split(strings.TrimSpace(output), "\n")[0])
+	if !strings.HasPrefix(line, "x ") {
+		t.Errorf("done task line should start with 'x ', got: %s", line)
 	}
 }
 
@@ -207,6 +210,51 @@ func TestFormatTasks_OpenWithRecentDate(t *testing.T) {
 	// Should contain the compact date "2d" for a task created 2 days ago
 	if !strings.Contains(output, "2d") {
 		t.Errorf("output should contain date '2d' for task created 2 days ago, got:\n%s", output)
+	}
+}
+
+func TestPadRight_MaxWidthDates(t *testing.T) {
+	// Worst-case dates column: cross-year created + cross-year done = "YY-MM-DD→YY-MM-DD" = 17 runes.
+	maxDates := "25-01-15→26-04-13"
+	padded := padRight(maxDates, 17)
+	if runeLen := utf8.RuneCountInString(padded); runeLen != 17 {
+		t.Errorf("padRight(%q, 17) has %d runes, want 17", maxDates, runeLen)
+	}
+	if padded != maxDates {
+		t.Errorf("padRight(%q, 17) = %q, want no padding for exact-width input", maxDates, padded)
+	}
+
+	// Shorter date string should be padded to 17 runes.
+	short := "2d→1h"
+	padded = padRight(short, 17)
+	if runeLen := utf8.RuneCountInString(padded); runeLen != 17 {
+		t.Errorf("padRight(%q, 17) has %d runes, want 17", short, runeLen)
+	}
+}
+
+func TestFormatTasks_CrossYearDoneDatesAlignment(t *testing.T) {
+	// Cross-year created + cross-year completed done task — max-width dates column.
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Cross-year done task",
+			Schedule:  "today",
+			Status:    "done",
+			Position:  1000,
+			CreatedAt: time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC).Format(time.RFC3339),
+			UpdatedAt: time.Date(2025, 12, 20, 14, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		},
+	}
+
+	// Use a now in 2026 so both timestamps are cross-year.
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow)
+	output := buf.String()
+
+	// Should contain the max-width dates "25-01-15→25-12-20".
+	want := "25-01-15→25-12-20"
+	if !strings.Contains(output, want) {
+		t.Errorf("output should contain %q, got:\n%s", want, output)
 	}
 }
 

@@ -38,7 +38,7 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 
 ### `monolog ls`
 
-Lists today's open tasks by default.
+Lists today's open tasks by default. Each row includes a compact dates column: relative for recent tasks (`5m`, `3h`, `2d`), `MM-DD` for older same-year tasks, and `YY-MM-DD` for cross-year. Done tasks show `created→done` (e.g. `5d→1h`).
 
 | Flag | Description |
 |------|-------------|
@@ -83,7 +83,7 @@ Promote tasks to today: `tomorrow` becomes `today`, past ISO dates become `today
 
 ### `monolog log`
 
-Show tasks completed in the last 7 days.
+Show tasks completed in the last 7 days, with `created→done` compact dates.
 
 ### `monolog sync`
 

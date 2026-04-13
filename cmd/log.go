@@ -29,8 +29,11 @@ func newLogCmd() *cobra.Command {
 				return fmt.Errorf("list tasks: %w", err)
 			}
 
+			// Capture time once for consistent cutoff and display.
+			now := time.Now()
+
 			// Filter to last 7 days by updated_at
-			cutoff := time.Now().AddDate(0, 0, -7)
+			cutoff := now.AddDate(0, 0, -7)
 			var recent []model.Task
 			for _, task := range tasks {
 				updatedAt, err := time.Parse(time.RFC3339, task.UpdatedAt)
@@ -47,7 +50,7 @@ func newLogCmd() *cobra.Command {
 				return recent[i].UpdatedAt > recent[j].UpdatedAt
 			})
 
-			display.FormatTasks(cmd.OutOrStdout(), recent, time.Now())
+			display.FormatTasks(cmd.OutOrStdout(), recent, now)
 			return nil
 		},
 	}

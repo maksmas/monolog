@@ -678,7 +678,7 @@ func sliceEq(a, b []string) bool {
 // --- item.Description compact date tests ------------------------------------
 
 func TestItemDescription_OpenTaskShowsCreatedDate(t *testing.T) {
-	fixedNow, _ := time.Parse(time.RFC3339, "2026-04-13T12:00:00Z")
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
 	it := item{
 		task: model.Task{
 			ID:        "01ABCDEF",
@@ -704,7 +704,7 @@ func TestItemDescription_OpenTaskShowsCreatedDate(t *testing.T) {
 }
 
 func TestItemDescription_DoneTaskShowsCreatedAndUpdated(t *testing.T) {
-	fixedNow, _ := time.Parse(time.RFC3339, "2026-04-13T12:00:00Z")
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
 	it := item{
 		task: model.Task{
 			ID:        "01ABCDEF",
@@ -725,7 +725,7 @@ func TestItemDescription_DoneTaskShowsCreatedAndUpdated(t *testing.T) {
 }
 
 func TestItemDescription_NoTimestampsOmitsDate(t *testing.T) {
-	fixedNow, _ := time.Parse(time.RFC3339, "2026-04-13T12:00:00Z")
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
 	it := item{
 		task: model.Task{
 			ID:       "01ABCDEF",
@@ -736,19 +736,16 @@ func TestItemDescription_NoTimestampsOmitsDate(t *testing.T) {
 		now: fixedNow,
 	}
 	desc := it.Description()
-	// Description should have shortID and schedule, but no trailing date
-	parts := strings.Split(desc, "  ")
-	if len(parts) != 2 {
-		t.Errorf("Description() = %q, expected 2 parts (shortID, schedule), got %d",
-			desc, len(parts))
+	want := "01ABCDEF  tomorrow"
+	if desc != want {
+		t.Errorf("Description() = %q, want %q", desc, want)
 	}
 }
 
-func TestItemDescription_ZeroNowOmitsDate(t *testing.T) {
+func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	// When now is zero (e.g. item constructed without setting now),
-	// FormatTaskDates returns "" because the relative date would be huge.
-	// Actually, it won't be empty for a valid timestamp, but the dates
-	// should still render gracefully. Let's check with a real zero now.
+	// a valid CreatedAt is far in the future relative to time.Time{},
+	// so FormatRelDate returns a YY-MM-DD date string — not empty.
 	it := item{
 		task: model.Task{
 			ID:        "01ABCDEF",
@@ -760,9 +757,12 @@ func TestItemDescription_ZeroNowOmitsDate(t *testing.T) {
 		// now is zero value — dates will be far-future relative to zero time
 	}
 	desc := it.Description()
-	// Should not panic; date should render as MM-DD format (far future from zero)
 	if !strings.Contains(desc, "01AB") {
-		t.Errorf("Description() = %q, should at least contain short ID", desc)
+		t.Errorf("Description() = %q, should contain short ID", desc)
+	}
+	// With zero now, the date should render as YY-MM-DD (different year from year 1)
+	if !strings.Contains(desc, "26-04-11") {
+		t.Errorf("Description() = %q, should contain far-future date '26-04-11'", desc)
 	}
 }
 
@@ -776,6 +776,4 @@ func TestIsISODate(t *testing.T) {
 	if isISODate("not-a-date") {
 		t.Error("garbage accepted")
 	}
-	// Use strings to show the helper is used.
-	_ = strings.Contains
 }

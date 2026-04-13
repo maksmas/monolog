@@ -179,9 +179,9 @@ Simple append with the same `"  "` separator.
 
 ### Task 5: Final — update documentation and move plan
 
-- [ ] if README documents `ls` output format, update the example row to include the dates column (check `README.md`; only edit if it shows a sample row)
-- [ ] move this plan to `docs/plans/completed/20260413-compact-dates-display.md`
-- [ ] final sanity check: `go test ./...` green
+- [x] if README documents `ls` output format, update the example row to include the dates column (check `README.md`; only edit if it shows a sample row) — README does not show sample ls output rows, no edit needed
+- [x] move this plan to `docs/plans/completed/20260413-compact-dates-display.md`
+- [x] final sanity check: `go test ./...` green
 
 ## Post-Completion
 

@@ -24,8 +24,11 @@ func TestFormatRelDate(t *testing.T) {
 		{"30s ago", now.Add(-30 * time.Second).Format(time.RFC3339), "now"},
 		{"59s ago", now.Add(-59 * time.Second).Format(time.RFC3339), "now"},
 
-		// minutes: [1m, 1h)
-		{"1m ago", now.Add(-1 * time.Minute).Format(time.RFC3339), "1m"},
+		// now boundary includes exactly 1m (symmetric with future)
+		{"1m ago", now.Add(-1 * time.Minute).Format(time.RFC3339), "now"},
+
+		// minutes: (1m, 1h)
+		{"61s ago (first non-now)", now.Add(-61 * time.Second).Format(time.RFC3339), "1m"},
 		{"5m ago", now.Add(-5 * time.Minute).Format(time.RFC3339), "5m"},
 		{"59m ago", now.Add(-59 * time.Minute).Format(time.RFC3339), "59m"},
 
@@ -50,6 +53,7 @@ func TestFormatRelDate(t *testing.T) {
 		{"future exactly 1m", now.Add(1 * time.Minute).Format(time.RFC3339), "now"},
 
 		// future: beyond 1 min -> MM-DD
+		{"future 61s (first non-now)", now.Add(61 * time.Second).Format(time.RFC3339), "04-13"},
 		{"future >1m same year", now.Add(2 * time.Minute).Format(time.RFC3339), "04-13"},
 		{"future >1m different year", time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC).Format(time.RFC3339), "27-01-15"},
 	}
