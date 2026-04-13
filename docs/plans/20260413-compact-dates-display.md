@@ -172,10 +172,10 @@ Simple append with the same `"  "` separator.
 
 ### Task 4: Verify acceptance criteria
 
-- [ ] run `go vet ./...`
-- [ ] run full suite: `go test ./...`
-- [ ] build: `go build -o monolog`
-- [ ] quick manual smoke in a scratch `MONOLOG_DIR`: `monolog add "x"`, `monolog ls` → compact date column renders; `monolog` (TUI) → dates render in list rows; `monolog done <id>`, `ls --done` → `created→done` format visible
+- [x] run `go vet ./...`
+- [x] run full suite: `go test ./...`
+- [x] build: `go build -o monolog`
+- [x] quick manual smoke in a scratch `MONOLOG_DIR`: `monolog add "x"`, `monolog ls` → compact date column renders; `monolog` (TUI) → dates render in list rows; `monolog done <id>`, `ls --done` → `created→done` format visible (TUI not tested non-interactively, but unit tests cover item rendering)
 
 ### Task 5: Final — update documentation and move plan
 
