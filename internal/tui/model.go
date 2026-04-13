@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -117,11 +118,12 @@ func (i item) Description() string {
 
 func (i item) FilterValue() string { return i.task.Title }
 
-// itemDelegate wraps list.DefaultDelegate so the grabbed task can be rendered
-// with distinct styles (different color than the normal cursor highlight) to
-// signal that it's being moved. A pointer to Model lets Render consult the
-// current mode; in modeGrab the selected row (which is always the grabbed
-// task) gets the grabStyles swap-in.
+// itemDelegate wraps list.DefaultDelegate to apply context-dependent styling.
+// A pointer to Model lets Render consult the current mode and task state.
+// Render decision tree (first match wins):
+//   - grab: in modeGrab the selected row uses orange grabStyles to signal it's being moved.
+//   - active: tasks with the "active" tag use green activeStyles (both selected and unselected).
+//   - base: all other tasks use the default delegate styles.
 type itemDelegate struct {
 	base         list.DefaultDelegate
 	grabStyles   list.DefaultItemStyles
@@ -267,7 +269,7 @@ func (m *Model) reloadTab(idx int) error {
 
 // reloadActive refreshes the activeTasks slice from the store.
 func (m *Model) reloadActive() error {
-	tasks, err := m.store.List(store.ListOptions{Tag: model.ActiveTag})
+	tasks, err := m.store.List(store.ListOptions{Tag: model.ActiveTag, Status: "open"})
 	if err != nil {
 		return fmt.Errorf("list active tasks: %w", err)
 	}
@@ -422,6 +424,7 @@ func (m *Model) doneSelected() tea.Cmd {
 	}
 	t := *task
 	t.Status = "done"
+	t.SetActive(false)
 	t.UpdatedAt = now()
 	return m.saveCmd(t, fmt.Sprintf("done: %s", t.Title), fmt.Sprintf("Completed: %s", t.Title))
 }
@@ -546,7 +549,9 @@ func (m *Model) openRetag() tea.Cmd {
 	m.modalTask = &t
 	m.mode = modeRetag
 	m.input.Placeholder = "tag1, tag2"
-	m.input.SetValue(strings.Join(t.Tags, ", "))
+	// Filter out the reserved active tag so the user only sees their own tags.
+	// Active state is preserved separately via wasActive/SetActive in updateRetag.
+	m.input.SetValue(strings.Join(visibleTags(t.Tags), ", "))
 	m.input.CursorEnd()
 	m.input.Focus()
 	return textinput.Blink
@@ -639,12 +644,14 @@ type editableFields struct {
 }
 
 // marshalTaskForEdit renders a task into the YAML shown in the editor.
+// The reserved "active" tag is filtered out so the user only sees their own
+// tags; active state is preserved separately in applyEditedYAML.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
 	return yaml.Marshal(editableFields{
 		Title:    t.Title,
 		Body:     t.Body,
 		Schedule: t.Schedule,
-		Tags:     t.Tags,
+		Tags:     visibleTags(t.Tags),
 	})
 }
 
@@ -667,10 +674,12 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 		return model.Task{}, err
 	}
 	out := orig
+	wasActive := orig.IsActive()
 	out.Title = edit.Title
 	out.Body = edit.Body
 	out.Schedule = scheduleDate
 	out.Tags = edit.Tags
+	out.SetActive(wasActive)
 	out.UpdatedAt = now.UTC().Format(time.RFC3339)
 	return out, nil
 }
@@ -903,6 +912,9 @@ func (m *Model) commitGrab() tea.Cmd {
 	if t.Status == "" {
 		t.Status = "open"
 	}
+	if t.Status == "done" {
+		t.SetActive(false)
+	}
 	t.UpdatedAt = now()
 
 	// Compute the new Position from the grabbed task's in-memory neighbors
@@ -1111,9 +1123,12 @@ func (m *Model) activePanelView() string {
 	if len(m.activeTasks) == 0 {
 		return ""
 	}
+	// Border (2) + padding (2) + ShortID (8) + separator (2) = 14 chars of chrome.
+	titleWidth := m.width - 14
 	var lines []string
 	for _, t := range m.activeTasks {
-		lines = append(lines, fmt.Sprintf("%s  %s", display.ShortID(t.ID), t.Title))
+		title := truncateTitle(t.Title, titleWidth)
+		lines = append(lines, fmt.Sprintf("%s  %s", display.ShortID(t.ID), title))
 	}
 	content := strings.Join(lines, "\n")
 	return lipgloss.NewStyle().
@@ -1124,13 +1139,14 @@ func (m *Model) activePanelView() string {
 }
 
 // activePanelHeight returns the rendered line count of the active panel. Returns
-// 0 when there are no active tasks (panel hidden).
+// 0 when there are no active tasks (panel hidden). Computed from the slice
+// length directly to avoid rendering the panel twice (once here, once in View).
+// Structure: 1 top border + len(activeTasks) content lines + 1 bottom border.
 func (m *Model) activePanelHeight() int {
-	panel := m.activePanelView()
-	if panel == "" {
+	if len(m.activeTasks) == 0 {
 		return 0
 	}
-	return lipgloss.Height(panel)
+	return len(m.activeTasks) + 2
 }
 
 // recomputeLayout recalculates list sizes based on the current terminal
@@ -1189,7 +1205,7 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  s sync  q quit")
+		return helpStyle.Render("←/→ tabs  1-6 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  s sync  q quit")
 	case modeGrab:
 		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
 	case modeReschedule:
@@ -1253,6 +1269,33 @@ func now() string {
 
 // sanitizeTags splits a comma-separated string into tags, trimming and
 // dropping empties. Duplicates preserved in input order (caller's choice).
+// visibleTags returns a copy of tags with the reserved ActiveTag filtered out.
+// Used when displaying tags to the user (retag modal, edit YAML) so the
+// internal active marker is hidden; active state is preserved separately.
+func visibleTags(tags []string) []string {
+	var out []string
+	for _, tag := range tags {
+		if tag != model.ActiveTag {
+			out = append(out, tag)
+		}
+	}
+	return out
+}
+
+// truncateTitle shortens s to width runes, appending "…" if truncated.
+// If width <= 0 (e.g., terminal size not yet known), returns s unchanged.
+func truncateTitle(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	n := utf8.RuneCountInString(s)
+	if n <= width {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:width-1]) + "…"
+}
+
 func sanitizeTags(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil

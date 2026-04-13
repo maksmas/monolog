@@ -388,7 +388,13 @@ func TestFormatTasks_ActiveMarker(t *testing.T) {
 
 	var buf bytes.Buffer
 	FormatTasks(&buf, tasks, fixedNow)
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	// Split on newline directly (do not TrimSpace — it strips the leading
+	// "  " active-marker prefix on inactive rows). Drop trailing empty
+	// elements from the final newline, matching the LongTitleAlignment pattern.
+	lines := strings.Split(buf.String(), "\n")
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d:\n%s", len(lines), buf.String())

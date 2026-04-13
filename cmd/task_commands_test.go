@@ -193,6 +193,53 @@ func TestDoneCommand_DoubleDone(t *testing.T) {
 	}
 }
 
+func TestDone_DeactivatesTask(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Active then done")
+
+	// Activate the task first via edit --active=true.
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --active=true error = %v", err)
+	}
+
+	// Verify it's active.
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after activate")
+	}
+	if !task.IsActive() {
+		t.Fatal("task should be active before done")
+	}
+
+	// Mark as done.
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("done command error = %v\noutput: %s", err, buf.String())
+	}
+
+	// Verify task is done AND no longer active.
+	task, ok = getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after done")
+	}
+	if task.Status != "done" {
+		t.Errorf("Status: got %q, want %q", task.Status, "done")
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after done — done must auto-deactivate")
+	}
+}
+
 func TestDoneCommand_ErrorNoArgs(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

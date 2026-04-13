@@ -35,6 +35,7 @@ func newDoneCmd() *cobra.Command {
 			}
 
 			task.Status = "done"
+			task.SetActive(false)
 			task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
 			if err := s.Update(task); err != nil {

@@ -960,6 +960,53 @@ func TestTUI_RetagPreservesActive(t *testing.T) {
 	}
 }
 
+// --- done deactivates active tests -------------------------------------------
+
+func TestTUI_DKeyOnActiveTaskDeactivates(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "active task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Verify the task starts active.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Fatal("task should be active before done")
+	}
+
+	// Verify it appears in the active panel before done.
+	if len(m.activeTasks) != 1 {
+		t.Fatalf("activeTasks = %d, want 1", len(m.activeTasks))
+	}
+
+	// Press 'd' to mark done.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Verify on disk: task is done AND no longer active.
+	task, err = m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("Status: got %q, want %q", task.Status, "done")
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after done — done must auto-deactivate")
+	}
+
+	// Active panel should no longer contain the task.
+	if len(m.activeTasks) != 0 {
+		t.Errorf("activeTasks = %d, want 0 after done", len(m.activeTasks))
+	}
+}
+
 // --- active delegate styling tests -------------------------------------------
 
 func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
@@ -1174,6 +1221,163 @@ func TestActivePanel_ShrinksListHeight(t *testing.T) {
 	if heightBefore-heightAfter != panelH {
 		t.Errorf("list height difference should equal panel height: before=%d after=%d panelH=%d diff=%d",
 			heightBefore, heightAfter, panelH, heightBefore-heightAfter)
+	}
+}
+
+func TestActivePanel_HeightMatchesRendered(t *testing.T) {
+	// Verify the fast activePanelHeight() matches lipgloss.Height(activePanelView())
+	// so the two never drift apart.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first active", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second active", Status: "open", Schedule: "today",
+			Position: 2000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	fast := m.activePanelHeight()
+	rendered := lipgloss.Height(m.activePanelView())
+	if fast != rendered {
+		t.Errorf("activePanelHeight() = %d, lipgloss.Height(activePanelView()) = %d; they must match", fast, rendered)
+	}
+}
+
+func TestActivePanel_TruncatesLongTitles(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	longTitle := strings.Repeat("x", 200)
+	m := newTestModel(t,
+		model.Task{ID: "01AAAAAA", Title: longTitle, Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	width := 60
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+	panelLines := strings.Split(panel, "\n")
+	for _, line := range panelLines {
+		lineLen := len([]rune(line))
+		if lineLen > width {
+			t.Errorf("panel line exceeds terminal width (%d): got %d runes: %q", width, lineLen, line)
+		}
+	}
+}
+
+// --- grab-to-Done auto-deactivation test ------------------------------------
+
+func TestGrab_RightIntoDoneOnActiveTaskDeactivates(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "active grab done", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Verify task starts active.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Fatal("task should be active before grab")
+	}
+
+	// Grab (m), then navigate right to Done tab (5 presses: Today->Tomorrow->Week->Month->Someday->Done).
+	m, _ = key(t, m, "m")
+	for i := 0; i < 5; i++ {
+		m, _ = key(t, m, "right")
+	}
+	if m.activeTab != 5 {
+		t.Fatalf("activeTab = %d, want 5 (Done)", m.activeTab)
+	}
+
+	// Drop with enter.
+	_, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+
+	// Verify on disk: task is done AND no longer active.
+	task, err = m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("Status = %q, want done", task.Status)
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after grab-to-Done — commitGrab must auto-deactivate")
+	}
+
+	// Active panel should be empty.
+	if len(m.activeTasks) != 0 {
+		t.Errorf("activeTasks = %d, want 0 after grab-to-Done", len(m.activeTasks))
+	}
+}
+
+// --- YAML edit active-tag tests ---------------------------------------------
+
+func TestTUI_YAMLEditOmitsActiveFromYAML(t *testing.T) {
+	task := model.Task{
+		ID: "01A", Title: "yaml test", Status: "open", Schedule: "today",
+		Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	data, err := marshalTaskForEdit(task)
+	if err != nil {
+		t.Fatalf("marshalTaskForEdit: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "active") {
+		t.Errorf("marshalTaskForEdit should omit 'active' tag from YAML, got:\n%s", content)
+	}
+	if !strings.Contains(content, "work") {
+		t.Errorf("marshalTaskForEdit should include 'work' tag, got:\n%s", content)
+	}
+}
+
+func TestTUI_YAMLEditPreservesActive(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "yaml active", Status: "open", Schedule: "today",
+		Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	// Simulate editing: YAML with a new tag but no "active" (since it's hidden).
+	edited := []byte("title: yaml active\nschedule: today\ntags:\n- work\n- personal\n")
+	got, err := applyEditedYAML(orig, edited, time.Now())
+	if err != nil {
+		t.Fatalf("applyEditedYAML: %v", err)
+	}
+	if !got.IsActive() {
+		t.Errorf("task should still be active after YAML edit, tags = %v", got.Tags)
+	}
+	// Verify the new tag is present.
+	hasPersonal := false
+	for _, tag := range got.Tags {
+		if tag == "personal" {
+			hasPersonal = true
+		}
+	}
+	if !hasPersonal {
+		t.Errorf("expected 'personal' tag after edit, got %v", got.Tags)
+	}
+}
+
+// --- retag prefill test ------------------------------------------------------
+
+func TestTUI_RetagPrefillOmitsActive(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "prefill test", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Open retag modal.
+	m, _ = key(t, m, "t")
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	// The input should only show "work", not "active, work".
+	val := m.input.Value()
+	if strings.Contains(val, "active") {
+		t.Errorf("retag input should not contain 'active', got %q", val)
+	}
+	if !strings.Contains(val, "work") {
+		t.Errorf("retag input should contain 'work', got %q", val)
 	}
 }
 
