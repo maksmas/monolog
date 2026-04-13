@@ -39,16 +39,35 @@ func newSyncCmd() *cobra.Command {
 				return nil
 			}
 
-			// Step 3: Pull and push
+			// Step 3: Pull; on rebase conflicts, auto-resolve by picking the
+			// task version with the later UpdatedAt (see git.ResolveConflicts).
+			resolved := 0
 			if err := git.PullRebase(repoPath); err != nil {
-				return fmt.Errorf("pull: %w", err)
+				rebasing, rbErr := git.IsRebasing(repoPath)
+				if rbErr != nil || !rebasing {
+					return fmt.Errorf("pull: %w", err)
+				}
+				n, resErr := git.ResolveConflicts(repoPath)
+				if resErr != nil {
+					_ = git.RebaseAbort(repoPath)
+					return fmt.Errorf("resolve conflicts: %w", resErr)
+				}
+				if err := git.RebaseContinue(repoPath); err != nil {
+					_ = git.RebaseAbort(repoPath)
+					return fmt.Errorf("rebase continue: %w", err)
+				}
+				resolved = n
 			}
 
 			if err := git.Push(repoPath); err != nil {
 				return fmt.Errorf("push: %w", err)
 			}
 
-			fmt.Fprintln(cmd.OutOrStdout(), "Synced")
+			if resolved > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Synced (auto-resolved %d conflicts)\n", resolved)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Synced")
+			}
 			return nil
 		},
 	}

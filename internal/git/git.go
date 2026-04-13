@@ -1,12 +1,18 @@
 package git
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mmaksmas/monolog/internal/model"
 )
+
+// tasksPrefix is the repo-relative path prefix of task JSON files.
+const tasksPrefix = ".monolog/tasks/"
 
 // Init initializes a new monolog repository at the given path.
 // It creates the directory structure (.monolog/tasks/, .monolog/config.json, .gitignore),
@@ -143,6 +149,124 @@ func PullRebase(repoPath string) error {
 // Push runs git push.
 func Push(repoPath string) error {
 	return run(repoPath, "git", "push")
+}
+
+// IsRebasing returns true if the repository is currently in the middle of a
+// rebase (either standard or merge-based). Used after a failed PullRebase to
+// decide whether to attempt automatic conflict resolution.
+func IsRebasing(repoPath string) (bool, error) {
+	for _, d := range []string{"rebase-merge", "rebase-apply"} {
+		p := filepath.Join(repoPath, ".git", d)
+		if _, err := os.Stat(p); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// RebaseContinue runs `git rebase --continue`. Disables the commit-message
+// editor so it doesn't hang in non-interactive contexts.
+func RebaseContinue(repoPath string) error {
+	cmd := exec.Command("git", "-c", "core.editor=true", "rebase", "--continue")
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git rebase --continue: %w\n%s", err, out)
+	}
+	return nil
+}
+
+// RebaseAbort runs `git rebase --abort`.
+func RebaseAbort(repoPath string) error {
+	return run(repoPath, "git", "rebase", "--abort")
+}
+
+// ResolveConflicts picks a winner for each unmerged task file: the side with
+// the later UpdatedAt wins; on a modify-vs-delete conflict the modified side
+// wins (data preservation). Resolved files are written to disk and staged.
+// Returns the number of files resolved.
+//
+// Returns an error if any unmerged path is not under .monolog/tasks/, if a
+// conflicted task file can't be parsed as JSON, or if both sides are missing.
+// Timestamps are RFC3339 strings, which sort correctly lexicographically;
+// on a tie "ours" wins (deterministic).
+func ResolveConflicts(repoPath string) (int, error) {
+	paths, err := unmergedPaths(repoPath)
+	if err != nil {
+		return 0, err
+	}
+	resolved := 0
+	for _, p := range paths {
+		if !strings.HasPrefix(p, tasksPrefix) || !strings.HasSuffix(p, ".json") {
+			return resolved, fmt.Errorf("unmerged non-task file: %s", p)
+		}
+		ours, oursErr := gitShow(repoPath, ":2:"+p)
+		theirs, theirsErr := gitShow(repoPath, ":3:"+p)
+		oursPresent := oursErr == nil && len(ours) > 0
+		theirsPresent := theirsErr == nil && len(theirs) > 0
+
+		var winner []byte
+		switch {
+		case !oursPresent && !theirsPresent:
+			return resolved, fmt.Errorf("both sides missing for %s", p)
+		case oursPresent && !theirsPresent:
+			winner = ours // modify-vs-delete: modify wins
+		case !oursPresent && theirsPresent:
+			winner = theirs
+		default:
+			var ot, tt model.Task
+			if err := json.Unmarshal(ours, &ot); err != nil {
+				return resolved, fmt.Errorf("parse ours %s: %w", p, err)
+			}
+			if err := json.Unmarshal(theirs, &tt); err != nil {
+				return resolved, fmt.Errorf("parse theirs %s: %w", p, err)
+			}
+			if tt.UpdatedAt > ot.UpdatedAt {
+				winner = theirs
+			} else {
+				winner = ours
+			}
+		}
+
+		absPath := filepath.Join(repoPath, p)
+		if err := os.WriteFile(absPath, winner, 0o644); err != nil {
+			return resolved, fmt.Errorf("write resolved %s: %w", p, err)
+		}
+		if err := run(repoPath, "git", "add", p); err != nil {
+			return resolved, fmt.Errorf("git add %s: %w", p, err)
+		}
+		resolved++
+	}
+	return resolved, nil
+}
+
+// unmergedPaths returns the repo-relative paths of files in unmerged state.
+func unmergedPaths(repoPath string) ([]string, error) {
+	cmd := exec.Command("git", "diff", "--name-only", "--diff-filter=U")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff --name-only --diff-filter=U: %w", err)
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return paths, nil
+}
+
+// gitShow returns the content of a git object at the given ref (e.g. ":2:path"
+// for the "ours" side of a conflict). Returns (nil, error) if the ref doesn't
+// exist, which the caller uses to detect deleted-on-that-side.
+func gitShow(repoPath, ref string) ([]byte, error) {
+	cmd := exec.Command("git", "show", ref)
+	cmd.Dir = repoPath
+	return cmd.Output()
 }
 
 // run executes a command in the given directory, returning an error with

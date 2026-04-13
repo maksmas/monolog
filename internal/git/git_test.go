@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mmaksmas/monolog/internal/model"
 )
 
 func TestInit_CreatesDirectoryStructure(t *testing.T) {
@@ -332,6 +334,272 @@ func TestSyncCommit(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "sync") {
 		t.Errorf("expected commit message to contain 'sync', got: %s", string(out))
+	}
+}
+
+// writeTaskJSON writes a task as JSON to the given absolute path.
+func writeTaskJSON(t *testing.T, path string, task model.Task) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	data, err := json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+// readTaskJSON reads a task from an absolute path.
+func readTaskJSON(t *testing.T, path string) model.Task {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var task model.Task
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return task
+}
+
+// gitRun runs a git command in the repo and fails the test on error.
+func gitRun(t *testing.T, repoPath string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repoPath}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// baseBranch returns the current branch name.
+func baseBranch(t *testing.T, repoPath string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repoPath, "branch", "--show-current").Output()
+	if err != nil {
+		t.Fatalf("get branch: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// setupConflictRepo creates a monolog repo with an initial task on the base
+// branch, then returns the repo path, the base branch name, and the
+// repo-relative path to the task file. Callers create conflicts by diverging
+// from this state.
+func setupConflictRepo(t *testing.T, taskID string) (repoPath, branch, taskPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	repoPath = filepath.Join(dir, "repo")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	branch = baseBranch(t, repoPath)
+
+	taskPath = filepath.Join(".monolog", "tasks", taskID+".json")
+	abs := filepath.Join(repoPath, taskPath)
+	writeTaskJSON(t, abs, model.Task{
+		ID: taskID, Title: "base", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-10T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "base")
+	return
+}
+
+func TestResolveConflicts_PicksLaterUpdatedAt(t *testing.T) {
+	repoPath, branch, taskPath := setupConflictRepo(t, "01A")
+	abs := filepath.Join(repoPath, taskPath)
+
+	// Feature branch with LATER UpdatedAt.
+	gitRun(t, repoPath, "checkout", "-b", "feature")
+	writeTaskJSON(t, abs, model.Task{
+		ID: "01A", Title: "from feature", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "feature change")
+
+	// Base branch with EARLIER UpdatedAt.
+	gitRun(t, repoPath, "checkout", branch)
+	writeTaskJSON(t, abs, model.Task{
+		ID: "01A", Title: "from main", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "main change")
+
+	// Merge -> expected to fail with conflict.
+	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", "feature")
+	if err := mergeCmd.Run(); err == nil {
+		t.Fatalf("expected merge to conflict")
+	}
+
+	n, err := ResolveConflicts(repoPath)
+	if err != nil {
+		t.Fatalf("ResolveConflicts: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("resolved count = %d, want 1", n)
+	}
+
+	got := readTaskJSON(t, abs)
+	if got.UpdatedAt != "2026-04-12T00:00:00Z" {
+		t.Errorf("winner UpdatedAt = %q, want feature's %q", got.UpdatedAt, "2026-04-12T00:00:00Z")
+	}
+	if got.Title != "from feature" {
+		t.Errorf("winner Title = %q, want %q", got.Title, "from feature")
+	}
+}
+
+func TestResolveConflicts_TieBreaksToOurs(t *testing.T) {
+	repoPath, branch, taskPath := setupConflictRepo(t, "01T")
+	abs := filepath.Join(repoPath, taskPath)
+
+	// Both sides share the SAME UpdatedAt but different Title.
+	gitRun(t, repoPath, "checkout", "-b", "feature")
+	writeTaskJSON(t, abs, model.Task{
+		ID: "01T", Title: "from feature", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "feature change")
+
+	gitRun(t, repoPath, "checkout", branch)
+	writeTaskJSON(t, abs, model.Task{
+		ID: "01T", Title: "from main", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "main change")
+
+	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", "feature")
+	if err := mergeCmd.Run(); err == nil {
+		t.Fatalf("expected merge to conflict")
+	}
+
+	n, err := ResolveConflicts(repoPath)
+	if err != nil {
+		t.Fatalf("ResolveConflicts: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("resolved count = %d, want 1", n)
+	}
+	got := readTaskJSON(t, abs)
+	if got.Title != "from main" {
+		t.Errorf("tie should pick ours; got Title = %q, want %q", got.Title, "from main")
+	}
+}
+
+func TestResolveConflicts_DeleteVsModify_ModifyWins(t *testing.T) {
+	repoPath, branch, taskPath := setupConflictRepo(t, "01D")
+	abs := filepath.Join(repoPath, taskPath)
+
+	// Feature branch: modify.
+	gitRun(t, repoPath, "checkout", "-b", "feature")
+	writeTaskJSON(t, abs, model.Task{
+		ID: "01D", Title: "modified on feature", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "modify on feature")
+
+	// Base: delete.
+	gitRun(t, repoPath, "checkout", branch)
+	if err := os.Remove(abs); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "delete on main")
+
+	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", "feature")
+	if err := mergeCmd.Run(); err == nil {
+		t.Fatalf("expected merge to conflict (modify/delete)")
+	}
+
+	n, err := ResolveConflicts(repoPath)
+	if err != nil {
+		t.Fatalf("ResolveConflicts: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("resolved count = %d, want 1", n)
+	}
+	got := readTaskJSON(t, abs)
+	if got.Title != "modified on feature" {
+		t.Errorf("modify should win over delete; got Title = %q", got.Title)
+	}
+}
+
+func TestResolveConflicts_NonTaskPathErrors(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "repo")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	branch := baseBranch(t, repoPath)
+
+	// Create a non-task file at repo root, committed on both sides differently.
+	nonTask := "notes.txt"
+	abs := filepath.Join(repoPath, nonTask)
+	if err := os.WriteFile(abs, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gitRun(t, repoPath, "add", nonTask)
+	gitRun(t, repoPath, "commit", "-m", "base")
+
+	gitRun(t, repoPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(abs, []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gitRun(t, repoPath, "add", nonTask)
+	gitRun(t, repoPath, "commit", "-m", "feature")
+
+	gitRun(t, repoPath, "checkout", branch)
+	if err := os.WriteFile(abs, []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gitRun(t, repoPath, "add", nonTask)
+	gitRun(t, repoPath, "commit", "-m", "main")
+
+	mergeCmd := exec.Command("git", "-C", repoPath, "merge", "--no-edit", "feature")
+	if err := mergeCmd.Run(); err == nil {
+		t.Fatalf("expected merge to conflict")
+	}
+
+	if _, err := ResolveConflicts(repoPath); err == nil {
+		t.Error("expected error for unmerged non-task file")
+	}
+}
+
+func TestResolveConflicts_NoConflicts(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "repo")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	n, err := ResolveConflicts(repoPath)
+	if err != nil {
+		t.Fatalf("ResolveConflicts on clean repo: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("resolved = %d, want 0 on clean repo", n)
+	}
+}
+
+func TestIsRebasing_False(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "repo")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	rebasing, err := IsRebasing(repoPath)
+	if err != nil {
+		t.Fatalf("IsRebasing: %v", err)
+	}
+	if rebasing {
+		t.Error("clean repo should not be rebasing")
 	}
 }
 

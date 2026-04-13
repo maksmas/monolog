@@ -145,6 +145,95 @@ func TestSyncCommand_NoRemoteStillCommitsLocally(t *testing.T) {
 	}
 }
 
+func TestSyncCommand_AutoResolvesConflict(t *testing.T) {
+	// Two clones share a bare remote. Both edit the same task; the second
+	// to sync must auto-resolve by picking the later UpdatedAt.
+	tmp := t.TempDir()
+	remoteDir := filepath.Join(tmp, "remote.git")
+	if err := exec.Command("git", "init", "--bare", remoteDir).Run(); err != nil {
+		t.Fatalf("init bare: %v", err)
+	}
+
+	// Clone A: initial setup, creates a task, pushes.
+	dirA := filepath.Join(tmp, "a")
+	initTestRepo(t, dirA)
+	if err := exec.Command("git", "-C", dirA, "remote", "add", "origin", remoteDir).Run(); err != nil {
+		t.Fatalf("add remote A: %v", err)
+	}
+	branchOut, err := exec.Command("git", "-C", dirA, "branch", "--show-current").Output()
+	if err != nil {
+		t.Fatalf("get branch: %v", err)
+	}
+	branch := strings.TrimSpace(string(branchOut))
+
+	taskID := "01SHARED"
+	taskPath := filepath.Join(".monolog", "tasks", taskID+".json")
+	absA := filepath.Join(dirA, taskPath)
+	if err := os.WriteFile(absA, []byte(`{"id":"01SHARED","title":"base","status":"open","position":1000,"source":"cli","schedule":"today","created_at":"2026-04-10T00:00:00Z","updated_at":"2026-04-10T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatalf("write task A: %v", err)
+	}
+	if err := exec.Command("git", "-C", dirA, "add", taskPath).Run(); err != nil {
+		t.Fatalf("add A: %v", err)
+	}
+	if err := exec.Command("git", "-C", dirA, "commit", "-m", "add task").Run(); err != nil {
+		t.Fatalf("commit A: %v", err)
+	}
+	if err := exec.Command("git", "-C", dirA, "push", "-u", "origin", branch).Run(); err != nil {
+		t.Fatalf("initial push A: %v", err)
+	}
+
+	// Clone B: clones from remote and modifies the task with an OLDER
+	// UpdatedAt, then pushes. (Doesn't need to be the monolog layout since
+	// we only use it to produce a diverged commit on the remote.)
+	dirB := filepath.Join(tmp, "b")
+	if err := exec.Command("git", "clone", remoteDir, dirB).Run(); err != nil {
+		t.Fatalf("clone B: %v", err)
+	}
+	absB := filepath.Join(dirB, taskPath)
+	if err := os.WriteFile(absB, []byte(`{"id":"01SHARED","title":"from B","status":"open","position":1000,"source":"cli","schedule":"today","created_at":"2026-04-10T00:00:00Z","updated_at":"2026-04-11T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatalf("write task B: %v", err)
+	}
+	if err := exec.Command("git", "-C", dirB, "add", taskPath).Run(); err != nil {
+		t.Fatalf("add B: %v", err)
+	}
+	if err := exec.Command("git", "-C", dirB, "commit", "-m", "B edit").Run(); err != nil {
+		t.Fatalf("commit B: %v", err)
+	}
+	if err := exec.Command("git", "-C", dirB, "push").Run(); err != nil {
+		t.Fatalf("push B: %v", err)
+	}
+
+	// Now A modifies the same task with a LATER UpdatedAt and runs sync —
+	// pull will conflict on rebase; auto-resolver should pick A's version.
+	if err := os.WriteFile(absA, []byte(`{"id":"01SHARED","title":"from A","status":"open","position":1000,"source":"cli","schedule":"today","created_at":"2026-04-10T00:00:00Z","updated_at":"2026-04-12T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatalf("rewrite task A: %v", err)
+	}
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"sync"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("sync should auto-resolve: %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "auto-resolved") {
+		t.Errorf("expected 'auto-resolved' in output, got: %s", output)
+	}
+
+	// Verify A's task now has its own UpdatedAt (the later one won).
+	data, err := os.ReadFile(absA)
+	if err != nil {
+		t.Fatalf("read final task: %v", err)
+	}
+	if !strings.Contains(string(data), `"from A"`) {
+		t.Errorf("A's version (later UpdatedAt) should have won, got: %s", string(data))
+	}
+}
+
 func TestSyncCommand_WithRemote(t *testing.T) {
 	// Set up a bare remote repo
 	tmp := t.TempDir()
