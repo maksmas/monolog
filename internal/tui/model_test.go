@@ -71,6 +71,10 @@ func toKeyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyLeft}
 	case "right":
 		return tea.KeyMsg{Type: tea.KeyRight}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
 	case "enter":
@@ -384,6 +388,155 @@ func TestModal_EscCancels(t *testing.T) {
 	m, _ = key(t, m, "esc")
 	if m.mode != modeNormal {
 		t.Errorf("mode after esc = %v, want normal", m.mode)
+	}
+}
+
+// --- grab mode tests -------------------------------------------------------
+
+func TestGrab_UpDownReordersWithinTab(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01C", Title: "third", Status: "open", Schedule: "today",
+			Position: 3000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Select the 2nd item (second), grab, move down.
+	m.lists[0].Select(1)
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+	m, _ = key(t, m, "down")
+	if m.grabIndex != 2 {
+		t.Errorf("grabIndex = %d, want 2", m.grabIndex)
+	}
+
+	// Drop.
+	_, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should dispatch save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.mode != modeNormal {
+		t.Errorf("mode after drop = %v, want normal", m.mode)
+	}
+
+	// Verify "second" is now below "third" in today's bucket.
+	task, err := m.store.GetByPrefix("01B")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	third, _ := m.store.GetByPrefix("01C")
+	if task.Position <= third.Position {
+		t.Errorf("second should have moved below third: second=%.1f third=%.1f",
+			task.Position, third.Position)
+	}
+}
+
+func TestGrab_RightMovesToNextTabAndSetsSchedule(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "move to tomorrow", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, _ = key(t, m, "right") // -> Tomorrow tab
+	if m.activeTab != 1 {
+		t.Errorf("activeTab = %d, want 1", m.activeTab)
+	}
+	_, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+
+	task, _ := m.store.GetByPrefix("01A")
+	if task.Schedule != "tomorrow" {
+		t.Errorf("Schedule = %q, want tomorrow", task.Schedule)
+	}
+}
+
+func TestGrab_RightIntoDoneSetsStatusDone(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "complete via grab", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	// Today -> Tomorrow -> Week -> Someday -> Done = 4 right presses.
+	for i := 0; i < 4; i++ {
+		m, _ = key(t, m, "right")
+	}
+	if m.activeTab != 4 {
+		t.Fatalf("activeTab = %d, want 4 (Done)", m.activeTab)
+	}
+	_, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+
+	task, _ := m.store.GetByPrefix("01A")
+	if task.Status != "done" {
+		t.Errorf("Status = %q, want done", task.Status)
+	}
+	// Schedule preserved (Done tab has no schedule filter).
+	if task.Schedule != "today" {
+		t.Errorf("Schedule = %q, want today (preserved)", task.Schedule)
+	}
+}
+
+func TestGrab_LeftOutOfDoneSetsStatusOpen(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "uncomplete", Status: "done", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Jump to Done tab, grab, press left (-> Someday).
+	m, _ = key(t, m, "5")
+	m, _ = key(t, m, "m")
+	m, _ = key(t, m, "left")
+	if m.activeTab != 3 {
+		t.Fatalf("activeTab = %d, want 3 (Someday)", m.activeTab)
+	}
+	_, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+
+	task, _ := m.store.GetByPrefix("01A")
+	if task.Status != "open" {
+		t.Errorf("Status = %q, want open", task.Status)
+	}
+	if task.Schedule != "someday" {
+		t.Errorf("Schedule = %q, want someday", task.Schedule)
+	}
+}
+
+func TestGrab_EscCancels(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "stay put", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, _ = key(t, m, "right") // in-memory move
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc = %v, want normal", m.mode)
+	}
+	// Task should still be on Today (esc reloads from disk).
+	task, _ := m.store.GetByPrefix("01A")
+	if task.Schedule != "today" {
+		t.Errorf("Schedule = %q, want today (unchanged)", task.Schedule)
+	}
+}
+
+func TestGrab_UpDownNoOpInDoneTab(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "done one", Status: "done", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-12T00:00:00Z"},
+		model.Task{ID: "01B", Title: "done two", Status: "done", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "5") // Done tab
+	m.lists[4].Select(1)
+	m, _ = key(t, m, "m")
+	before := m.grabIndex
+	m, _ = key(t, m, "up")
+	if m.grabIndex != before {
+		t.Errorf("grabIndex should not change in Done tab, before=%d after=%d",
+			before, m.grabIndex)
 	}
 }
 

@@ -24,6 +24,7 @@ type mode int
 
 const (
 	modeNormal mode = iota
+	modeGrab
 	modeReschedule
 	modeRetag
 	modeAdd
@@ -63,10 +64,16 @@ type Model struct {
 
 	// Modal state. All modals reuse a single text input; only one modal can
 	// be open at a time.
-	mode         mode
-	input        textinput.Model
-	modalTask    *model.Task // task the modal is acting on (nil for add)
+	mode          mode
+	input         textinput.Model
+	modalTask     *model.Task // task the modal is acting on (nil for add)
 	rescheduleSub int         // 0 = picker, 1 = custom date input
+
+	// Grab-mode state. grabTask is a working copy whose Position is not
+	// mutated until Enter drop; its current visual location is (activeTab,
+	// grabIndex) within that tab's list items.
+	grabTask  *model.Task
+	grabIndex int
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
@@ -201,10 +208,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.mode != modeNormal {
+		switch m.mode {
+		case modeNormal:
+			return m.updateNormal(msg)
+		case modeGrab:
+			return m.updateGrab(msg)
+		default:
 			return m.updateModal(msg)
 		}
-		return m.updateNormal(msg)
 	}
 	return m, nil
 }
@@ -239,6 +250,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openAdd()
 	case "x":
 		return m, m.openConfirmDelete()
+	case "m":
+		m.openGrab()
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -454,6 +468,241 @@ func (m *Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// --- grab mode -------------------------------------------------------------
+
+// openGrab begins a grab on the selected task. No-op if nothing is selected.
+func (m *Model) openGrab() {
+	task := m.selectedTask()
+	if task == nil {
+		m.statusMsg = "no task selected"
+		return
+	}
+	t := *task
+	m.grabTask = &t
+	m.grabIndex = m.lists[m.activeTab].Index()
+	m.mode = modeGrab
+}
+
+// updateGrab handles key events while a task is grabbed.
+func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.grabTask == nil {
+		m.mode = modeNormal
+		return m, nil
+	}
+
+	switch msg.Type {
+	case tea.KeyEsc:
+		// Cancel: discard in-memory moves, reload from disk.
+		m.mode = modeNormal
+		m.grabTask = nil
+		if err := m.reloadAll(); err != nil {
+			m.err = err
+		}
+		return m, nil
+	case tea.KeyEnter:
+		return m, m.commitGrab()
+	}
+
+	switch msg.String() {
+	case "up":
+		if m.tabs[m.activeTab].status == "done" {
+			return m, nil // reorder disabled in Done tab
+		}
+		m.moveGrabWithin(-1)
+	case "down":
+		if m.tabs[m.activeTab].status == "done" {
+			return m, nil
+		}
+		m.moveGrabWithin(+1)
+	case "left":
+		m.moveGrabAcross(-1)
+	case "right":
+		m.moveGrabAcross(+1)
+	case "g":
+		if m.tabs[m.activeTab].status == "done" {
+			return m, nil
+		}
+		m.moveGrabTo(0)
+	case "G":
+		if m.tabs[m.activeTab].status == "done" {
+			return m, nil
+		}
+		items := m.lists[m.activeTab].Items()
+		if len(items) > 0 {
+			m.moveGrabTo(len(items) - 1)
+		}
+	}
+	return m, nil
+}
+
+// moveGrabWithin swaps the grabbed task with its neighbor in the current tab.
+// delta is -1 (up) or +1 (down). No-op at the boundary.
+func (m *Model) moveGrabWithin(delta int) {
+	items := m.lists[m.activeTab].Items()
+	target := m.grabIndex + delta
+	if target < 0 || target >= len(items) {
+		return
+	}
+	items[m.grabIndex], items[target] = items[target], items[m.grabIndex]
+	m.lists[m.activeTab].SetItems(items)
+	m.grabIndex = target
+	m.lists[m.activeTab].Select(m.grabIndex)
+}
+
+// moveGrabTo moves the grabbed task to a specific index in the current tab.
+func (m *Model) moveGrabTo(idx int) {
+	items := m.lists[m.activeTab].Items()
+	if idx < 0 || idx >= len(items) || idx == m.grabIndex {
+		return
+	}
+	grabbed := items[m.grabIndex]
+	// Remove, then insert at target.
+	items = append(items[:m.grabIndex], items[m.grabIndex+1:]...)
+	// Re-insert — note len has decreased by 1.
+	if idx > len(items) {
+		idx = len(items)
+	}
+	items = append(items[:idx], append([]list.Item{grabbed}, items[idx:]...)...)
+	m.lists[m.activeTab].SetItems(items)
+	m.grabIndex = idx
+	m.lists[m.activeTab].Select(idx)
+}
+
+// moveGrabAcross moves the grabbed task to the adjacent tab (delta ±1). The
+// task is inserted at the bottom of the new tab's in-memory list. Wraps
+// around the tab bar.
+func (m *Model) moveGrabAcross(delta int) {
+	if m.grabTask == nil {
+		return
+	}
+	// Remove from current tab.
+	items := m.lists[m.activeTab].Items()
+	if m.grabIndex < 0 || m.grabIndex >= len(items) {
+		return
+	}
+	grabbed := items[m.grabIndex]
+	items = append(items[:m.grabIndex], items[m.grabIndex+1:]...)
+	m.lists[m.activeTab].SetItems(items)
+
+	// Advance active tab.
+	m.activeTab = (m.activeTab + delta + len(m.tabs)) % len(m.tabs)
+
+	// Insert at bottom of new tab.
+	newItems := append(m.lists[m.activeTab].Items(), grabbed)
+	m.lists[m.activeTab].SetItems(newItems)
+	m.grabIndex = len(newItems) - 1
+	m.lists[m.activeTab].Select(m.grabIndex)
+}
+
+// commitGrab persists the grabbed task's final schedule/status/position and
+// exits grab mode. Runs ordering.Rebalance if the bucket's gaps got too tight.
+func (m *Model) commitGrab() tea.Cmd {
+	if m.grabTask == nil {
+		return nil
+	}
+	targetTab := m.tabs[m.activeTab]
+	t := *m.grabTask
+
+	// Apply the target tab's semantics.
+	if targetTab.schedule != "" {
+		t.Schedule = targetTab.schedule
+	}
+	t.Status = targetTab.status
+	if t.Status == "" {
+		t.Status = "open"
+	}
+	t.UpdatedAt = now()
+
+	// Compute the new Position from the grabbed task's in-memory neighbors
+	// within the destination tab. The Done tab has no meaningful ordering
+	// (sorted by UpdatedAt), but we still keep a sane Position value.
+	if targetTab.status != "done" {
+		t.Position = m.computeGrabPosition(t.ID)
+	}
+
+	// Snapshot the destination bucket for a possible rebalance check. We do
+	// this before the update call so we have the sibling positions on disk.
+	repoPath := m.repoPath
+	storeRef := m.store
+
+	// Reset grab UI state now; a successful save will reload everything.
+	m.mode = modeNormal
+	m.grabTask = nil
+
+	return func() tea.Msg {
+		if err := storeRef.Update(t); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
+		}
+		// Rebalance the destination bucket if adjacent gaps got too tight.
+		if t.Status == "open" {
+			siblings, err := storeRef.List(store.ListOptions{Schedule: t.Schedule, Status: "open"})
+			if err == nil && ordering.NeedsRebalance(siblings) {
+				rebalanced := ordering.Rebalance(siblings)
+				for _, rt := range rebalanced {
+					// Apply only if position changed (to avoid noisy writes).
+					// Easiest: just update all.
+					if err := storeRef.Update(rt); err != nil {
+						return taskSavedMsg{err: fmt.Errorf("rebalance: %w", err)}
+					}
+				}
+			}
+		}
+		if err := git.AutoCommit(repoPath, fmt.Sprintf("move: %s", t.Title), taskRelPath(t.ID)); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		return taskSavedMsg{status: fmt.Sprintf("Moved: %s", t.Title)}
+	}
+}
+
+// computeGrabPosition derives a Position value for the grabbed task based on
+// its neighbors in the current (destination) tab's in-memory list. The
+// grabbed task is identified by id so we skip its own placeholder position.
+func (m *Model) computeGrabPosition(grabbedID string) float64 {
+	items := m.lists[m.activeTab].Items()
+
+	// Collect neighbor positions, ignoring the grabbed item.
+	var prev, next *model.Task
+	var grabIdx int = -1
+	for i, it := range items {
+		task := it.(item).task
+		if task.ID == grabbedID {
+			grabIdx = i
+			continue
+		}
+	}
+	if grabIdx == -1 {
+		// Shouldn't happen — grabbed task must be in the items.
+		return ordering.DefaultSpacing
+	}
+	for i := grabIdx - 1; i >= 0; i-- {
+		task := items[i].(item).task
+		if task.ID != grabbedID {
+			t := task
+			prev = &t
+			break
+		}
+	}
+	for i := grabIdx + 1; i < len(items); i++ {
+		task := items[i].(item).task
+		if task.ID != grabbedID {
+			t := task
+			next = &t
+			break
+		}
+	}
+
+	switch {
+	case prev == nil && next == nil:
+		return ordering.DefaultSpacing
+	case prev == nil:
+		return next.Position / 2.0
+	case next == nil:
+		return prev.Position + ordering.DefaultSpacing
+	default:
+		return ordering.PositionBetween(prev.Position, next.Position)
+	}
+}
+
 // --- command dispatchers ---------------------------------------------------
 
 // saveCmd dispatches a store.Update + git.AutoCommit as a tea.Cmd.
@@ -536,7 +785,8 @@ func (m *Model) View() string {
 	header := lipgloss.JoinHorizontal(lipgloss.Top, tabBar...)
 
 	var body string
-	if m.mode == modeNormal {
+	if m.mode == modeNormal || m.mode == modeGrab {
+		// Grab mode keeps the list view; the help bar signals the mode.
 		body = m.lists[m.activeTab].View()
 	} else {
 		body = m.modalView()
@@ -555,7 +805,9 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-5 jump  d done  r reschedule  t tag  a add  x del  q quit")
+		return helpStyle.Render("←/→ tabs  1-5 jump  d done  r reschedule  t tag  a add  x del  m grab  q quit")
+	case modeGrab:
+		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
 			return helpStyle.Render("1 today  2 tomorrow  3 week  4 someday  5 custom  esc cancel")
