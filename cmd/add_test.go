@@ -145,6 +145,7 @@ func TestAddCommand_ScheduleValues(t *testing.T) {
 		{input: "today"},
 		{input: "tomorrow"},
 		{input: "week"},
+		{input: "month"},
 		{input: "someday"},
 		{input: "2026-04-15", want: "2026-04-15"},
 	}

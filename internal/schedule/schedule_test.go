@@ -29,6 +29,7 @@ func TestParse_Buckets(t *testing.T) {
 		Today:    "2026-04-13",
 		Tomorrow: "2026-04-14",
 		Week:     "2026-04-20",
+		Month:    "2026-05-14",
 		Someday:  "2027-04-13",
 	}
 	for in, want := range cases {
@@ -71,7 +72,9 @@ func TestBucket_FromISODate(t *testing.T) {
 		{"2026-04-14", Tomorrow},
 		{"2026-04-15", Week},    // today+2
 		{"2026-04-20", Week},    // today+7 boundary
-		{"2026-04-21", Someday}, // today+8
+		{"2026-04-21", Month},   // today+8
+		{"2026-05-14", Month},   // today+31 boundary
+		{"2026-05-15", Someday}, // today+32
 		{"2027-04-13", Someday},
 	}
 	for _, tc := range cases {
@@ -82,7 +85,7 @@ func TestBucket_FromISODate(t *testing.T) {
 }
 
 func TestBucket_LegacyStrings(t *testing.T) {
-	for _, b := range []string{Today, Tomorrow, Week, Someday} {
+	for _, b := range []string{Today, Tomorrow, Week, Month, Someday} {
 		if got := Bucket(b, fixedNow); got != b {
 			t.Errorf("Bucket(%q) = %q, want %q", b, got, b)
 		}
@@ -114,6 +117,7 @@ func TestNormalize_LegacyStrings(t *testing.T) {
 		Today:    "2026-04-13",
 		Tomorrow: "2026-04-14",
 		Week:     "2026-04-20",
+		Month:    "2026-05-14",
 		Someday:  "2027-04-13",
 	}
 	for in, want := range cases {

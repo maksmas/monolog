@@ -78,7 +78,7 @@ func newAddCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", "Schedule: today, tomorrow, week, someday, or ISO date")
+	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", "Schedule: today, tomorrow, week, month, someday, or ISO date")
 	cmd.Flags().StringVarP(&tags, "tags", "t", "", "Comma-separated tags")
 
 	return cmd
