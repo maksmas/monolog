@@ -329,6 +329,8 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "m":
 		m.openGrab()
 		return m, nil
+	case "a":
+		return m, m.toggleActive()
 	case "e":
 		return m, m.openEdit()
 	case "s":
@@ -386,6 +388,23 @@ func (m *Model) doneSelected() tea.Cmd {
 	t.Status = "done"
 	t.UpdatedAt = now()
 	return m.saveCmd(t, fmt.Sprintf("done: %s", t.Title), fmt.Sprintf("Completed: %s", t.Title))
+}
+
+// --- active toggle ---------------------------------------------------------
+
+func (m *Model) toggleActive() tea.Cmd {
+	task := m.selectedTask()
+	if task == nil {
+		return nil
+	}
+	t := *task
+	t.SetActive(!t.IsActive())
+	t.UpdatedAt = now()
+	label := "activated"
+	if !t.IsActive() {
+		label = "deactivated"
+	}
+	return m.saveCmd(t, fmt.Sprintf("edit: %s", t.Title), fmt.Sprintf("%s: %s", label, t.Title))
 }
 
 // --- reschedule modal ------------------------------------------------------
@@ -504,7 +523,9 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		t := *m.modalTask
+		wasActive := t.IsActive()
 		t.Tags = sanitizeTags(m.input.Value())
+		t.SetActive(wasActive)
 		t.UpdatedAt = now()
 		m.closeModal()
 		return m, m.saveCmd(t,
@@ -1080,7 +1101,7 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r resched  t tag  c add  x del  m grab  s sync  q quit")
+		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  s sync  q quit")
 	case modeGrab:
 		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
 	case modeReschedule:

@@ -196,14 +196,14 @@ else:                                    base styles
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] write failing test `TestTUI_AKeyTogglesActive` — focus a task, press `a`, run resulting cmd, verify task on disk has `ActiveTag`; press `a` again, verify tag removed
-- [ ] write failing test `TestTUI_AKeyNoOpWhenListEmpty` — pressing `a` on empty tab does not panic and emits no save cmd
-- [ ] write failing test `TestTUI_RetagPreservesActive` — open the retag (`t`) modal on an active task, type a different tag set, save; the `active` tag must still be present on disk
-- [ ] add `toggleActiveCmd` helper mirroring `doneSelected`'s in-memory copy pattern (copy selected item → SetActive → store.Update → git.AutoCommit → return `taskSavedMsg`)
-- [ ] in `updateNormal`, bind `a` → `m.toggleActive(currentSelected)`
-- [ ] in the retag save path (where `t.Tags = sanitizeTags(...)` happens): capture `wasActive := t.IsActive()` before, call `t.SetActive(wasActive)` after
-- [ ] append `a active` to the normal-mode help line
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] write failing test `TestTUI_AKeyTogglesActive` — focus a task, press `a`, run resulting cmd, verify task on disk has `ActiveTag`; press `a` again, verify tag removed
+- [x] write failing test `TestTUI_AKeyNoOpWhenListEmpty` — pressing `a` on empty tab does not panic and emits no save cmd
+- [x] write failing test `TestTUI_RetagPreservesActive` — open the retag (`t`) modal on an active task, type a different tag set, save; the `active` tag must still be present on disk
+- [x] add `toggleActiveCmd` helper mirroring `doneSelected`'s in-memory copy pattern (copy selected item → SetActive → store.Update → git.AutoCommit → return `taskSavedMsg`)
+- [x] in `updateNormal`, bind `a` → `m.toggleActive(currentSelected)`
+- [x] in the retag save path (where `t.Tags = sanitizeTags(...)` happens): capture `wasActive := t.IsActive()` before, call `t.SetActive(wasActive)` after
+- [x] append `a active` to the normal-mode help line
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 7: TUI — green styling for active tasks in the list
 

@@ -872,6 +872,94 @@ func TestItemDescription_NoTimestampsOmitsDate(t *testing.T) {
 	}
 }
 
+// --- active toggle tests -----------------------------------------------------
+
+func TestTUI_AKeyTogglesActive(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "toggle me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Press 'a' to activate.
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Error("task should be active after first 'a' press")
+	}
+
+	// Press 'a' again to deactivate.
+	m, cmd = key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("second 'a' should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err = m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after second 'a' press")
+	}
+}
+
+func TestTUI_AKeyNoOpWhenListEmpty(t *testing.T) {
+	m := newTestModel(t) // no tasks
+	m, cmd := key(t, m, "a")
+	if cmd != nil {
+		t.Error("a on empty list should return nil cmd, got non-nil")
+	}
+}
+
+func TestTUI_RetagPreservesActive(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "active tag me", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active", "old"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Open retag modal.
+	m, _ = key(t, m, "t")
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	// Clear input and type new tags (without "active").
+	// The input is pre-filled with "active, old"; we need to clear it.
+	m.input.SetValue("work, personal")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should save")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Errorf("task should still be active after retag, tags = %v", task.Tags)
+	}
+	// Also verify new tags are present.
+	hasWork := false
+	hasPersonal := false
+	for _, tag := range task.Tags {
+		if tag == "work" {
+			hasWork = true
+		}
+		if tag == "personal" {
+			hasPersonal = true
+		}
+	}
+	if !hasWork || !hasPersonal {
+		t.Errorf("expected work and personal tags, got %v", task.Tags)
+	}
+}
+
 func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	// When now is zero (e.g. item constructed without setting now),
 	// a valid CreatedAt is far in the future relative to time.Time{},
