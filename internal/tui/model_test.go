@@ -540,6 +540,109 @@ func TestGrab_UpDownNoOpInDoneTab(t *testing.T) {
 	}
 }
 
+// --- edit (YAML) tests -----------------------------------------------------
+
+func TestMarshalTaskForEdit_RoundTrip(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "buy milk", Body: "2% from the corner store",
+		Status: "open", Schedule: "today", Position: 1000,
+		Tags:      []string{"home", "urgent"},
+		CreatedAt: "2026-04-13T00:00:00Z", UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := applyEditedYAML(orig, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Title != orig.Title || got.Body != orig.Body ||
+		got.Schedule != orig.Schedule || !sliceEq(got.Tags, orig.Tags) {
+		t.Errorf("round-trip mismatch: %+v", got)
+	}
+	// ID and Status are not modifiable — they must be preserved.
+	if got.ID != orig.ID {
+		t.Errorf("ID changed: %q -> %q", orig.ID, got.ID)
+	}
+	if got.Status != orig.Status {
+		t.Errorf("Status changed: %q -> %q", orig.Status, got.Status)
+	}
+}
+
+func TestMarshalTaskForEdit_HidesInternalFields(t *testing.T) {
+	// The YAML shown to the user should not leak id/position/status.
+	orig := model.Task{
+		ID: "01A", Title: "t", Status: "open", Schedule: "today",
+		Position: 1234.5,
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(data)
+	for _, forbidden := range []string{"01A", "1234", "open"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("YAML should not contain %q, got:\n%s", forbidden, s)
+		}
+	}
+}
+
+func TestApplyEditedYAML_RejectsEmptyTitle(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	_, err := applyEditedYAML(orig, []byte("title: \"\"\nschedule: today\n"))
+	if err == nil {
+		t.Error("expected error for empty title")
+	}
+}
+
+func TestApplyEditedYAML_RejectsInvalidSchedule(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	_, err := applyEditedYAML(orig, []byte("title: new\nschedule: nextmonth\n"))
+	if err == nil {
+		t.Error("expected error for invalid schedule")
+	}
+}
+
+func TestApplyEditedYAML_AcceptsISODate(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: 2026-05-20\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Schedule != "2026-05-20" {
+		t.Errorf("Schedule = %q, want 2026-05-20", got.Schedule)
+	}
+}
+
+func TestApplyEditedYAML_UpdatesUpdatedAt(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today",
+		UpdatedAt: "2026-04-10T00:00:00Z"}
+	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: today\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.UpdatedAt == orig.UpdatedAt {
+		t.Error("UpdatedAt should be refreshed after edit")
+	}
+}
+
+func TestResolveEditor(t *testing.T) {
+	t.Setenv("VISUAL", "emacs")
+	t.Setenv("EDITOR", "nano")
+	if got := resolveEditor(); got != "emacs" {
+		t.Errorf("VISUAL preferred: got %q, want emacs", got)
+	}
+	t.Setenv("VISUAL", "")
+	if got := resolveEditor(); got != "nano" {
+		t.Errorf("EDITOR fallback: got %q, want nano", got)
+	}
+	t.Setenv("EDITOR", "")
+	if got := resolveEditor(); got != "vi" {
+		t.Errorf("vi fallback: got %q, want vi", got)
+	}
+}
+
 func TestSanitizeTags(t *testing.T) {
 	tests := []struct {
 		in   string

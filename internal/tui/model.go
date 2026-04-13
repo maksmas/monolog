@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"gopkg.in/yaml.v3"
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
@@ -253,6 +256,8 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "m":
 		m.openGrab()
 		return m, nil
+	case "e":
+		return m, m.openEdit()
 	}
 
 	var cmd tea.Cmd
@@ -466,6 +471,128 @@ func (m *Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Anything else cancels.
 	m.closeModal()
 	return m, nil
+}
+
+// --- edit (shell out to $EDITOR) -------------------------------------------
+
+// editableFields is the subset of a Task that's exposed to the user in the
+// YAML edit buffer. ID, Status, Position, and timestamps are not shown.
+type editableFields struct {
+	Title    string   `yaml:"title"`
+	Body     string   `yaml:"body,omitempty"`
+	Schedule string   `yaml:"schedule"`
+	Tags     []string `yaml:"tags,omitempty"`
+}
+
+// marshalTaskForEdit renders a task into the YAML shown in the editor.
+func marshalTaskForEdit(t model.Task) ([]byte, error) {
+	return yaml.Marshal(editableFields{
+		Title:    t.Title,
+		Body:     t.Body,
+		Schedule: t.Schedule,
+		Tags:     t.Tags,
+	})
+}
+
+// applyEditedYAML parses the user's edited YAML and returns an updated task.
+// Returns an error if the YAML is invalid, the title is empty, or the
+// schedule is not one of the allowed values.
+func applyEditedYAML(orig model.Task, data []byte) (model.Task, error) {
+	var edit editableFields
+	if err := yaml.Unmarshal(data, &edit); err != nil {
+		return model.Task{}, fmt.Errorf("parse YAML: %w", err)
+	}
+	edit.Title = strings.TrimSpace(edit.Title)
+	edit.Schedule = strings.TrimSpace(edit.Schedule)
+	if edit.Title == "" {
+		return model.Task{}, fmt.Errorf("title cannot be empty")
+	}
+	if !isValidSchedule(edit.Schedule) {
+		return model.Task{}, fmt.Errorf("invalid schedule %q (want today/tomorrow/week/someday or YYYY-MM-DD)", edit.Schedule)
+	}
+	out := orig
+	out.Title = edit.Title
+	out.Body = edit.Body
+	out.Schedule = edit.Schedule
+	out.Tags = edit.Tags
+	out.UpdatedAt = now()
+	return out, nil
+}
+
+// isValidSchedule is the TUI-local schedule validation (keeps the tui
+// package free of the cmd helpers).
+func isValidSchedule(s string) bool {
+	switch s {
+	case "today", "tomorrow", "week", "someday":
+		return true
+	}
+	return isISODate(s)
+}
+
+// resolveEditor returns the editor command: $VISUAL, $EDITOR, or "vi".
+func resolveEditor() string {
+	if v := os.Getenv("VISUAL"); v != "" {
+		return v
+	}
+	if e := os.Getenv("EDITOR"); e != "" {
+		return e
+	}
+	return "vi"
+}
+
+// openEdit writes the selected task as YAML to a temp file and launches
+// $EDITOR to edit it. On editor exit the file is re-parsed and the task
+// updated + committed.
+func (m *Model) openEdit() tea.Cmd {
+	task := m.selectedTask()
+	if task == nil {
+		m.statusMsg = "no task selected"
+		return nil
+	}
+	data, err := marshalTaskForEdit(*task)
+	if err != nil {
+		m.err = fmt.Errorf("marshal: %w", err)
+		return nil
+	}
+	tmp, err := os.CreateTemp("", fmt.Sprintf("monolog-edit-%s-*.yaml", display.ShortID(task.ID)))
+	if err != nil {
+		m.err = fmt.Errorf("tempfile: %w", err)
+		return nil
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		m.err = fmt.Errorf("write tempfile: %w", err)
+		return nil
+	}
+	_ = tmp.Close()
+	path := tmp.Name()
+
+	origTask := *task
+	repoPath := m.repoPath
+	storeRef := m.store
+
+	c := exec.Command(resolveEditor(), path)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		defer os.Remove(path)
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("editor: %w", err)}
+		}
+		edited, err := os.ReadFile(path)
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("read edited: %w", err)}
+		}
+		updated, err := applyEditedYAML(origTask, edited)
+		if err != nil {
+			return taskSavedMsg{err: err}
+		}
+		if err := storeRef.Update(updated); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
+		}
+		if err := git.AutoCommit(repoPath, fmt.Sprintf("edit: %s", updated.Title), taskRelPath(updated.ID)); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		return taskSavedMsg{status: fmt.Sprintf("Edited: %s", updated.Title)}
+	})
 }
 
 // --- grab mode -------------------------------------------------------------
@@ -805,7 +932,7 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-5 jump  d done  r reschedule  t tag  a add  x del  m grab  q quit")
+		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r reschedule  t tag  a add  x del  m grab  q quit")
 	case modeGrab:
 		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
 	case modeReschedule:
