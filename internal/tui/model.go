@@ -540,15 +540,20 @@ func isValidSchedule(s string) bool {
 	return isISODate(s)
 }
 
-// resolveEditor returns the editor command: $VISUAL, $EDITOR, or "vi".
-func resolveEditor() string {
-	if v := os.Getenv("VISUAL"); v != "" {
-		return v
+// resolveEditor returns the editor command split into binary + args:
+// $VISUAL, $EDITOR, or "vi". Splitting on whitespace lets users set
+// flags like EDITOR="idea --wait" or EDITOR="code -w", which is required
+// for editors whose launchers are otherwise non-blocking — without a
+// wait flag, the temp file is deleted before the editor can read it.
+func resolveEditor() []string {
+	v := os.Getenv("VISUAL")
+	if v == "" {
+		v = os.Getenv("EDITOR")
 	}
-	if e := os.Getenv("EDITOR"); e != "" {
-		return e
+	if v == "" {
+		v = "vi"
 	}
-	return "vi"
+	return strings.Fields(v)
 }
 
 // openEdit writes the selected task as YAML to a temp file and launches
@@ -582,7 +587,8 @@ func (m *Model) openEdit() tea.Cmd {
 	repoPath := m.repoPath
 	storeRef := m.store
 
-	c := exec.Command(resolveEditor(), path)
+	editor := resolveEditor()
+	c := exec.Command(editor[0], append(editor[1:], path)...)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		defer os.Remove(path)
 		if err != nil {

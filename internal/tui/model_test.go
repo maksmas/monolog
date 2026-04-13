@@ -631,16 +631,23 @@ func TestApplyEditedYAML_UpdatesUpdatedAt(t *testing.T) {
 func TestResolveEditor(t *testing.T) {
 	t.Setenv("VISUAL", "emacs")
 	t.Setenv("EDITOR", "nano")
-	if got := resolveEditor(); got != "emacs" {
-		t.Errorf("VISUAL preferred: got %q, want emacs", got)
+	if got := resolveEditor(); len(got) != 1 || got[0] != "emacs" {
+		t.Errorf("VISUAL preferred: got %q, want [emacs]", got)
 	}
 	t.Setenv("VISUAL", "")
-	if got := resolveEditor(); got != "nano" {
-		t.Errorf("EDITOR fallback: got %q, want nano", got)
+	if got := resolveEditor(); len(got) != 1 || got[0] != "nano" {
+		t.Errorf("EDITOR fallback: got %q, want [nano]", got)
 	}
 	t.Setenv("EDITOR", "")
-	if got := resolveEditor(); got != "vi" {
-		t.Errorf("vi fallback: got %q, want vi", got)
+	if got := resolveEditor(); len(got) != 1 || got[0] != "vi" {
+		t.Errorf("vi fallback: got %q, want [vi]", got)
+	}
+	// Editors with flags (e.g. "idea --wait", "code -w") must be split
+	// so exec.Command can find the binary and pass the flags through.
+	t.Setenv("EDITOR", "idea --wait")
+	got := resolveEditor()
+	if len(got) != 2 || got[0] != "idea" || got[1] != "--wait" {
+		t.Errorf("EDITOR with flags: got %q, want [idea --wait]", got)
 	}
 }
 
