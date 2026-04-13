@@ -1,0 +1,46 @@
+// Package tui implements the interactive terminal UI for monolog.
+// It is launched when `monolog` is invoked without a subcommand, and offers
+// tab-organized viewing and editing of tasks across schedule buckets.
+package tui
+
+import (
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/mmaksmas/monolog/internal/store"
+)
+
+// Run launches the interactive TUI. Blocks until the user quits.
+func Run(s *store.Store, repoPath string) error {
+	m, err := newModel(s, repoPath)
+	if err != nil {
+		return err
+	}
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err = p.Run()
+	return err
+}
+
+// Styles used across the TUI. Kept in one place so the palette stays cohesive.
+var (
+	tabBorder = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
+
+	tabStyle = lipgloss.NewStyle().
+			Padding(0, 2).
+			Foreground(lipgloss.Color("244"))
+
+	activeTabStyle = lipgloss.NewStyle().
+			Padding(0, 2).
+			Bold(true).
+			Foreground(lipgloss.Color("231")).
+			Background(lipgloss.Color("62"))
+
+	statusStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Padding(0, 1)
+
+	helpStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Padding(0, 1)
+)
