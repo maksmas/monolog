@@ -2,17 +2,37 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mmaksmas/monolog/internal/display"
+	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/ordering"
 	"github.com/mmaksmas/monolog/internal/store"
 )
+
+// mode tracks whether the TUI is in normal navigation or inside a modal.
+type mode int
+
+const (
+	modeNormal mode = iota
+	modeReschedule
+	modeRetag
+	modeAdd
+	modeConfirmDelete
+)
+
+// reschedulePresets are the quick-pick buckets shown in the reschedule modal.
+// The index + 1 is the numeric shortcut key.
+var reschedulePresets = []string{"today", "tomorrow", "week", "someday"}
 
 // tab describes one schedule bucket shown in the TUI.
 type tab struct {
@@ -21,7 +41,7 @@ type tab struct {
 	status   string // "open" for regular tabs, "done" for the Done tab
 }
 
-// tabs used in the UI, in display order. 1-5 shortcut keys index into this.
+// defaultTabs are the tabs shown in display order. 1-5 shortcut keys index in.
 var defaultTabs = []tab{
 	{label: "Today", schedule: "today", status: "open"},
 	{label: "Tomorrow", schedule: "tomorrow", status: "open"},
@@ -41,8 +61,15 @@ type Model struct {
 
 	width, height int
 
-	statusMsg string // transient bottom-line message; cleared on next keypress
-	err       error  // sticky error surfaced in status bar
+	// Modal state. All modals reuse a single text input; only one modal can
+	// be open at a time.
+	mode         mode
+	input        textinput.Model
+	modalTask    *model.Task // task the modal is acting on (nil for add)
+	rescheduleSub int         // 0 = picker, 1 = custom date input
+
+	statusMsg string // transient status line
+	err       error  // sticky error; cleared on next successful action
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -50,9 +77,7 @@ type item struct {
 	task model.Task
 }
 
-func (i item) Title() string {
-	return i.task.Title
-}
+func (i item) Title() string { return i.task.Title }
 
 func (i item) Description() string {
 	parts := []string{display.ShortID(i.task.ID)}
@@ -67,18 +92,27 @@ func (i item) Description() string {
 
 func (i item) FilterValue() string { return i.task.Title }
 
+// taskSavedMsg is dispatched back to Update after an async mutation completes.
+type taskSavedMsg struct {
+	status string
+	err    error
+}
+
 // newModel constructs a Model and loads initial task data for each tab.
 func newModel(s *store.Store, repoPath string) (*Model, error) {
+	ti := textinput.New()
+	ti.CharLimit = 512
+
 	m := &Model{
 		store:    s,
 		repoPath: repoPath,
 		tabs:     defaultTabs,
 		lists:    make([]list.Model, len(defaultTabs)),
+		input:    ti,
 	}
 
 	for i, t := range m.tabs {
-		delegate := list.NewDefaultDelegate()
-		l := list.New(nil, delegate, 0, 0)
+		l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 		l.Title = t.label
 		l.SetShowStatusBar(false)
 		l.SetShowHelp(false)
@@ -93,8 +127,7 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 	return m, nil
 }
 
-// reloadAll refreshes every tab from the store. Used on startup and after
-// actions that may have changed tasks in multiple buckets.
+// reloadAll refreshes every tab from the store.
 func (m *Model) reloadAll() error {
 	for i := range m.tabs {
 		if err := m.reloadTab(i); err != nil {
@@ -107,13 +140,11 @@ func (m *Model) reloadAll() error {
 // reloadTab refreshes a single tab's list from the store.
 func (m *Model) reloadTab(idx int) error {
 	t := m.tabs[idx]
-	opts := store.ListOptions{Schedule: t.schedule, Status: t.status}
-	tasks, err := m.store.List(opts)
+	tasks, err := m.store.List(store.ListOptions{Schedule: t.schedule, Status: t.status})
 	if err != nil {
 		return fmt.Errorf("list tasks: %w", err)
 	}
-	// Done tab is sorted by completion (UpdatedAt) descending rather than
-	// position, which has no meaning for completed tasks.
+	// Done tab: completion-time order (later UpdatedAt first), not position.
 	if t.status == "done" {
 		sort.SliceStable(tasks, func(i, j int) bool {
 			return tasks[i].UpdatedAt > tasks[j].UpdatedAt
@@ -127,20 +158,26 @@ func (m *Model) reloadTab(idx int) error {
 	return nil
 }
 
-// Init is the Bubble Tea Init hook. No background work yet; the constructor
-// already loaded initial data.
-func (m *Model) Init() tea.Cmd {
-	return nil
+// selectedTask returns a pointer to the currently selected task in the
+// active tab, or nil if the tab is empty.
+func (m *Model) selectedTask() *model.Task {
+	sel := m.lists[m.activeTab].SelectedItem()
+	if sel == nil {
+		return nil
+	}
+	it := sel.(item)
+	return &it.task
 }
 
-// Update routes a tea.Msg through the model, producing state transitions and
-// potentially a follow-up tea.Cmd.
+// Init is the Bubble Tea Init hook.
+func (m *Model) Init() tea.Cmd { return nil }
+
+// Update routes a tea.Msg through the model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Reserve rows for tab bar (1), borders/padding (2), help bar (1).
 		listH := msg.Height - 4
 		if listH < 3 {
 			listH = 3
@@ -150,35 +187,343 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
-		// Clear transient status on any keypress.
-		m.statusMsg = ""
-
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "left", "h", "shift+tab":
-			m.activeTab = (m.activeTab - 1 + len(m.tabs)) % len(m.tabs)
-			return m, nil
-		case "right", "l", "tab":
-			m.activeTab = (m.activeTab + 1) % len(m.tabs)
-			return m, nil
-		case "1", "2", "3", "4", "5":
-			n := int(msg.String()[0] - '1')
-			if n < len(m.tabs) {
-				m.activeTab = n
-			}
+	case taskSavedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.statusMsg = ""
 			return m, nil
 		}
+		m.err = nil
+		m.statusMsg = msg.status
+		if err := m.reloadAll(); err != nil {
+			m.err = err
+		}
+		return m, nil
+
+	case tea.KeyMsg:
+		if m.mode != modeNormal {
+			return m.updateModal(msg)
+		}
+		return m.updateNormal(msg)
+	}
+	return m, nil
+}
+
+// updateNormal handles keys when no modal is open.
+func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.statusMsg = ""
+
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "left", "shift+tab":
+		m.activeTab = (m.activeTab - 1 + len(m.tabs)) % len(m.tabs)
+		return m, nil
+	case "right", "tab":
+		m.activeTab = (m.activeTab + 1) % len(m.tabs)
+		return m, nil
+	case "1", "2", "3", "4", "5":
+		n := int(msg.String()[0] - '1')
+		if n < len(m.tabs) {
+			m.activeTab = n
+		}
+		return m, nil
+
+	case "d":
+		return m, m.doneSelected()
+	case "r":
+		return m, m.openReschedule()
+	case "t":
+		return m, m.openRetag()
+	case "a":
+		return m, m.openAdd()
+	case "x":
+		return m, m.openConfirmDelete()
 	}
 
-	// Delegate remaining input to the active tab's list.
 	var cmd tea.Cmd
 	m.lists[m.activeTab], cmd = m.lists[m.activeTab].Update(msg)
 	return m, cmd
 }
 
-// View renders the current frame.
+// updateModal routes keys based on the current modal.
+func (m *Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Esc always cancels a modal.
+	if msg.Type == tea.KeyEsc {
+		m.closeModal()
+		return m, nil
+	}
+
+	switch m.mode {
+	case modeReschedule:
+		return m.updateReschedule(msg)
+	case modeRetag:
+		return m.updateRetag(msg)
+	case modeAdd:
+		return m.updateAdd(msg)
+	case modeConfirmDelete:
+		return m.updateConfirmDelete(msg)
+	}
+	return m, nil
+}
+
+// closeModal resets modal state back to normal.
+func (m *Model) closeModal() {
+	m.mode = modeNormal
+	m.modalTask = nil
+	m.rescheduleSub = 0
+	m.input.Blur()
+	m.input.SetValue("")
+}
+
+// --- done action -----------------------------------------------------------
+
+func (m *Model) doneSelected() tea.Cmd {
+	task := m.selectedTask()
+	if task == nil {
+		return nil
+	}
+	if task.Status == "done" {
+		m.statusMsg = "already done"
+		return nil
+	}
+	t := *task
+	t.Status = "done"
+	t.UpdatedAt = now()
+	return m.saveCmd(t, fmt.Sprintf("done: %s", t.Title), fmt.Sprintf("Completed: %s", t.Title))
+}
+
+// --- reschedule modal ------------------------------------------------------
+
+func (m *Model) openReschedule() tea.Cmd {
+	task := m.selectedTask()
+	if task == nil {
+		m.statusMsg = "no task selected"
+		return nil
+	}
+	t := *task
+	m.modalTask = &t
+	m.mode = modeReschedule
+	m.rescheduleSub = 0
+	return nil
+}
+
+func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.rescheduleSub == 0 {
+		// Picker step.
+		switch msg.String() {
+		case "1", "2", "3", "4":
+			n := int(msg.String()[0] - '1')
+			return m, m.applyReschedule(reschedulePresets[n])
+		case "5":
+			m.rescheduleSub = 1
+			m.input.Placeholder = "YYYY-MM-DD"
+			m.input.SetValue("")
+			m.input.Focus()
+			return m, textinput.Blink
+		}
+		return m, nil
+	}
+
+	// Custom date input step.
+	switch msg.Type {
+	case tea.KeyEnter:
+		date := strings.TrimSpace(m.input.Value())
+		if !isISODate(date) {
+			m.err = fmt.Errorf("invalid date %q (want YYYY-MM-DD)", date)
+			return m, nil
+		}
+		return m, m.applyReschedule(date)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m *Model) applyReschedule(sched string) tea.Cmd {
+	if m.modalTask == nil {
+		return nil
+	}
+	t := *m.modalTask
+	oldPos := t.Position
+	t.Schedule = sched
+	t.UpdatedAt = now()
+	// Position it at the bottom of the new bucket if the bucket changed.
+	if t.Schedule != m.modalTask.Schedule {
+		others, err := m.store.List(store.ListOptions{Schedule: sched, Status: "open"})
+		if err == nil {
+			// Exclude the moving task itself (it's still in the store with
+			// its old schedule, so wouldn't be in this list anyway).
+			_ = oldPos
+			t.Position = ordering.NextPosition(others)
+		}
+	}
+	m.closeModal()
+	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", t.Title, sched),
+		fmt.Sprintf("Rescheduled: %s -> %s", t.Title, sched))
+}
+
+// --- retag modal -----------------------------------------------------------
+
+func (m *Model) openRetag() tea.Cmd {
+	task := m.selectedTask()
+	if task == nil {
+		m.statusMsg = "no task selected"
+		return nil
+	}
+	t := *task
+	m.modalTask = &t
+	m.mode = modeRetag
+	m.input.Placeholder = "tag1, tag2"
+	m.input.SetValue(strings.Join(t.Tags, ", "))
+	m.input.CursorEnd()
+	m.input.Focus()
+	return textinput.Blink
+}
+
+func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEnter {
+		if m.modalTask == nil {
+			m.closeModal()
+			return m, nil
+		}
+		t := *m.modalTask
+		t.Tags = sanitizeTags(m.input.Value())
+		t.UpdatedAt = now()
+		m.closeModal()
+		return m, m.saveCmd(t,
+			fmt.Sprintf("edit: %s", t.Title),
+			fmt.Sprintf("Retagged: %s", t.Title))
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// --- add modal -------------------------------------------------------------
+
+func (m *Model) openAdd() tea.Cmd {
+	m.mode = modeAdd
+	m.input.Placeholder = "task title"
+	m.input.SetValue("")
+	m.input.Focus()
+	return textinput.Blink
+}
+
+func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEnter {
+		title := strings.TrimSpace(m.input.Value())
+		if title == "" {
+			m.closeModal()
+			return m, nil
+		}
+		m.closeModal()
+		return m, m.createCmd(title)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// --- delete confirm --------------------------------------------------------
+
+func (m *Model) openConfirmDelete() tea.Cmd {
+	task := m.selectedTask()
+	if task == nil {
+		m.statusMsg = "no task selected"
+		return nil
+	}
+	t := *task
+	m.modalTask = &t
+	m.mode = modeConfirmDelete
+	return nil
+}
+
+func (m *Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "y" || msg.String() == "Y" {
+		if m.modalTask == nil {
+			m.closeModal()
+			return m, nil
+		}
+		t := *m.modalTask
+		m.closeModal()
+		return m, m.deleteCmd(t)
+	}
+	// Anything else cancels.
+	m.closeModal()
+	return m, nil
+}
+
+// --- command dispatchers ---------------------------------------------------
+
+// saveCmd dispatches a store.Update + git.AutoCommit as a tea.Cmd.
+func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.store.Update(task); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
+		}
+		if err := git.AutoCommit(m.repoPath, commitMsg, taskRelPath(task.ID)); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		return taskSavedMsg{status: statusMsg}
+	}
+}
+
+// createCmd creates a new task in the current tab's bucket at the bottom.
+func (m *Model) createCmd(title string) tea.Cmd {
+	// Capture active-tab schedule at dispatch time; if user changes tabs
+	// while the cmd is in flight, we still place it in the intended bucket.
+	t := m.tabs[m.activeTab]
+	// "Add" on the Done tab doesn't really make sense; fall back to today.
+	sched := t.schedule
+	if sched == "" {
+		sched = "today"
+	}
+	return func() tea.Msg {
+		existing, err := m.store.List(store.ListOptions{Schedule: sched, Status: "open"})
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("list: %w", err)}
+		}
+		id, err := model.NewID()
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("id: %w", err)}
+		}
+		n := now()
+		task := model.Task{
+			ID:        id,
+			Title:     title,
+			Source:    "tui",
+			Status:    "open",
+			Position:  ordering.NextPosition(existing),
+			Schedule:  sched,
+			CreatedAt: n,
+			UpdatedAt: n,
+		}
+		if err := m.store.Create(task); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("create: %w", err)}
+		}
+		if err := git.AutoCommit(m.repoPath, fmt.Sprintf("add: %s", title), taskRelPath(id)); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		return taskSavedMsg{status: fmt.Sprintf("Added: %s", title)}
+	}
+}
+
+// deleteCmd removes a task and commits the deletion.
+func (m *Model) deleteCmd(task model.Task) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.store.Delete(task.ID); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("delete: %w", err)}
+		}
+		if err := git.AutoCommit(m.repoPath, fmt.Sprintf("rm: %s", task.Title), taskRelPath(task.ID)); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		return taskSavedMsg{status: fmt.Sprintf("Deleted: %s", task.Title)}
+	}
+}
+
+// --- View ------------------------------------------------------------------
+
 func (m *Model) View() string {
 	var tabBar []string
 	for i, t := range m.tabs {
@@ -190,14 +535,104 @@ func (m *Model) View() string {
 	}
 	header := lipgloss.JoinHorizontal(lipgloss.Top, tabBar...)
 
-	body := m.lists[m.activeTab].View()
-
-	help := helpStyle.Render("←/→ tabs  1-5 jump  q quit")
-	if m.err != nil {
-		help = statusStyle.Render("error: " + m.err.Error())
-	} else if m.statusMsg != "" {
-		help = statusStyle.Render(m.statusMsg)
+	var body string
+	if m.mode == modeNormal {
+		body = m.lists[m.activeTab].View()
+	} else {
+		body = m.modalView()
 	}
 
+	help := m.helpLine()
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, help)
+}
+
+func (m *Model) helpLine() string {
+	if m.err != nil {
+		return statusStyle.Render("error: " + m.err.Error())
+	}
+	if m.statusMsg != "" {
+		return statusStyle.Render(m.statusMsg)
+	}
+	switch m.mode {
+	case modeNormal:
+		return helpStyle.Render("←/→ tabs  1-5 jump  d done  r reschedule  t tag  a add  x del  q quit")
+	case modeReschedule:
+		if m.rescheduleSub == 0 {
+			return helpStyle.Render("1 today  2 tomorrow  3 week  4 someday  5 custom  esc cancel")
+		}
+		return helpStyle.Render("enter save  esc cancel")
+	case modeRetag, modeAdd:
+		return helpStyle.Render("enter save  esc cancel")
+	case modeConfirmDelete:
+		return helpStyle.Render("y confirm  anything else cancels")
+	}
+	return ""
+}
+
+func (m *Model) modalView() string {
+	switch m.mode {
+	case modeReschedule:
+		if m.rescheduleSub == 0 {
+			return modalBox("Reschedule:\n\n" +
+				"  1  Today\n" +
+				"  2  Tomorrow\n" +
+				"  3  Week\n" +
+				"  4  Someday\n" +
+				"  5  Custom date...")
+		}
+		return modalBox("Custom date:\n\n" + m.input.View())
+	case modeRetag:
+		return modalBox("Tags (comma-separated):\n\n" + m.input.View())
+	case modeAdd:
+		t := m.tabs[m.activeTab]
+		return modalBox(fmt.Sprintf("Add task to %s:\n\n%s", t.label, m.input.View()))
+	case modeConfirmDelete:
+		if m.modalTask == nil {
+			return ""
+		}
+		return modalBox(fmt.Sprintf("Delete %q?\n\n(y = confirm, anything else cancels)", m.modalTask.Title))
+	}
+	return ""
+}
+
+// modalBox wraps content in a subtle bordered box.
+func modalBox(content string) string {
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2).
+		Render(content)
+}
+
+// --- helpers ---------------------------------------------------------------
+
+func taskRelPath(id string) string {
+	return filepath.Join(".monolog", "tasks", id+".json")
+}
+
+func now() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// sanitizeTags splits a comma-separated string into tags, trimming and
+// dropping empties. Duplicates preserved in input order (caller's choice).
+func sanitizeTags(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	var tags []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			tags = append(tags, p)
+		}
+	}
+	return tags
+}
+
+// isISODate checks whether s is a valid YYYY-MM-DD date.
+func isISODate(s string) bool {
+	_, err := time.Parse("2006-01-02", s)
+	return err == nil
 }
