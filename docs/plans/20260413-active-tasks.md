@@ -131,12 +131,12 @@ else:                                    base styles
 - Modify: `internal/model/task.go`
 - Create: `internal/model/task_test.go`
 
-- [ ] write failing test `TestTask_IsActive` — empty tags, tag present, tag absent among others
-- [ ] write failing test `TestTask_SetActive` — adding when absent, adding when already present (idempotent), removing when present, removing when absent (no-op), order preservation of other tags
-- [ ] add `const ActiveTag = "active"` to `internal/model/task.go`
-- [ ] implement `func (t Task) IsActive() bool`
-- [ ] implement `func (t *Task) SetActive(on bool)`
-- [ ] run `go test ./internal/model/` — must pass before next task
+- [x] write failing test `TestTask_IsActive` — empty tags, tag present, tag absent among others
+- [x] write failing test `TestTask_SetActive` — adding when absent, adding when already present (idempotent), removing when present, removing when absent (no-op), order preservation of other tags
+- [x] add `const ActiveTag = "active"` to `internal/model/task.go`
+- [x] implement `func (t Task) IsActive() bool`
+- [x] implement `func (t *Task) SetActive(on bool)`
+- [x] run `go test ./internal/model/` — must pass before next task
 
 ### Task 2: `ls` `*` marker for active tasks
 

@@ -22,6 +22,38 @@ type Task struct {
 	Tags      []string `json:"tags,omitempty"`
 }
 
+// ActiveTag is the reserved tag name used to mark a task as currently being worked on.
+const ActiveTag = "active"
+
+// IsActive reports whether the task is marked as active.
+func (t Task) IsActive() bool {
+	for _, tag := range t.Tags {
+		if tag == ActiveTag {
+			return true
+		}
+	}
+	return false
+}
+
+// SetActive adds or removes the ActiveTag from the task's tags.
+// Adding is idempotent (no duplicate), and removing preserves the order of other tags.
+func (t *Task) SetActive(on bool) {
+	if on {
+		if !t.IsActive() {
+			t.Tags = append(t.Tags, ActiveTag)
+		}
+		return
+	}
+	// remove
+	out := t.Tags[:0]
+	for _, tag := range t.Tags {
+		if tag != ActiveTag {
+			out = append(out, tag)
+		}
+	}
+	t.Tags = out
+}
+
 // NewID generates a new ULID string.
 // It returns an error if the random source fails.
 func NewID() (string, error) {
