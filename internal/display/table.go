@@ -10,6 +10,10 @@ import (
 	"github.com/mmaksmas/monolog/internal/model"
 )
 
+// titleColWidth is the fixed rune width for the title column in `ls` output.
+// Longer titles are truncated with a trailing "…".
+const titleColWidth = 40
+
 // padRight pads s with spaces to the given width based on rune count;
 // assumes single-column characters. Multi-byte runes like → (U+2192,
 // 3 bytes, 1 rune) are counted as one column, which is correct on most
@@ -21,6 +25,22 @@ func padRight(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-n)
+}
+
+// truncatePad truncates s to width runes (with a trailing ellipsis) if it is
+// too long, or pads it with spaces to exactly width runes otherwise. Width
+// must be >= 1. Like padRight, it assumes single-column characters.
+func truncatePad(s string, width int) string {
+	n := utf8.RuneCountInString(s)
+	if n == width {
+		return s
+	}
+	if n < width {
+		return s + strings.Repeat(" ", width-n)
+	}
+	// Truncate: keep width-1 runes and append "…".
+	runes := []rune(s)
+	return string(runes[:width-1]) + "…"
 }
 
 // ShortID returns the first 8 characters of a task ID, or the full ID if shorter.
@@ -53,11 +73,13 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 
 		dates := FormatTaskDates(now, task)
 
-		// 17-rune pad: worst case is "YY-MM-DD→YY-MM-DD" (17 runes). See TestPadRight_MaxWidthDates.
-		fmt.Fprintf(w, "%-4s %-8s  %-40s %-10s %s %s\n",
+		// Title is truncated/padded to titleColWidth runes so subsequent columns
+		// stay aligned even for long titles. 17-rune pad on dates: worst case is
+		// "YY-MM-DD→YY-MM-DD" (17 runes). See TestPadRight_MaxWidthDates.
+		fmt.Fprintf(w, "%-4s %-8s  %s %-10s %s %s\n",
 			marker,
 			ShortID(task.ID),
-			task.Title,
+			truncatePad(task.Title, titleColWidth),
 			task.Schedule,
 			padRight(dates, 17),
 			tags,

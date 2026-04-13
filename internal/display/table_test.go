@@ -258,6 +258,84 @@ func TestFormatTasks_CrossYearDoneDatesAlignment(t *testing.T) {
 	}
 }
 
+func TestTruncatePad(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		width int
+		want  string
+	}{
+		{"shorter pads", "abc", 5, "abc  "},
+		{"exact width unchanged", "abcde", 5, "abcde"},
+		{"longer truncated with ellipsis", "abcdefgh", 5, "abcd…"},
+		{"multibyte truncation keeps rune boundary", "abcdé fgh", 5, "abcd…"},
+		{"width 1 only ellipsis when too long", "abc", 1, "…"},
+	}
+	for _, tt := range tests {
+		got := truncatePad(tt.in, tt.width)
+		if got != tt.want {
+			t.Errorf("%s: truncatePad(%q, %d) = %q, want %q", tt.name, tt.in, tt.width, got, tt.want)
+		}
+		if runeLen := utf8.RuneCountInString(got); runeLen != tt.width {
+			t.Errorf("%s: truncatePad(%q, %d) has %d runes, want %d", tt.name, tt.in, tt.width, runeLen, tt.width)
+		}
+	}
+}
+
+func TestFormatTasks_LongTitleAlignment(t *testing.T) {
+	// A very long title must not push subsequent columns past their fixed positions.
+	longTitle := strings.Repeat("x", 100)
+	tasks := []model.Task{
+		{
+			ID:       "01AAAAAAAAAAAAAAAAAAAAAAAA",
+			Title:    "short",
+			Schedule: "today",
+			Status:   "open",
+			Position: 1000,
+		},
+		{
+			ID:       "01BBBBBBBBBBBBBBBBBBBBBBBB",
+			Title:    longTitle,
+			Schedule: "today",
+			Status:   "open",
+			Position: 2000,
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow)
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d:\n%s", len(lines), buf.String())
+	}
+
+	// Schedule ("today") should appear at the same rune offset on both lines.
+	// Compare rune offsets, not byte offsets, because "…" is a multi-byte rune.
+	runeIndex := func(s, sub string) int {
+		i := strings.Index(s, sub)
+		if i < 0 {
+			return -1
+		}
+		return utf8.RuneCountInString(s[:i])
+	}
+	idx0 := runeIndex(lines[0], "today")
+	idx1 := runeIndex(lines[1], "today")
+	if idx0 == -1 || idx1 == -1 {
+		t.Fatalf("'today' missing from a line: %q / %q", lines[0], lines[1])
+	}
+	if idx0 != idx1 {
+		t.Errorf("schedule column misaligned: short-title line has 'today' at rune %d, long-title line at %d\n%s", idx0, idx1, buf.String())
+	}
+
+	// Long title must be truncated with ellipsis.
+	if !strings.Contains(lines[1], "…") {
+		t.Errorf("long title should be truncated with '…', got: %s", lines[1])
+	}
+	if strings.Contains(lines[1], strings.Repeat("x", titleColWidth+1)) {
+		t.Errorf("long title was not truncated to %d runes, got: %s", titleColWidth, lines[1])
+	}
+}
+
 func TestFormatTasks_DoneWithBothDates(t *testing.T) {
 	tasks := []model.Task{
 		{
