@@ -124,7 +124,7 @@ Simple append with the same `"  "` separator.
 - Create: `internal/display/dates.go`
 - Create: `internal/display/dates_test.go`
 
-- [ ] write table-driven tests in `dates_test.go` covering all boundaries:
+- [x] write table-driven tests in `dates_test.go` covering all boundaries:
   - empty string → `""`
   - malformed string → `""`
   - `0s`, `30s`, `59s` → `"now"`
@@ -137,8 +137,8 @@ Simple append with the same `"  "` separator.
   - older different year → `"YY-MM-DD"` e.g. `"25-03-28"`
   - future ≤1 min → `"now"`
   - future >1 min → `"MM-DD"`
-- [ ] implement `FormatRelDate(now time.Time, ts string) string` in `dates.go`
-- [ ] run `go test ./internal/display/` — must pass before next task
+- [x] implement `FormatRelDate(now time.Time, ts string) string` in `dates.go`
+- [x] run `go test ./internal/display/` — must pass before next task
 
 ### Task 2: Add `FormatTaskDates` helper and render in ls
 
