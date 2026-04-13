@@ -144,10 +144,10 @@ else:                                    base styles
 - Modify: `internal/display/table.go`
 - Modify: `internal/display/table_test.go`
 
-- [ ] write failing test `TestFormatTasks_ActiveMarker` — verify a task with `ActiveTag` renders with leading `* `, and a non-active task renders with leading `  `
-- [ ] update `FormatTasks` row format to prefix each row with `* ` (active) or `  ` (otherwise)
-- [ ] update any existing table tests whose expected output now starts with the 2-char marker
-- [ ] run `go test ./internal/display/` — must pass before next task
+- [x] write failing test `TestFormatTasks_ActiveMarker` — verify a task with `ActiveTag` renders with leading `* `, and a non-active task renders with leading `  `
+- [x] update `FormatTasks` row format to prefix each row with `* ` (active) or `  ` (otherwise)
+- [x] update any existing table tests whose expected output now starts with the 2-char marker
+- [x] run `go test ./internal/display/` — must pass before next task
 
 ### Task 3: `ls --active` filter flag
 

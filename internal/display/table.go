@@ -61,6 +61,11 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 	}
 
 	for i, task := range tasks {
+		activeMarker := "  "
+		if task.IsActive() {
+			activeMarker = "* "
+		}
+
 		marker := fmt.Sprintf("%d", i+1)
 		if task.Status == "done" {
 			marker = "x"
@@ -76,7 +81,8 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 		// Title is truncated/padded to titleColWidth runes so subsequent columns
 		// stay aligned even for long titles. 17-rune pad on dates: worst case is
 		// "YY-MM-DD→YY-MM-DD" (17 runes). See TestPadRight_MaxWidthDates.
-		fmt.Fprintf(w, "%-4s %-8s  %s %-10s %s %s\n",
+		fmt.Fprintf(w, "%s%-4s %-8s  %s %-10s %s %s\n",
+			activeMarker,
 			marker,
 			ShortID(task.ID),
 			truncatePad(task.Title, titleColWidth),
