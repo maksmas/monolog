@@ -1063,3 +1063,117 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	}
 }
 
+// --- active panel tests ------------------------------------------------------
+
+func TestActivePanel_HiddenWhenNoActiveTasks(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "normal task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Give the model a window size so View() renders properly.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+	if panel != "" {
+		t.Errorf("activePanelView() should return empty string when no active tasks, got %q", panel)
+	}
+	if h := m.activePanelHeight(); h != 0 {
+		t.Errorf("activePanelHeight() = %d, want 0 when no active tasks", h)
+	}
+}
+
+func TestActivePanel_ShownWithActiveTasks(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "my active task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+	if panel == "" {
+		t.Fatal("activePanelView() should not be empty when active tasks exist")
+	}
+	if !strings.Contains(panel, "my active task") {
+		t.Errorf("active panel should contain the task title; got %q", panel)
+	}
+	if !strings.Contains(panel, "01A") {
+		t.Errorf("active panel should contain short ID; got %q", panel)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "my active task") {
+		t.Errorf("View() should contain the active task title somewhere; got %q", view)
+	}
+}
+
+func TestActivePanel_RefreshedAfterToggle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "toggle panel task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Activate.
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	panel := m.activePanelView()
+	if !strings.Contains(panel, "toggle panel task") {
+		t.Errorf("panel should contain task after activation; got %q", panel)
+	}
+
+	// Deactivate.
+	m, cmd = key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("second 'a' should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	panel = m.activePanelView()
+	if strings.Contains(panel, "toggle panel task") {
+		t.Errorf("panel should NOT contain task after deactivation; got %q", panel)
+	}
+	if panel != "" {
+		t.Errorf("panel should be empty after deactivation; got %q", panel)
+	}
+}
+
+func TestActivePanel_ShrinksListHeight(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "shrink test", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// No active tasks: record height.
+	heightBefore := m.lists[0].Height()
+
+	// Activate a task.
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	heightAfter := m.lists[0].Height()
+	panelH := m.activePanelHeight()
+
+	if panelH == 0 {
+		t.Fatal("activePanelHeight() should be > 0 with an active task")
+	}
+	if heightAfter >= heightBefore {
+		t.Errorf("list height should shrink when panel is shown: before=%d after=%d", heightBefore, heightAfter)
+	}
+	if heightBefore-heightAfter != panelH {
+		t.Errorf("list height difference should equal panel height: before=%d after=%d panelH=%d diff=%d",
+			heightBefore, heightAfter, panelH, heightBefore-heightAfter)
+	}
+}
+

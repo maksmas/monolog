@@ -223,17 +223,17 @@ else:                                    base styles
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] write failing test `TestActivePanel_HiddenWhenNoActiveTasks` — `m.View()` output does NOT contain a panel marker (e.g., the panel's border style or label) when zero tasks are active
-- [ ] write failing test `TestActivePanel_ShownWithActiveTasks` — after activating a task, `m.View()` contains the active panel and the task's title appears in it
-- [ ] write failing test `TestActivePanel_RefreshedAfterToggle` — toggling active off via `a` removes the task from the panel after the save cmd resolves
-- [ ] write failing test `TestActivePanel_ShrinksListHeight` — set a fixed window size; verify that when the panel is shown, the list's height is smaller than when it's hidden, by exactly the panel's rendered line count
-- [ ] add `activeTasks []model.Task` field to `Model`; populate via a new `reloadActive()` method that calls `m.store.List(ListOptions{Tag: model.ActiveTag})`
-- [ ] call `reloadActive()` from `reloadAll()` and from the `taskSavedMsg` handler
-- [ ] add `activePanelView()` rendering a bordered panel listing each active task as `<short-id>  <title>`; returns empty string when `len(activeTasks) == 0`
-- [ ] add `activePanelHeight()` returning the rendered line count (0 when hidden, otherwise rows + border lines)
-- [ ] in the `WindowSizeMsg` handler (and any place that calls `SetSize` on the lists), subtract `activePanelHeight()` from the list height; recompute on every `taskSavedMsg` so the layout adjusts as tasks are activated/deactivated
-- [ ] in `View()`, prepend `activePanelView()` to the join when non-empty
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] write failing test `TestActivePanel_HiddenWhenNoActiveTasks` — `m.View()` output does NOT contain a panel marker (e.g., the panel's border style or label) when zero tasks are active
+- [x] write failing test `TestActivePanel_ShownWithActiveTasks` — after activating a task, `m.View()` contains the active panel and the task's title appears in it
+- [x] write failing test `TestActivePanel_RefreshedAfterToggle` — toggling active off via `a` removes the task from the panel after the save cmd resolves
+- [x] write failing test `TestActivePanel_ShrinksListHeight` — set a fixed window size; verify that when the panel is shown, the list's height is smaller than when it's hidden, by exactly the panel's rendered line count
+- [x] add `activeTasks []model.Task` field to `Model`; populate via a new `reloadActive()` method that calls `m.store.List(ListOptions{Tag: model.ActiveTag})`
+- [x] call `reloadActive()` from `reloadAll()` and from the `taskSavedMsg` handler
+- [x] add `activePanelView()` rendering a bordered panel listing each active task as `<short-id>  <title>`; returns empty string when `len(activeTasks) == 0`
+- [x] add `activePanelHeight()` returning the rendered line count (0 when hidden, otherwise rows + border lines)
+- [x] in the `WindowSizeMsg` handler (and any place that calls `SetSize` on the lists), subtract `activePanelHeight()` from the list height; recompute on every `taskSavedMsg` so the layout adjusts as tasks are activated/deactivated
+- [x] in `View()`, prepend `activePanelView()` to the join when non-empty
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 9: Auto-deactivate on done
 

@@ -82,6 +82,10 @@ type Model struct {
 	grabTask  *model.Task
 	grabIndex int
 
+	// Active tasks panel: tasks that carry the "active" tag, shown in a
+	// persistent panel above the tab bar.
+	activeTasks []model.Task
+
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
 }
@@ -215,12 +219,15 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 	return m, nil
 }
 
-// reloadAll refreshes every tab from the store.
+// reloadAll refreshes every tab from the store and the active-tasks panel.
 func (m *Model) reloadAll() error {
 	for i := range m.tabs {
 		if err := m.reloadTab(i); err != nil {
 			return err
 		}
+	}
+	if err := m.reloadActive(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -258,6 +265,20 @@ func (m *Model) reloadTab(idx int) error {
 	return nil
 }
 
+// reloadActive refreshes the activeTasks slice from the store.
+func (m *Model) reloadActive() error {
+	tasks, err := m.store.List(store.ListOptions{Tag: model.ActiveTag})
+	if err != nil {
+		return fmt.Errorf("list active tasks: %w", err)
+	}
+	// Sort by position for stable display order.
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].Position < tasks[j].Position
+	})
+	m.activeTasks = tasks
+	return nil
+}
+
 // selectedTask returns a pointer to the currently selected task in the
 // active tab, or nil if the tab is empty.
 func (m *Model) selectedTask() *model.Task {
@@ -278,13 +299,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		listH := msg.Height - 4
-		if listH < 3 {
-			listH = 3
-		}
-		for i := range m.lists {
-			m.lists[i].SetSize(msg.Width, listH)
-		}
+		m.recomputeLayout()
 		return m, nil
 
 	case taskSavedMsg:
@@ -298,6 +313,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.reloadAll(); err != nil {
 			m.err = err
 		}
+		m.recomputeLayout()
 		if msg.focusID != "" {
 			m.focusTaskByID(msg.focusID)
 		}
@@ -1087,6 +1103,52 @@ func (m *Model) deleteCmd(task model.Task) tea.Cmd {
 	}
 }
 
+// --- active panel ----------------------------------------------------------
+
+// activePanelView renders a bordered panel listing each active task. Returns
+// an empty string when there are no active tasks (auto-hide).
+func (m *Model) activePanelView() string {
+	if len(m.activeTasks) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, t := range m.activeTasks {
+		lines = append(lines, fmt.Sprintf("%s  %s", display.ShortID(t.ID), t.Title))
+	}
+	content := strings.Join(lines, "\n")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("28")).
+		Padding(0, 1).
+		Render(content)
+}
+
+// activePanelHeight returns the rendered line count of the active panel. Returns
+// 0 when there are no active tasks (panel hidden).
+func (m *Model) activePanelHeight() int {
+	panel := m.activePanelView()
+	if panel == "" {
+		return 0
+	}
+	return lipgloss.Height(panel)
+}
+
+// recomputeLayout recalculates list sizes based on the current terminal
+// dimensions and active panel height. Called from WindowSizeMsg and after
+// any mutation that might change the panel (taskSavedMsg).
+func (m *Model) recomputeLayout() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	listH := m.height - 4 - m.activePanelHeight()
+	if listH < 3 {
+		listH = 3
+	}
+	for i := range m.lists {
+		m.lists[i].SetSize(m.width, listH)
+	}
+}
+
 // --- View ------------------------------------------------------------------
 
 func (m *Model) View() string {
@@ -1109,7 +1171,13 @@ func (m *Model) View() string {
 	}
 
 	help := m.helpLine()
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, help)
+
+	parts := []string{}
+	if panel := m.activePanelView(); panel != "" {
+		parts = append(parts, panel)
+	}
+	parts = append(parts, header, body, help)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (m *Model) helpLine() string {
