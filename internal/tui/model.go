@@ -119,9 +119,10 @@ func (i item) FilterValue() string { return i.task.Title }
 // current mode; in modeGrab the selected row (which is always the grabbed
 // task) gets the grabStyles swap-in.
 type itemDelegate struct {
-	base       list.DefaultDelegate
-	grabStyles list.DefaultItemStyles
-	m          *Model
+	base         list.DefaultDelegate
+	grabStyles   list.DefaultItemStyles
+	activeStyles list.DefaultItemStyles
+	m            *Model
 }
 
 func newItemDelegate(m *Model) *itemDelegate {
@@ -136,7 +137,20 @@ func newItemDelegate(m *Model) *itemDelegate {
 	grab.SelectedDesc = grab.SelectedDesc.
 		Foreground(grabColor).
 		BorderForeground(grabColor)
-	return &itemDelegate{base: base, grabStyles: grab, m: m}
+
+	// Green styling for active tasks (persistent "currently working on" state).
+	active := list.NewDefaultItemStyles()
+	activeColor := lipgloss.AdaptiveColor{Light: "#16A34A", Dark: "#22C55E"}
+	active.NormalTitle = active.NormalTitle.Foreground(activeColor)
+	active.NormalDesc = active.NormalDesc.Foreground(activeColor)
+	active.SelectedTitle = active.SelectedTitle.
+		Foreground(activeColor).
+		BorderForeground(activeColor)
+	active.SelectedDesc = active.SelectedDesc.
+		Foreground(activeColor).
+		BorderForeground(activeColor)
+
+	return &itemDelegate{base: base, grabStyles: grab, activeStyles: active, m: m}
 }
 
 func (d *itemDelegate) Height() int  { return d.base.Height() }
@@ -146,14 +160,20 @@ func (d *itemDelegate) Update(msg tea.Msg, lm *list.Model) tea.Cmd {
 }
 
 func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Item) {
-	if d.m.mode == modeGrab && index == lm.Index() {
+	switch {
+	case d.m.mode == modeGrab && index == lm.Index():
 		saved := d.base.Styles
 		d.base.Styles = d.grabStyles
 		d.base.Render(w, lm, index, it)
 		d.base.Styles = saved
-		return
+	case it.(item).task.IsActive():
+		saved := d.base.Styles
+		d.base.Styles = d.activeStyles
+		d.base.Render(w, lm, index, it)
+		d.base.Styles = saved
+	default:
+		d.base.Render(w, lm, index, it)
 	}
-	d.base.Render(w, lm, index, it)
 }
 
 // taskSavedMsg is dispatched back to Update after an async mutation completes.

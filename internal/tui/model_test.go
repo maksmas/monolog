@@ -960,6 +960,85 @@ func TestTUI_RetagPreservesActive(t *testing.T) {
 	}
 }
 
+// --- active delegate styling tests -------------------------------------------
+
+func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
+	// Force color profile so ANSI codes survive in test output.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	d := newItemDelegate(m)
+	items := m.lists[0].Items()
+
+	// Render the active item (index 0 = selected row) and the normal item
+	// (index 1 = unselected row).
+	var activeBuf, normalBuf bytes.Buffer
+	d.Render(&activeBuf, m.lists[0], 0, items[0])
+	d.Render(&normalBuf, m.lists[0], 1, items[1])
+
+	activeOut := activeBuf.String()
+	normalOut := normalBuf.String()
+
+	// The active (green) delegate uses AdaptiveColor Dark="#22C55E" = RGB(34,197,94).
+	// In TrueColor mode this produces the ANSI sequence "38;2;34;197;94".
+	greenSeq := "38;2;34;197;94"
+	if !strings.Contains(activeOut, greenSeq) {
+		t.Errorf("active item should contain green ANSI sequence %q;\n rendered=%q", greenSeq, activeOut)
+	}
+	if strings.Contains(normalOut, greenSeq) {
+		t.Errorf("normal item should NOT contain green ANSI sequence %q;\n rendered=%q", greenSeq, normalOut)
+	}
+}
+
+func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
+	// Force color profile so ANSI codes survive in test output.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "the task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "other", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	d := newItemDelegate(m)
+
+	// Grab the active task (index 0 is selected by default).
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	// Render the grabbed+active task at cursor index using the same item.
+	theItem := m.lists[0].Items()[0]
+	var grabbedBuf bytes.Buffer
+	d.Render(&grabbedBuf, m.lists[0], 0, theItem)
+
+	grabbedOut := grabbedBuf.String()
+
+	// Grab style uses orange/yellow. Active style uses green. When both
+	// apply, grab must win — so green should NOT appear in the output, and
+	// the grab color (orange) SHOULD appear.
+	greenSeq := "38;2;34;197;94"
+	grabSeq := "38;2;255;179;84" // AdaptiveColor Dark="#FFB454" rendered by lipgloss
+	if strings.Contains(grabbedOut, greenSeq) {
+		t.Errorf("grabbed+active row should NOT contain green ANSI sequence (grab wins);\n rendered=%q", grabbedOut)
+	}
+	if !strings.Contains(grabbedOut, grabSeq) {
+		t.Errorf("grabbed+active row should contain grab (orange) ANSI sequence %q;\n rendered=%q", grabSeq, grabbedOut)
+	}
+}
+
 func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	// When now is zero (e.g. item constructed without setting now),
 	// a valid CreatedAt is far in the future relative to time.Time{},

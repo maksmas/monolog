@@ -211,11 +211,11 @@ else:                                    base styles
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] write failing test `TestActive_DelegateRendersGreenForActiveItem` — set color profile to TrueColor; render an active row and a non-active row via `itemDelegate.Render`; assert their byte output differs (green codes present in active)
-- [ ] write failing test `TestActive_GrabStyleWinsOverActiveStyle` — grab an active task; rendered output for the grabbed row matches the grab-mode render, NOT the green-only render
-- [ ] extend `itemDelegate` with an `activeStyles list.DefaultItemStyles` (green foreground for both selected and unselected variants)
-- [ ] update `Render` decision tree: grab > active > base
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] write failing test `TestActive_DelegateRendersGreenForActiveItem` — set color profile to TrueColor; render an active row and a non-active row via `itemDelegate.Render`; assert their byte output differs (green codes present in active)
+- [x] write failing test `TestActive_GrabStyleWinsOverActiveStyle` — grab an active task; rendered output for the grabbed row matches the grab-mode render, NOT the green-only render
+- [x] extend `itemDelegate` with an `activeStyles list.DefaultItemStyles` (green foreground for both selected and unselected variants)
+- [x] update `Render` decision tree: grab > active > base
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 8: TUI — active tasks panel above the tab bar
 
