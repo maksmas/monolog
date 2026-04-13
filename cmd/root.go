@@ -39,7 +39,6 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newRmCmd())
 	rootCmd.AddCommand(newEditCmd())
 	rootCmd.AddCommand(newMvCmd())
-	rootCmd.AddCommand(newBumpCmd())
 	rootCmd.AddCommand(newLogCmd())
 	rootCmd.AddCommand(newSyncCmd())
 

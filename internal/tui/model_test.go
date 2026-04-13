@@ -10,8 +10,19 @@ import (
 
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 )
+
+// expectSchedule resolves a bucket name to its ISO date for current now.
+func expectSchedule(t *testing.T, bucket string) string {
+	t.Helper()
+	got, err := schedule.Parse(bucket, time.Now())
+	if err != nil {
+		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
+	}
+	return got
+}
 
 // newTestModel returns a Model backed by a real (temp) git-initialized
 // monolog repo, pre-populated with the given tasks in their declared buckets.
@@ -322,6 +333,50 @@ func TestAdd_CreatesTaskInActiveTab(t *testing.T) {
 	}
 }
 
+func TestAdd_FocusesNewTaskAfterCreate(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "existing one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "existing two", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Cursor starts at index 0; add a task and expect cursor to move to it.
+	m, _ = key(t, m, "a")
+	m = typeString(t, m, "fresh task")
+	m, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+
+	selected := m.selectedTask()
+	if selected == nil {
+		t.Fatal("no task selected after add")
+	}
+	if selected.Title != "fresh task" {
+		t.Errorf("selected task = %q, want %q", selected.Title, "fresh task")
+	}
+}
+
+func TestAdd_FocusesNewTaskAcrossTab(t *testing.T) {
+	// Adding from the Done tab falls back to the Today bucket. The new task
+	// should be focused in whatever tab it actually lands in.
+	m := newTestModel(t)
+	m, _ = key(t, m, "5") // Done tab
+	if m.activeTab != 4 {
+		t.Fatalf("precondition: activeTab = %d, want 4", m.activeTab)
+	}
+	m, _ = key(t, m, "a")
+	m = typeString(t, m, "stray task")
+	m, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+
+	if m.activeTab != 0 {
+		t.Errorf("activeTab = %d, want 0 (Today) where task landed", m.activeTab)
+	}
+	selected := m.selectedTask()
+	if selected == nil || selected.Title != "stray task" {
+		t.Errorf("selectedTask = %+v, want title %q", selected, "stray task")
+	}
+}
+
 func TestAdd_UsesActiveTabSchedule(t *testing.T) {
 	m := newTestModel(t)
 	// Switch to Week tab first.
@@ -335,8 +390,8 @@ func TestAdd_UsesActiveTabSchedule(t *testing.T) {
 		t.Errorf("Week tab items = %d, want 1", got)
 	}
 	task := m.lists[2].Items()[0].(item).task
-	if task.Schedule != "week" {
-		t.Errorf("Schedule = %q, want %q", task.Schedule, "week")
+	if want := expectSchedule(t, "week"); task.Schedule != want {
+		t.Errorf("Schedule = %q, want %q", task.Schedule, want)
 	}
 }
 
@@ -450,8 +505,8 @@ func TestGrab_RightMovesToNextTabAndSetsSchedule(t *testing.T) {
 	m = runCmd(t, m, cmd)
 
 	task, _ := m.store.GetByPrefix("01A")
-	if task.Schedule != "tomorrow" {
-		t.Errorf("Schedule = %q, want tomorrow", task.Schedule)
+	if want := expectSchedule(t, "tomorrow"); task.Schedule != want {
+		t.Errorf("Schedule = %q, want %q", task.Schedule, want)
 	}
 }
 
@@ -500,8 +555,8 @@ func TestGrab_LeftOutOfDoneSetsStatusOpen(t *testing.T) {
 	if task.Status != "open" {
 		t.Errorf("Status = %q, want open", task.Status)
 	}
-	if task.Schedule != "someday" {
-		t.Errorf("Schedule = %q, want someday", task.Schedule)
+	if want := expectSchedule(t, "someday"); task.Schedule != want {
+		t.Errorf("Schedule = %q, want %q", task.Schedule, want)
 	}
 }
 
@@ -544,9 +599,10 @@ func TestGrab_UpDownNoOpInDoneTab(t *testing.T) {
 // --- edit (YAML) tests -----------------------------------------------------
 
 func TestMarshalTaskForEdit_RoundTrip(t *testing.T) {
+	// Schedule is stored as ISO date so the round-trip leaves it untouched.
 	orig := model.Task{
 		ID: "01A", Title: "buy milk", Body: "2% from the corner store",
-		Status: "open", Schedule: "today", Position: 1000,
+		Status: "open", Schedule: "2026-04-13", Position: 1000,
 		Tags:      []string{"home", "urgent"},
 		CreatedAt: "2026-04-13T00:00:00Z", UpdatedAt: "2026-04-13T00:00:00Z",
 	}
@@ -554,7 +610,7 @@ func TestMarshalTaskForEdit_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	got, err := applyEditedYAML(orig, data)
+	got, err := applyEditedYAML(orig, data, time.Now())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -591,7 +647,7 @@ func TestMarshalTaskForEdit_HidesInternalFields(t *testing.T) {
 
 func TestApplyEditedYAML_RejectsEmptyTitle(t *testing.T) {
 	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
-	_, err := applyEditedYAML(orig, []byte("title: \"\"\nschedule: today\n"))
+	_, err := applyEditedYAML(orig, []byte("title: \"\"\nschedule: today\n"), time.Now())
 	if err == nil {
 		t.Error("expected error for empty title")
 	}
@@ -599,7 +655,7 @@ func TestApplyEditedYAML_RejectsEmptyTitle(t *testing.T) {
 
 func TestApplyEditedYAML_RejectsInvalidSchedule(t *testing.T) {
 	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
-	_, err := applyEditedYAML(orig, []byte("title: new\nschedule: nextmonth\n"))
+	_, err := applyEditedYAML(orig, []byte("title: new\nschedule: nextmonth\n"), time.Now())
 	if err == nil {
 		t.Error("expected error for invalid schedule")
 	}
@@ -607,7 +663,7 @@ func TestApplyEditedYAML_RejectsInvalidSchedule(t *testing.T) {
 
 func TestApplyEditedYAML_AcceptsISODate(t *testing.T) {
 	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
-	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: 2026-05-20\n"))
+	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: 2026-05-20\n"), time.Now())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -619,7 +675,7 @@ func TestApplyEditedYAML_AcceptsISODate(t *testing.T) {
 func TestApplyEditedYAML_UpdatesUpdatedAt(t *testing.T) {
 	orig := model.Task{ID: "01A", Title: "old", Schedule: "today",
 		UpdatedAt: "2026-04-10T00:00:00Z"}
-	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: today\n"))
+	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: today\n"), time.Now())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -773,14 +829,3 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	}
 }
 
-func TestIsISODate(t *testing.T) {
-	if !isISODate("2026-04-13") {
-		t.Error("valid date rejected")
-	}
-	if isISODate("04-13-2026") {
-		t.Error("wrong format accepted")
-	}
-	if isISODate("not-a-date") {
-		t.Error("garbage accepted")
-	}
-}

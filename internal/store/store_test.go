@@ -295,24 +295,6 @@ func TestListSortedByPosition(t *testing.T) {
 	}
 }
 
-func TestListFilterBySchedule(t *testing.T) {
-	s := newTestStore(t)
-	createTestTasks(t, s)
-
-	tasks, err := s.List(ListOptions{Schedule: "today"})
-	if err != nil {
-		t.Fatalf("List failed: %v", err)
-	}
-	if len(tasks) != 3 {
-		t.Fatalf("expected 3 today tasks, got %d", len(tasks))
-	}
-	for _, task := range tasks {
-		if task.Schedule != "today" {
-			t.Errorf("expected schedule=today, got %q", task.Schedule)
-		}
-	}
-}
-
 func TestListFilterByStatus(t *testing.T) {
 	s := newTestStore(t)
 	createTestTasks(t, s)
@@ -346,15 +328,13 @@ func TestListCombinedFilters(t *testing.T) {
 	s := newTestStore(t)
 	createTestTasks(t, s)
 
-	tasks, err := s.List(ListOptions{Schedule: "today", Status: "open", Tag: "work"})
+	tasks, err := s.List(ListOptions{Status: "open", Tag: "work"})
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected 1 task matching all filters, got %d", len(tasks))
-	}
-	if tasks[0].Title != "Today work" {
-		t.Errorf("expected 'Today work', got %q", tasks[0].Title)
+	// Both today/work and tomorrow/work tasks are open and tagged "work".
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks matching status=open + tag=work, got %d", len(tasks))
 	}
 }
 

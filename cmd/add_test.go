@@ -8,9 +8,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 )
+
+// expectSchedule returns the ISO date a bucket name resolves to right now.
+// Used by tests that previously asserted on the bucket-name string.
+func expectSchedule(t *testing.T, bucket string) string {
+	t.Helper()
+	got, err := schedule.Parse(bucket, time.Now())
+	if err != nil {
+		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
+	}
+	return got
+}
 
 // initTestRepo initializes a monolog repo at dir for testing.
 func initTestRepo(t *testing.T, dir string) {
@@ -77,8 +90,8 @@ func TestAddCommand_DefaultSchedule(t *testing.T) {
 	if task.Title != "Buy milk" {
 		t.Errorf("Title: got %q, want %q", task.Title, "Buy milk")
 	}
-	if task.Schedule != "today" {
-		t.Errorf("Schedule: got %q, want %q", task.Schedule, "today")
+	if want := expectSchedule(t, "today"); task.Schedule != want {
+		t.Errorf("Schedule: got %q, want %q", task.Schedule, want)
 	}
 	if task.Status != "open" {
 		t.Errorf("Status: got %q, want %q", task.Status, "open")
@@ -119,15 +132,24 @@ func TestAddCommand_CustomSchedule(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
-	if tasks[0].Schedule != "tomorrow" {
-		t.Errorf("Schedule: got %q, want %q", tasks[0].Schedule, "tomorrow")
+	if want := expectSchedule(t, "tomorrow"); tasks[0].Schedule != want {
+		t.Errorf("Schedule: got %q, want %q", tasks[0].Schedule, want)
 	}
 }
 
 func TestAddCommand_ScheduleValues(t *testing.T) {
-	schedules := []string{"today", "tomorrow", "week", "someday", "2026-04-15"}
-	for _, sched := range schedules {
-		t.Run(sched, func(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string // "" means resolve via expectSchedule(input)
+	}{
+		{input: "today"},
+		{input: "tomorrow"},
+		{input: "week"},
+		{input: "someday"},
+		{input: "2026-04-15", want: "2026-04-15"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "monolog")
 			initTestRepo(t, dir)
 
@@ -135,19 +157,23 @@ func TestAddCommand_ScheduleValues(t *testing.T) {
 			buf := new(bytes.Buffer)
 			rootCmd.SetOut(buf)
 			rootCmd.SetErr(buf)
-			rootCmd.SetArgs([]string{"add", "Task", "-s", sched})
+			rootCmd.SetArgs([]string{"add", "Task", "-s", tc.input})
 
 			err := rootCmd.Execute()
 			if err != nil {
-				t.Fatalf("add -s %s error = %v\noutput: %s", sched, err, buf.String())
+				t.Fatalf("add -s %s error = %v\noutput: %s", tc.input, err, buf.String())
 			}
 
 			tasks := readTasks(t, dir)
 			if len(tasks) != 1 {
 				t.Fatalf("expected 1 task, got %d", len(tasks))
 			}
-			if tasks[0].Schedule != sched {
-				t.Errorf("Schedule: got %q, want %q", tasks[0].Schedule, sched)
+			want := tc.want
+			if want == "" {
+				want = expectSchedule(t, tc.input)
+			}
+			if tasks[0].Schedule != want {
+				t.Errorf("Schedule: got %q, want %q", tasks[0].Schedule, want)
 			}
 		})
 	}
@@ -200,8 +226,8 @@ func TestAddCommand_WithScheduleAndTags(t *testing.T) {
 		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
 	task := tasks[0]
-	if task.Schedule != "week" {
-		t.Errorf("Schedule: got %q, want %q", task.Schedule, "week")
+	if want := expectSchedule(t, "week"); task.Schedule != want {
+		t.Errorf("Schedule: got %q, want %q", task.Schedule, want)
 	}
 	if len(task.Tags) != 2 || task.Tags[0] != "devops" || task.Tags[1] != "prod" {
 		t.Errorf("Tags: got %v, want [devops prod]", task.Tags)

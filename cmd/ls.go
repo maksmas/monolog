@@ -5,16 +5,18 @@ import (
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/display"
+	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/spf13/cobra"
 )
 
 func newLsCmd() *cobra.Command {
 	var (
-		all      bool
-		schedule string
-		tag      string
-		done     bool
+		all          bool
+		scheduleFlag string
+		tag          string
+		done         bool
 	)
 
 	cmd := &cobra.Command{
@@ -28,26 +30,33 @@ func newLsCmd() *cobra.Command {
 			}
 
 			opts := store.ListOptions{}
-
 			if done {
 				opts.Status = "done"
 			} else {
 				opts.Status = "open"
 			}
-
-			// --schedule flag takes precedence; if not set and not --all and not --done, default to today.
-			// When --done is used, show all done tasks across all schedules unless --schedule is explicit.
-			if schedule != "" {
-				if err := validateSchedule(schedule); err != nil {
-					return err
-				}
-				opts.Schedule = schedule
-			} else if !all && !done {
-				opts.Schedule = "today"
-			}
-
 			if tag != "" {
 				opts.Tag = tag
+			}
+
+			// Resolve the schedule filter. --schedule wins; otherwise default
+			// to today (unless --all or --done lifts the filter).
+			now := time.Now()
+			var (
+				bucketFilter string // bucket name, or "" for none
+				exactDate    string // ISO date for exact match, or "" for none
+			)
+			switch {
+			case scheduleFlag != "":
+				if schedule.IsBucket(scheduleFlag) {
+					bucketFilter = scheduleFlag
+				} else if schedule.IsISODate(scheduleFlag) {
+					exactDate = scheduleFlag
+				} else {
+					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, someday, or ISO date (YYYY-MM-DD)", scheduleFlag)
+				}
+			case !all && !done:
+				bucketFilter = schedule.Today
 			}
 
 			tasks, err := s.List(opts)
@@ -55,15 +64,41 @@ func newLsCmd() *cobra.Command {
 				return fmt.Errorf("list tasks: %w", err)
 			}
 
-			display.FormatTasks(cmd.OutOrStdout(), tasks, time.Now())
+			tasks = filterBySchedule(tasks, bucketFilter, exactDate, now)
+
+			display.FormatTasks(cmd.OutOrStdout(), tasks, now)
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "Show all open tasks across all schedules")
-	cmd.Flags().StringVarP(&schedule, "schedule", "s", "", "Filter by schedule (today, tomorrow, week, someday, or ISO date)")
+	cmd.Flags().StringVarP(&scheduleFlag, "schedule", "s", "", "Filter by schedule (today, tomorrow, week, someday, or ISO date)")
 	cmd.Flags().StringVarP(&tag, "tag", "t", "", "Filter by tag")
 	cmd.Flags().BoolVarP(&done, "done", "d", false, "Show completed tasks")
 
 	return cmd
+}
+
+// filterBySchedule applies a bucket or exact-date predicate to tasks. Either
+// argument (or both, in which case nothing is filtered) may be empty.
+func filterBySchedule(tasks []model.Task, bucket, exactDate string, now time.Time) []model.Task {
+	if bucket == "" && exactDate == "" {
+		return tasks
+	}
+	out := tasks[:0]
+	for _, t := range tasks {
+		switch {
+		case bucket != "":
+			if schedule.MatchesBucket(t.Schedule, bucket, now) {
+				out = append(out, t)
+			}
+		case exactDate != "":
+			// Normalize legacy strings so a hand-crafted "today" still
+			// matches today's ISO date filter.
+			if schedule.Normalize(t.Schedule, now) == exactDate {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
 }

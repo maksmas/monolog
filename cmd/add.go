@@ -9,12 +9,13 @@ import (
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
+	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/spf13/cobra"
 )
 
 func newAddCmd() *cobra.Command {
-	var schedule string
+	var scheduleArg string
 	var tags string
 
 	cmd := &cobra.Command{
@@ -25,7 +26,9 @@ func newAddCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			title := args[0]
 
-			if err := validateSchedule(schedule); err != nil {
+			now := time.Now()
+			scheduleDate, err := schedule.Parse(scheduleArg, now)
+			if err != nil {
 				return err
 			}
 
@@ -45,16 +48,16 @@ func newAddCmd() *cobra.Command {
 				return fmt.Errorf("generate ID: %w", err)
 			}
 
-			now := time.Now().UTC().Format(time.RFC3339)
+			nowStr := now.UTC().Format(time.RFC3339)
 			task := model.Task{
 				ID:        id,
 				Title:     title,
 				Source:    "manual",
 				Status:    "open",
 				Position:  ordering.NextPosition(existing),
-				Schedule:  schedule,
-				CreatedAt: now,
-				UpdatedAt: now,
+				Schedule:  scheduleDate,
+				CreatedAt: nowStr,
+				UpdatedAt: nowStr,
 			}
 
 			// Parse and sanitize tags
@@ -75,7 +78,7 @@ func newAddCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&schedule, "schedule", "s", "today", "Schedule: today, tomorrow, week, someday, or ISO date")
+	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", "Schedule: today, tomorrow, week, someday, or ISO date")
 	cmd.Flags().StringVarP(&tags, "tags", "t", "", "Comma-separated tags")
 
 	return cmd

@@ -365,8 +365,8 @@ func TestEditCommand_ChangeSchedule(t *testing.T) {
 	if !ok {
 		t.Fatal("task not found after edit")
 	}
-	if task.Schedule != "tomorrow" {
-		t.Errorf("Schedule: got %q, want %q", task.Schedule, "tomorrow")
+	if want := expectSchedule(t, "tomorrow"); task.Schedule != want {
+		t.Errorf("Schedule: got %q, want %q", task.Schedule, want)
 	}
 }
 
@@ -420,8 +420,8 @@ func TestEditCommand_MultipleFlags(t *testing.T) {
 	if task.Title != "Updated title" {
 		t.Errorf("Title: got %q, want %q", task.Title, "Updated title")
 	}
-	if task.Schedule != "someday" {
-		t.Errorf("Schedule: got %q, want %q", task.Schedule, "someday")
+	if want := expectSchedule(t, "someday"); task.Schedule != want {
+		t.Errorf("Schedule: got %q, want %q", task.Schedule, want)
 	}
 	if len(task.Tags) != 2 || task.Tags[0] != "a" || task.Tags[1] != "b" {
 		t.Errorf("Tags: got %v, want [a b]", task.Tags)

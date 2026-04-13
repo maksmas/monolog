@@ -7,15 +7,16 @@ import (
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
+	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/spf13/cobra"
 )
 
 func newEditCmd() *cobra.Command {
 	var (
-		title    string
-		body     string
-		schedule string
-		tags     string
+		title       string
+		body        string
+		scheduleArg string
+		tags        string
 	)
 
 	cmd := &cobra.Command{
@@ -31,10 +32,14 @@ func newEditCmd() *cobra.Command {
 				return fmt.Errorf("at least one of --title, --body, --schedule, or --tags is required")
 			}
 
+			now := time.Now()
+			var newSchedule string
 			if cmd.Flags().Changed("schedule") {
-				if err := validateSchedule(schedule); err != nil {
+				ns, err := schedule.Parse(scheduleArg, now)
+				if err != nil {
 					return err
 				}
+				newSchedule = ns
 			}
 
 			s, repoPath, err := openStore()
@@ -54,13 +59,17 @@ func newEditCmd() *cobra.Command {
 				task.Body = body
 			}
 			if cmd.Flags().Changed("schedule") {
-				task.Schedule = schedule
+				task.Schedule = newSchedule
+			} else {
+				// Lazy-migrate any legacy bucket string to ISO so subsequent
+				// reads see a normalized value.
+				task.Schedule = schedule.Normalize(task.Schedule, now)
 			}
 			if cmd.Flags().Changed("tags") {
 				task.Tags = sanitizeTags(tags)
 			}
 
-			task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			task.UpdatedAt = now.UTC().Format(time.RFC3339)
 
 			if err := s.Update(task); err != nil {
 				return fmt.Errorf("update task: %w", err)
@@ -78,7 +87,7 @@ func newEditCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&body, "body", "", "New body text")
-	cmd.Flags().StringVar(&schedule, "schedule", "", "New schedule (today, tomorrow, week, someday, or ISO date)")
+	cmd.Flags().StringVar(&scheduleArg, "schedule", "", "New schedule (today, tomorrow, week, someday, or ISO date)")
 	cmd.Flags().StringVar(&tags, "tags", "", "New comma-separated tags")
 
 	return cmd

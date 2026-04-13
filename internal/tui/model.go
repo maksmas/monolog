@@ -19,6 +19,7 @@ import (
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
+	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 )
 
@@ -34,24 +35,25 @@ const (
 	modeConfirmDelete
 )
 
-// reschedulePresets are the quick-pick buckets shown in the reschedule modal.
-// The index + 1 is the numeric shortcut key.
-var reschedulePresets = []string{"today", "tomorrow", "week", "someday"}
+// reschedulePresets are the quick-pick bucket names shown in the reschedule
+// modal. The index + 1 is the numeric shortcut key. They are resolved into
+// concrete ISO dates via schedule.Parse before being written.
+var reschedulePresets = []string{schedule.Today, schedule.Tomorrow, schedule.Week, schedule.Someday}
 
-// tab describes one schedule bucket shown in the TUI.
+// tab describes one virtual schedule bucket shown in the TUI.
 type tab struct {
-	label    string
-	schedule string // matches model.Task.Schedule; empty means "any"
-	status   string // "open" for regular tabs, "done" for the Done tab
+	label  string
+	bucket string // bucket name (today/tomorrow/week/someday); empty for Done
+	status string // "open" for regular tabs, "done" for the Done tab
 }
 
 // defaultTabs are the tabs shown in display order. 1-5 shortcut keys index in.
 var defaultTabs = []tab{
-	{label: "Today", schedule: "today", status: "open"},
-	{label: "Tomorrow", schedule: "tomorrow", status: "open"},
-	{label: "Week", schedule: "week", status: "open"},
-	{label: "Someday", schedule: "someday", status: "open"},
-	{label: "Done", schedule: "", status: "done"},
+	{label: "Today", bucket: schedule.Today, status: "open"},
+	{label: "Tomorrow", bucket: schedule.Tomorrow, status: "open"},
+	{label: "Week", bucket: schedule.Week, status: "open"},
+	{label: "Someday", bucket: schedule.Someday, status: "open"},
+	{label: "Done", bucket: "", status: "done"},
 }
 
 // Model is the top-level Bubble Tea model for the TUI.
@@ -95,7 +97,7 @@ func (i item) Title() string { return i.task.Title }
 
 func (i item) Description() string {
 	parts := []string{display.ShortID(i.task.ID)}
-	if i.task.Schedule != "" && i.task.Schedule != "today" {
+	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
 		parts = append(parts, i.task.Schedule)
 	}
 	if len(i.task.Tags) > 0 {
@@ -110,9 +112,12 @@ func (i item) Description() string {
 func (i item) FilterValue() string { return i.task.Title }
 
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
+// focusID, if non-empty, asks the handler to move the cursor to the task with
+// that ID after reload — used by add so a new task is autofocused.
 type taskSavedMsg struct {
-	status string
-	err    error
+	status  string
+	err     error
+	focusID string
 }
 
 // newModel constructs a Model and loads initial task data for each tab.
@@ -157,9 +162,21 @@ func (m *Model) reloadAll() error {
 // reloadTab refreshes a single tab's list from the store.
 func (m *Model) reloadTab(idx int) error {
 	t := m.tabs[idx]
-	tasks, err := m.store.List(store.ListOptions{Schedule: t.schedule, Status: t.status})
+	tasks, err := m.store.List(store.ListOptions{Status: t.status})
 	if err != nil {
 		return fmt.Errorf("list tasks: %w", err)
+	}
+	now := time.Now()
+	// Filter to the tab's bucket. The Done tab (empty bucket) keeps every
+	// done task, regardless of schedule.
+	if t.bucket != "" {
+		filtered := tasks[:0]
+		for _, task := range tasks {
+			if schedule.MatchesBucket(task.Schedule, t.bucket, now) {
+				filtered = append(filtered, task)
+			}
+		}
+		tasks = filtered
 	}
 	// Done tab: completion-time order (later UpdatedAt first), not position.
 	if t.status == "done" {
@@ -167,7 +184,6 @@ func (m *Model) reloadTab(idx int) error {
 			return tasks[i].UpdatedAt > tasks[j].UpdatedAt
 		})
 	}
-	now := time.Now()
 	items := make([]list.Item, len(tasks))
 	for i, task := range tasks {
 		items[i] = item{task: task, now: now}
@@ -215,6 +231,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = msg.status
 		if err := m.reloadAll(); err != nil {
 			m.err = err
+		}
+		if msg.focusID != "" {
+			m.focusTaskByID(msg.focusID)
 		}
 		return m, nil
 
@@ -359,7 +378,7 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
 		date := strings.TrimSpace(m.input.Value())
-		if !isISODate(date) {
+		if !schedule.IsISODate(date) {
 			m.err = fmt.Errorf("invalid date %q (want YYYY-MM-DD)", date)
 			return m, nil
 		}
@@ -374,23 +393,44 @@ func (m *Model) applyReschedule(sched string) tea.Cmd {
 	if m.modalTask == nil {
 		return nil
 	}
+	nowT := time.Now()
+	scheduleDate, err := schedule.Parse(sched, nowT)
+	if err != nil {
+		m.err = err
+		return nil
+	}
 	t := *m.modalTask
-	oldPos := t.Position
-	t.Schedule = sched
+	oldBucket := schedule.Bucket(m.modalTask.Schedule, nowT)
+	t.Schedule = scheduleDate
 	t.UpdatedAt = now()
+	newBucket := schedule.Bucket(scheduleDate, nowT)
 	// Position it at the bottom of the new bucket if the bucket changed.
-	if t.Schedule != m.modalTask.Schedule {
-		others, err := m.store.List(store.ListOptions{Schedule: sched, Status: "open"})
+	if newBucket != oldBucket {
+		others, err := bucketSiblings(m.store, t.Schedule, nowT)
 		if err == nil {
-			// Exclude the moving task itself (it's still in the store with
-			// its old schedule, so wouldn't be in this list anyway).
-			_ = oldPos
 			t.Position = ordering.NextPosition(others)
 		}
 	}
 	m.closeModal()
 	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", t.Title, sched),
 		fmt.Sprintf("Rescheduled: %s -> %s", t.Title, sched))
+}
+
+// bucketSiblings returns all open tasks that fall into the same bucket as the
+// given schedule date.
+func bucketSiblings(s *store.Store, sched string, now time.Time) ([]model.Task, error) {
+	all, err := s.List(store.ListOptions{Status: "open"})
+	if err != nil {
+		return nil, err
+	}
+	bucket := schedule.Bucket(sched, now)
+	out := all[:0]
+	for _, t := range all {
+		if schedule.MatchesBucket(t.Schedule, bucket, now) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // --- retag modal -----------------------------------------------------------
@@ -507,8 +547,9 @@ func marshalTaskForEdit(t model.Task) ([]byte, error) {
 
 // applyEditedYAML parses the user's edited YAML and returns an updated task.
 // Returns an error if the YAML is invalid, the title is empty, or the
-// schedule is not one of the allowed values.
-func applyEditedYAML(orig model.Task, data []byte) (model.Task, error) {
+// schedule is not parseable. Bucket-name schedules are converted to ISO
+// dates so the on-disk file always stores a concrete date.
+func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, error) {
 	var edit editableFields
 	if err := yaml.Unmarshal(data, &edit); err != nil {
 		return model.Task{}, fmt.Errorf("parse YAML: %w", err)
@@ -518,26 +559,17 @@ func applyEditedYAML(orig model.Task, data []byte) (model.Task, error) {
 	if edit.Title == "" {
 		return model.Task{}, fmt.Errorf("title cannot be empty")
 	}
-	if !isValidSchedule(edit.Schedule) {
-		return model.Task{}, fmt.Errorf("invalid schedule %q (want today/tomorrow/week/someday or YYYY-MM-DD)", edit.Schedule)
+	scheduleDate, err := schedule.Parse(edit.Schedule, now)
+	if err != nil {
+		return model.Task{}, err
 	}
 	out := orig
 	out.Title = edit.Title
 	out.Body = edit.Body
-	out.Schedule = edit.Schedule
+	out.Schedule = scheduleDate
 	out.Tags = edit.Tags
-	out.UpdatedAt = now()
+	out.UpdatedAt = now.UTC().Format(time.RFC3339)
 	return out, nil
-}
-
-// isValidSchedule is the TUI-local schedule validation (keeps the tui
-// package free of the cmd helpers).
-func isValidSchedule(s string) bool {
-	switch s {
-	case "today", "tomorrow", "week", "someday":
-		return true
-	}
-	return isISODate(s)
 }
 
 // resolveEditor returns the editor command split into binary + args:
@@ -598,7 +630,7 @@ func (m *Model) openEdit() tea.Cmd {
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("read edited: %w", err)}
 		}
-		updated, err := applyEditedYAML(origTask, edited)
+		updated, err := applyEditedYAML(origTask, edited, time.Now())
 		if err != nil {
 			return taskSavedMsg{err: err}
 		}
@@ -746,10 +778,23 @@ func (m *Model) commitGrab() tea.Cmd {
 	}
 	targetTab := m.tabs[m.activeTab]
 	t := *m.grabTask
+	nowT := time.Now()
 
-	// Apply the target tab's semantics.
-	if targetTab.schedule != "" {
-		t.Schedule = targetTab.schedule
+	// Apply the target tab's semantics. For bucket tabs, write the bucket's
+	// canonical date (today/+1/+7/+365). The Done tab leaves Schedule alone.
+	if targetTab.bucket != "" {
+		// Only rewrite Schedule when the task isn't already in the target
+		// bucket, otherwise dropping back into your current bucket would
+		// reset a custom-set date (e.g. a 3-day-out task in the Week tab).
+		if schedule.Bucket(t.Schedule, nowT) != targetTab.bucket {
+			scheduleDate, err := schedule.Parse(targetTab.bucket, nowT)
+			if err == nil {
+				t.Schedule = scheduleDate
+			}
+		} else {
+			// Lazy-migrate any legacy bucket string to ISO on this write.
+			t.Schedule = schedule.Normalize(t.Schedule, nowT)
+		}
 	}
 	t.Status = targetTab.status
 	if t.Status == "" {
@@ -779,7 +824,7 @@ func (m *Model) commitGrab() tea.Cmd {
 		}
 		// Rebalance the destination bucket if adjacent gaps got too tight.
 		if t.Status == "open" {
-			siblings, err := storeRef.List(store.ListOptions{Schedule: t.Schedule, Status: "open"})
+			siblings, err := bucketSiblings(storeRef, t.Schedule, nowT)
 			if err == nil && ordering.NeedsRebalance(siblings) {
 				rebalanced := ordering.Rebalance(siblings)
 				for _, rt := range rebalanced {
@@ -864,16 +909,23 @@ func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
 
 // createCmd creates a new task in the current tab's bucket at the bottom.
 func (m *Model) createCmd(title string) tea.Cmd {
-	// Capture active-tab schedule at dispatch time; if user changes tabs
+	// Capture active-tab bucket at dispatch time; if user changes tabs
 	// while the cmd is in flight, we still place it in the intended bucket.
 	t := m.tabs[m.activeTab]
 	// "Add" on the Done tab doesn't really make sense; fall back to today.
-	sched := t.schedule
-	if sched == "" {
-		sched = "today"
+	bucket := t.bucket
+	if bucket == "" {
+		bucket = schedule.Today
 	}
+	storeRef := m.store
+	repoPath := m.repoPath
 	return func() tea.Msg {
-		existing, err := m.store.List(store.ListOptions{Schedule: sched, Status: "open"})
+		nowT := time.Now()
+		scheduleDate, err := schedule.Parse(bucket, nowT)
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("schedule: %w", err)}
+		}
+		existing, err := bucketSiblings(storeRef, scheduleDate, nowT)
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("list: %w", err)}
 		}
@@ -888,17 +940,31 @@ func (m *Model) createCmd(title string) tea.Cmd {
 			Source:    "tui",
 			Status:    "open",
 			Position:  ordering.NextPosition(existing),
-			Schedule:  sched,
+			Schedule:  scheduleDate,
 			CreatedAt: n,
 			UpdatedAt: n,
 		}
-		if err := m.store.Create(task); err != nil {
+		if err := storeRef.Create(task); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("create: %w", err)}
 		}
-		if err := git.AutoCommit(m.repoPath, fmt.Sprintf("add: %s", title), taskRelPath(id)); err != nil {
+		if err := git.AutoCommit(repoPath, fmt.Sprintf("add: %s", title), taskRelPath(id)); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Added: %s", title)}
+		return taskSavedMsg{status: fmt.Sprintf("Added: %s", title), focusID: id}
+	}
+}
+
+// focusTaskByID searches every tab for a task with the given ID. If found,
+// the active tab switches to that tab and the list cursor moves to the item.
+func (m *Model) focusTaskByID(id string) {
+	for i := range m.lists {
+		for j, li := range m.lists[i].Items() {
+			if li.(item).task.ID == id {
+				m.activeTab = i
+				m.lists[i].Select(j)
+				return
+			}
+		}
 	}
 }
 
@@ -1046,8 +1112,3 @@ func sanitizeTags(raw string) []string {
 	return tags
 }
 
-// isISODate checks whether s is a valid YYYY-MM-DD date.
-func isISODate(s string) bool {
-	_, err := time.Parse("2006-01-02", s)
-	return err == nil
-}

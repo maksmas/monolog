@@ -17,11 +17,12 @@ var (
 	ErrAmbiguous = errors.New("ambiguous prefix")
 )
 
-// ListOptions controls filtering when listing tasks.
+// ListOptions controls filtering when listing tasks. Schedule/bucket
+// filtering lives in the cmd and TUI layers (it depends on time.Now and on
+// virtual-bucket semantics) — the store stays IO-only.
 type ListOptions struct {
-	Schedule string // filter by schedule value ("today", "tomorrow", etc.)
-	Status   string // filter by status ("open", "done")
-	Tag      string // filter by tag
+	Status string // filter by status ("open", "done")
+	Tag    string // filter by tag
 }
 
 // Store manages task JSON files in a directory.
@@ -139,9 +140,6 @@ func (s *Store) List(opts ListOptions) ([]model.Task, error) {
 
 // matchesFilters returns true if the task matches all specified filter criteria.
 func matchesFilters(task model.Task, opts ListOptions) bool {
-	if opts.Schedule != "" && task.Schedule != opts.Schedule {
-		return false
-	}
 	if opts.Status != "" && task.Status != opts.Status {
 		return false
 	}

@@ -9,14 +9,15 @@ import (
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
+	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/spf13/cobra"
 )
 
 // findTargetIndex looks up the target task in the others slice and returns its index.
-// Returns an error if the target is not in the same schedule group (distinguishing
-// done targets from different-schedule targets).
-func findTargetIndex(s *store.Store, prefix string, others []model.Task, taskSchedule string) (model.Task, int, error) {
+// Returns an error if the target is not in the same schedule bucket (distinguishing
+// done targets from different-bucket targets).
+func findTargetIndex(s *store.Store, prefix string, others []model.Task, taskBucket string) (model.Task, int, error) {
 	target, err := s.GetByPrefix(prefix)
 	if err != nil {
 		return model.Task{}, -1, fmt.Errorf("resolve target task: %w", err)
@@ -29,11 +30,12 @@ func findTargetIndex(s *store.Store, prefix string, others []model.Task, taskSch
 	if target.Status == "done" {
 		return model.Task{}, -1, fmt.Errorf("target task is done, not in an open schedule group")
 	}
-	return model.Task{}, -1, fmt.Errorf("target task is in schedule %q, not %q", target.Schedule, taskSchedule)
+	targetBucket := schedule.Bucket(target.Schedule, time.Now())
+	return model.Task{}, -1, fmt.Errorf("target task is in schedule bucket %q, not %q", targetBucket, taskBucket)
 }
 
 // calcPosition computes the new position and label for a move operation.
-func calcPosition(s *store.Store, others []model.Task, taskSchedule string, top, bottom bool, before, after string) (float64, string, error) {
+func calcPosition(s *store.Store, others []model.Task, taskBucket string, top, bottom bool, before, after string) (float64, string, error) {
 	switch {
 	case top:
 		return ordering.PositionTop(others), "top", nil
@@ -42,7 +44,7 @@ func calcPosition(s *store.Store, others []model.Task, taskSchedule string, top,
 		return ordering.NextPosition(others), "bottom", nil
 
 	case before != "":
-		target, idx, err := findTargetIndex(s, before, others, taskSchedule)
+		target, idx, err := findTargetIndex(s, before, others, taskBucket)
 		if err != nil {
 			return 0, "", err
 		}
@@ -55,7 +57,7 @@ func calcPosition(s *store.Store, others []model.Task, taskSchedule string, top,
 		return pos, fmt.Sprintf("before %s", display.ShortID(target.ID)), nil
 
 	default: // after != ""
-		target, idx, err := findTargetIndex(s, after, others, taskSchedule)
+		target, idx, err := findTargetIndex(s, after, others, taskBucket)
 		if err != nil {
 			return 0, "", err
 		}
@@ -69,11 +71,27 @@ func calcPosition(s *store.Store, others []model.Task, taskSchedule string, top,
 	}
 }
 
+// bucketGroup returns all open tasks in the same virtual bucket as task.
+func bucketGroup(s *store.Store, task model.Task, now time.Time) ([]model.Task, error) {
+	all, err := s.List(store.ListOptions{Status: "open"})
+	if err != nil {
+		return nil, err
+	}
+	taskBucket := schedule.Bucket(task.Schedule, now)
+	out := all[:0]
+	for _, t := range all {
+		if schedule.Bucket(t.Schedule, now) == taskBucket {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 // rebalanceAndCommit checks if rebalancing is needed, performs it, and commits all changes.
 func rebalanceAndCommit(s *store.Store, repoPath string, task model.Task, posLabel string) error {
 	commitFiles := []string{filepath.Join(".monolog", "tasks", task.ID+".json")}
 
-	allGroup, err := s.List(store.ListOptions{Schedule: task.Schedule, Status: "open"})
+	allGroup, err := bucketGroup(s, task, time.Now())
 	if err != nil {
 		return fmt.Errorf("list tasks for rebalance check: %w", err)
 	}
@@ -148,9 +166,15 @@ func newMvCmd() *cobra.Command {
 				return fmt.Errorf("resolve task: %w", err)
 			}
 
-			// Get all open tasks in the same schedule group, sorted by position.
+			now := time.Now()
+			// Lazy-migrate any legacy bucket string to ISO before computing
+			// the bucket so the on-disk file is normalized after this write.
+			task.Schedule = schedule.Normalize(task.Schedule, now)
+			taskBucket := schedule.Bucket(task.Schedule, now)
+
+			// Get all open tasks in the same schedule bucket, sorted by position.
 			// Exclude the task being moved.
-			groupTasks, err := s.List(store.ListOptions{Schedule: task.Schedule, Status: "open"})
+			groupTasks, err := bucketGroup(s, task, now)
 			if err != nil {
 				return fmt.Errorf("list tasks: %w", err)
 			}
@@ -161,7 +185,7 @@ func newMvCmd() *cobra.Command {
 				}
 			}
 
-			newPos, posLabel, err := calcPosition(s, others, task.Schedule, top, bottom, before, after)
+			newPos, posLabel, err := calcPosition(s, others, taskBucket, top, bottom, before, after)
 			if err != nil {
 				return err
 			}
@@ -172,7 +196,7 @@ func newMvCmd() *cobra.Command {
 			}
 
 			task.Position = newPos
-			task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			task.UpdatedAt = now.UTC().Format(time.RFC3339)
 
 			if err := s.Update(task); err != nil {
 				return fmt.Errorf("update task: %w", err)
