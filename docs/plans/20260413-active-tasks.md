@@ -155,12 +155,12 @@ else:                                    base styles
 - Modify: `cmd/ls.go`
 - Modify: `cmd/ls_test.go`
 
-- [ ] write failing test `TestLs_ActiveFlag_LiftsScheduleFilter` — populate three tasks, one active and scheduled for "week"; assert `ls --active` (without `--schedule`) outputs the active week task
-- [ ] write failing test `TestLs_ActiveFlag_RespectsExplicitSchedule` — when both `--active` and `--schedule today` are passed, only active tasks scheduled for today are returned
-- [ ] add `--active` bool flag to `newLsCmd`
-- [ ] when `--active` is set and `--schedule` is not explicitly provided, lift the default today-only filter (treat as `--all` for the schedule axis)
-- [ ] post-filter `tasks` via `task.IsActive()` after the schedule filter
-- [ ] run `go test ./cmd/ -run TestLs` — must pass before next task
+- [x] write failing test `TestLs_ActiveFlag_LiftsScheduleFilter` — populate three tasks, one active and scheduled for "week"; assert `ls --active` (without `--schedule`) outputs the active week task
+- [x] write failing test `TestLs_ActiveFlag_RespectsExplicitSchedule` — when both `--active` and `--schedule today` are passed, only active tasks scheduled for today are returned
+- [x] add `--active` bool flag to `newLsCmd`
+- [x] when `--active` is set and `--schedule` is not explicitly provided, lift the default today-only filter (treat as `--all` for the schedule axis)
+- [x] post-filter `tasks` via `task.IsActive()` after the schedule filter
+- [x] run `go test ./cmd/ -run TestLs` — must pass before next task
 
 ### Task 4: `edit --active=true|false` + tag-rewrite preservation
 

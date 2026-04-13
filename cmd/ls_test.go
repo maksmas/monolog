@@ -2,9 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 )
 
 func addTask(t *testing.T, args ...string) {
@@ -310,5 +316,110 @@ func TestLsCommand_ScheduleAndTagCombined(t *testing.T) {
 	}
 	if strings.Contains(output, "Tomorrow work") {
 		t.Errorf("should NOT show 'Tomorrow work', got:\n%s", output)
+	}
+}
+
+// setTaskActive marks a task on disk as active by adding the ActiveTag to its tags.
+func setTaskActive(t *testing.T, dir, id string) {
+	t.Helper()
+	path := filepath.Join(dir, ".monolog", "tasks", id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read task %s: %v", id, err)
+	}
+	var task model.Task
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	task.SetActive(true)
+	data, err = json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+}
+
+func TestLs_ActiveFlag_LiftsScheduleFilter(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create three tasks: two today (one active, one not), one week (active).
+	addTestTask(t, dir, "Today not active")
+	weekID := addTestTaskWithSchedule(t, dir, "Week active", "week")
+	addTestTask(t, dir, "Today also not active")
+
+	// Mark the week task as active on disk.
+	setTaskActive(t, dir, weekID)
+
+	// Verify schedule.Parse("week") gives us the right ISO date
+	weekISO, err := schedule.Parse("week", time.Now())
+	if err != nil {
+		t.Fatalf("schedule.Parse(week): %v", err)
+	}
+	task, ok := getTaskByID(t, dir, weekID)
+	if !ok {
+		t.Fatal("week task not found on disk")
+	}
+	if task.Schedule != weekISO {
+		t.Fatalf("week task schedule = %q, want %q", task.Schedule, weekISO)
+	}
+
+	// Run: ls --active (no --schedule)
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--active"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --active error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	// The active week task must appear (schedule filter was lifted).
+	if !strings.Contains(output, "Week active") {
+		t.Errorf("--active should show 'Week active' (schedule filter lifted), got:\n%s", output)
+	}
+	// The non-active today tasks must NOT appear.
+	if strings.Contains(output, "Today not active") {
+		t.Errorf("--active should NOT show 'Today not active', got:\n%s", output)
+	}
+	if strings.Contains(output, "Today also not active") {
+		t.Errorf("--active should NOT show 'Today also not active', got:\n%s", output)
+	}
+}
+
+func TestLs_ActiveFlag_RespectsExplicitSchedule(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create two active tasks in different schedules.
+	todayID := addTestTask(t, dir, "Today active")
+	weekID := addTestTaskWithSchedule(t, dir, "Week active", "week")
+
+	setTaskActive(t, dir, todayID)
+	setTaskActive(t, dir, weekID)
+
+	// Run: ls --active --schedule today
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--active", "--schedule", "today"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --active --schedule today error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	// Only the today-active task should appear.
+	if !strings.Contains(output, "Today active") {
+		t.Errorf("should show 'Today active', got:\n%s", output)
+	}
+	if strings.Contains(output, "Week active") {
+		t.Errorf("should NOT show 'Week active' when --schedule today is explicit, got:\n%s", output)
 	}
 }

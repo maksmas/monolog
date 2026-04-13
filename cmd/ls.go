@@ -17,6 +17,7 @@ func newLsCmd() *cobra.Command {
 		scheduleFlag string
 		tag          string
 		done         bool
+		active       bool
 	)
 
 	cmd := &cobra.Command{
@@ -46,6 +47,7 @@ func newLsCmd() *cobra.Command {
 				bucketFilter string // bucket name, or "" for none
 				exactDate    string // ISO date for exact match, or "" for none
 			)
+			scheduleChanged := cmd.Flags().Changed("schedule")
 			switch {
 			case scheduleFlag != "":
 				if schedule.IsBucket(scheduleFlag) {
@@ -53,9 +55,9 @@ func newLsCmd() *cobra.Command {
 				} else if schedule.IsISODate(scheduleFlag) {
 					exactDate = scheduleFlag
 				} else {
-					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, someday, or ISO date (YYYY-MM-DD)", scheduleFlag)
+					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or ISO date (YYYY-MM-DD)", scheduleFlag)
 				}
-			case !all && !done:
+			case !all && !done && !(active && !scheduleChanged):
 				bucketFilter = schedule.Today
 			}
 
@@ -66,17 +68,33 @@ func newLsCmd() *cobra.Command {
 
 			tasks = filterBySchedule(tasks, bucketFilter, exactDate, now)
 
+			if active {
+				tasks = filterActive(tasks)
+			}
+
 			display.FormatTasks(cmd.OutOrStdout(), tasks, now)
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "Show all open tasks across all schedules")
-	cmd.Flags().StringVarP(&scheduleFlag, "schedule", "s", "", "Filter by schedule (today, tomorrow, week, someday, or ISO date)")
+	cmd.Flags().StringVarP(&scheduleFlag, "schedule", "s", "", "Filter by schedule (today, tomorrow, week, month, someday, or ISO date)")
 	cmd.Flags().StringVarP(&tag, "tag", "t", "", "Filter by tag")
 	cmd.Flags().BoolVarP(&done, "done", "d", false, "Show completed tasks")
+	cmd.Flags().BoolVar(&active, "active", false, "Show only active tasks (lifts default today filter unless --schedule is explicit)")
 
 	return cmd
+}
+
+// filterActive returns only tasks that are marked active.
+func filterActive(tasks []model.Task) []model.Task {
+	out := tasks[:0]
+	for _, t := range tasks {
+		if t.IsActive() {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // filterBySchedule applies a bucket or exact-date predicate to tasks. Either
