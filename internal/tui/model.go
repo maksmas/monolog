@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,20 +39,21 @@ const (
 // reschedulePresets are the quick-pick bucket names shown in the reschedule
 // modal. The index + 1 is the numeric shortcut key. They are resolved into
 // concrete ISO dates via schedule.Parse before being written.
-var reschedulePresets = []string{schedule.Today, schedule.Tomorrow, schedule.Week, schedule.Someday}
+var reschedulePresets = []string{schedule.Today, schedule.Tomorrow, schedule.Week, schedule.Month, schedule.Someday}
 
 // tab describes one virtual schedule bucket shown in the TUI.
 type tab struct {
 	label  string
-	bucket string // bucket name (today/tomorrow/week/someday); empty for Done
+	bucket string // bucket name (today/tomorrow/week/month/someday); empty for Done
 	status string // "open" for regular tabs, "done" for the Done tab
 }
 
-// defaultTabs are the tabs shown in display order. 1-5 shortcut keys index in.
+// defaultTabs are the tabs shown in display order. 1-6 shortcut keys index in.
 var defaultTabs = []tab{
 	{label: "Today", bucket: schedule.Today, status: "open"},
 	{label: "Tomorrow", bucket: schedule.Tomorrow, status: "open"},
 	{label: "Week", bucket: schedule.Week, status: "open"},
+	{label: "Month", bucket: schedule.Month, status: "open"},
 	{label: "Someday", bucket: schedule.Someday, status: "open"},
 	{label: "Done", bucket: "", status: "done"},
 }
@@ -111,6 +113,49 @@ func (i item) Description() string {
 
 func (i item) FilterValue() string { return i.task.Title }
 
+// itemDelegate wraps list.DefaultDelegate so the grabbed task can be rendered
+// with distinct styles (different color than the normal cursor highlight) to
+// signal that it's being moved. A pointer to Model lets Render consult the
+// current mode; in modeGrab the selected row (which is always the grabbed
+// task) gets the grabStyles swap-in.
+type itemDelegate struct {
+	base       list.DefaultDelegate
+	grabStyles list.DefaultItemStyles
+	m          *Model
+}
+
+func newItemDelegate(m *Model) *itemDelegate {
+	base := list.NewDefaultDelegate()
+	grab := list.NewDefaultItemStyles()
+	// Distinct from default pink selection: orange/yellow reads as "held".
+	grabColor := lipgloss.AdaptiveColor{Light: "#D97706", Dark: "#FFB454"}
+	grab.SelectedTitle = grab.SelectedTitle.
+		Foreground(grabColor).
+		BorderForeground(grabColor).
+		Bold(true)
+	grab.SelectedDesc = grab.SelectedDesc.
+		Foreground(grabColor).
+		BorderForeground(grabColor)
+	return &itemDelegate{base: base, grabStyles: grab, m: m}
+}
+
+func (d *itemDelegate) Height() int  { return d.base.Height() }
+func (d *itemDelegate) Spacing() int { return d.base.Spacing() }
+func (d *itemDelegate) Update(msg tea.Msg, lm *list.Model) tea.Cmd {
+	return d.base.Update(msg, lm)
+}
+
+func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Item) {
+	if d.m.mode == modeGrab && index == lm.Index() {
+		saved := d.base.Styles
+		d.base.Styles = d.grabStyles
+		d.base.Render(w, lm, index, it)
+		d.base.Styles = saved
+		return
+	}
+	d.base.Render(w, lm, index, it)
+}
+
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
 // focusID, if non-empty, asks the handler to move the cursor to the task with
 // that ID after reload — used by add so a new task is autofocused.
@@ -133,8 +178,9 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 		input:    ti,
 	}
 
+	delegate := newItemDelegate(m)
 	for i, t := range m.tabs {
-		l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+		l := list.New(nil, delegate, 0, 0)
 		l.Title = t.label
 		l.SetShowStatusBar(false)
 		l.SetShowHelp(false)
@@ -263,7 +309,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right", "tab":
 		m.activeTab = (m.activeTab + 1) % len(m.tabs)
 		return m, nil
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		n := int(msg.String()[0] - '1')
 		if n < len(m.tabs) {
 			m.activeTab = n
@@ -276,7 +322,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openReschedule()
 	case "t":
 		return m, m.openRetag()
-	case "a":
+	case "c":
 		return m, m.openAdd()
 	case "x":
 		return m, m.openConfirmDelete()
@@ -361,10 +407,10 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.rescheduleSub == 0 {
 		// Picker step.
 		switch msg.String() {
-		case "1", "2", "3", "4":
+		case "1", "2", "3", "4", "5":
 			n := int(msg.String()[0] - '1')
 			return m, m.applyReschedule(reschedulePresets[n])
-		case "5":
+		case "6":
 			m.rescheduleSub = 1
 			m.input.Placeholder = "YYYY-MM-DD"
 			m.input.SetValue("")
@@ -1034,12 +1080,12 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r resched  t tag  a add  x del  m grab  s sync  q quit")
+		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r resched  t tag  c add  x del  m grab  s sync  q quit")
 	case modeGrab:
 		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
-			return helpStyle.Render("1 today  2 tomorrow  3 week  4 someday  5 custom  esc cancel")
+			return helpStyle.Render("1 today  2 tomorrow  3 week  4 month  5 someday  6 custom  esc cancel")
 		}
 		return helpStyle.Render("enter save  esc cancel")
 	case modeRetag, modeAdd:
@@ -1058,8 +1104,9 @@ func (m *Model) modalView() string {
 				"  1  Today\n" +
 				"  2  Tomorrow\n" +
 				"  3  Week\n" +
-				"  4  Someday\n" +
-				"  5  Custom date...")
+				"  4  Month\n" +
+				"  5  Someday\n" +
+				"  6  Custom date...")
 		}
 		return modalBox("Custom date:\n\n" + m.input.View())
 	case modeRetag:

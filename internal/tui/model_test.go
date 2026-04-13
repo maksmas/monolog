@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -125,7 +128,7 @@ func TestSkeleton_TabsPopulatedByBucket(t *testing.T) {
 	if got := len(m.lists[1].Items()); got != 1 {
 		t.Errorf("Tomorrow tab items = %d, want 1", got)
 	}
-	if got := len(m.lists[4].Items()); got != 1 {
+	if got := len(m.lists[5].Items()); got != 1 {
 		t.Errorf("Done tab items = %d, want 1", got)
 	}
 }
@@ -155,9 +158,9 @@ func TestSkeleton_NumberKeysJump(t *testing.T) {
 	if m.activeTab != 2 {
 		t.Errorf("after '3': tab = %d, want 2", m.activeTab)
 	}
-	m, _ = key(t, m, "5")
-	if m.activeTab != 4 {
-		t.Errorf("after '5': tab = %d, want 4", m.activeTab)
+	m, _ = key(t, m, "6")
+	if m.activeTab != 5 {
+		t.Errorf("after '6': tab = %d, want 5", m.activeTab)
 	}
 }
 
@@ -170,7 +173,7 @@ func TestSkeleton_DoneSortedByUpdatedAtDesc(t *testing.T) {
 		model.Task{ID: "01C", Title: "middle done", Status: "done", Position: 3000,
 			UpdatedAt: "2026-04-11T00:00:00Z"},
 	)
-	items := m.lists[4].Items()
+	items := m.lists[5].Items()
 	first := items[0].(item).task
 	if first.Title != "newest done" {
 		t.Errorf("Done[0] = %q, want %q", first.Title, "newest done")
@@ -206,7 +209,7 @@ func TestDone_MovesTaskToDoneTab(t *testing.T) {
 	if got := len(m.lists[0].Items()); got != 0 {
 		t.Errorf("Today tab should be empty after completion, got %d items", got)
 	}
-	if got := len(m.lists[4].Items()); got != 1 {
+	if got := len(m.lists[5].Items()); got != 1 {
 		t.Errorf("Done tab should have 1 item, got %d", got)
 	}
 }
@@ -244,7 +247,7 @@ func TestReschedule_CustomDate(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m, _ = key(t, m, "r")
-	m, _ = key(t, m, "5")
+	m, _ = key(t, m, "6")
 	if m.rescheduleSub != 1 {
 		t.Fatalf("rescheduleSub = %d, want 1", m.rescheduleSub)
 	}
@@ -271,7 +274,7 @@ func TestReschedule_InvalidCustomDateSurfacesError(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m, _ = key(t, m, "r")
-	m, _ = key(t, m, "5")
+	m, _ = key(t, m, "6")
 	m = typeString(t, m, "not-a-date")
 	m, cmd := key(t, m, "enter")
 	if cmd != nil {
@@ -310,10 +313,29 @@ func TestRetag_UpdatesTags(t *testing.T) {
 	}
 }
 
+func TestTUI_CKeyOpensAddModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Errorf("after pressing 'c': mode = %v, want modeAdd", m.mode)
+	}
+}
+
+func TestTUI_AKeyDoesNotOpenAddModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "a")
+	if m.mode == modeAdd {
+		t.Errorf("after pressing 'a': mode = modeAdd, want modeNormal (a should no longer open add modal)")
+	}
+	if m.mode != modeNormal {
+		t.Errorf("after pressing 'a': mode = %v, want modeNormal", m.mode)
+	}
+}
+
 func TestAdd_CreatesTaskInActiveTab(t *testing.T) {
 	m := newTestModel(t)
-	// On the Today tab (default); press 'a', type title, enter.
-	m, _ = key(t, m, "a")
+	// On the Today tab (default); press 'c', type title, enter.
+	m, _ = key(t, m, "c")
 	if m.mode != modeAdd {
 		t.Fatalf("mode = %v, want modeAdd", m.mode)
 	}
@@ -341,7 +363,7 @@ func TestAdd_FocusesNewTaskAfterCreate(t *testing.T) {
 			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	// Cursor starts at index 0; add a task and expect cursor to move to it.
-	m, _ = key(t, m, "a")
+	m, _ = key(t, m, "c")
 	m = typeString(t, m, "fresh task")
 	m, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -359,11 +381,11 @@ func TestAdd_FocusesNewTaskAcrossTab(t *testing.T) {
 	// Adding from the Done tab falls back to the Today bucket. The new task
 	// should be focused in whatever tab it actually lands in.
 	m := newTestModel(t)
-	m, _ = key(t, m, "5") // Done tab
-	if m.activeTab != 4 {
-		t.Fatalf("precondition: activeTab = %d, want 4", m.activeTab)
+	m, _ = key(t, m, "6") // Done tab
+	if m.activeTab != 5 {
+		t.Fatalf("precondition: activeTab = %d, want 5", m.activeTab)
 	}
-	m, _ = key(t, m, "a")
+	m, _ = key(t, m, "c")
 	m = typeString(t, m, "stray task")
 	m, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -381,7 +403,7 @@ func TestAdd_UsesActiveTabSchedule(t *testing.T) {
 	m := newTestModel(t)
 	// Switch to Week tab first.
 	m, _ = key(t, m, "3")
-	m, _ = key(t, m, "a")
+	m, _ = key(t, m, "c")
 	m = typeString(t, m, "weekly thing")
 	m, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -516,12 +538,12 @@ func TestGrab_RightIntoDoneSetsStatusDone(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m, _ = key(t, m, "m")
-	// Today -> Tomorrow -> Week -> Someday -> Done = 4 right presses.
-	for i := 0; i < 4; i++ {
+	// Today -> Tomorrow -> Week -> Month -> Someday -> Done = 5 right presses.
+	for i := 0; i < 5; i++ {
 		m, _ = key(t, m, "right")
 	}
-	if m.activeTab != 4 {
-		t.Fatalf("activeTab = %d, want 4 (Done)", m.activeTab)
+	if m.activeTab != 5 {
+		t.Fatalf("activeTab = %d, want 5 (Done)", m.activeTab)
 	}
 	_, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -542,11 +564,11 @@ func TestGrab_LeftOutOfDoneSetsStatusOpen(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	// Jump to Done tab, grab, press left (-> Someday).
-	m, _ = key(t, m, "5")
+	m, _ = key(t, m, "6")
 	m, _ = key(t, m, "m")
 	m, _ = key(t, m, "left")
-	if m.activeTab != 3 {
-		t.Fatalf("activeTab = %d, want 3 (Someday)", m.activeTab)
+	if m.activeTab != 4 {
+		t.Fatalf("activeTab = %d, want 4 (Someday)", m.activeTab)
 	}
 	_, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -585,14 +607,59 @@ func TestGrab_UpDownNoOpInDoneTab(t *testing.T) {
 		model.Task{ID: "01B", Title: "done two", Status: "done", Schedule: "today",
 			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
-	m, _ = key(t, m, "5") // Done tab
-	m.lists[4].Select(1)
+	m, _ = key(t, m, "6") // Done tab
+	m.lists[5].Select(1)
 	m, _ = key(t, m, "m")
 	before := m.grabIndex
 	m, _ = key(t, m, "up")
 	if m.grabIndex != before {
 		t.Errorf("grabIndex should not change in Done tab, before=%d after=%d",
 			before, m.grabIndex)
+	}
+}
+
+func TestGrab_DelegateHighlightsGrabbedItemOnly(t *testing.T) {
+	// Force a color profile so the rendered output actually contains ANSI
+	// escape codes; otherwise lipgloss strips them when stdout isn't a TTY
+	// (as under `go test`) and styled vs. unstyled text becomes identical.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Delegate needs a non-zero list width to render.
+	m.lists[0].SetSize(80, 20)
+
+	d := newItemDelegate(m)
+	items := m.lists[0].Items()
+
+	// Index 0 is the selected/cursor row in normal mode.
+	var normalSel, normalOther bytes.Buffer
+	d.Render(&normalSel, m.lists[0], 0, items[0])
+	d.Render(&normalOther, m.lists[0], 1, items[1])
+
+	// Grab the first item.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	var grabSel, grabOther bytes.Buffer
+	d.Render(&grabSel, m.lists[0], 0, items[0])
+	d.Render(&grabOther, m.lists[0], 1, items[1])
+
+	if normalSel.String() == grabSel.String() {
+		t.Errorf("grabbed row should render with different styling than normal selected row;\n normal=%q\n grab  =%q",
+			normalSel.String(), grabSel.String())
+	}
+	if normalOther.String() != grabOther.String() {
+		t.Errorf("non-grabbed row should render identically in grab mode;\n normal=%q\n grab  =%q",
+			normalOther.String(), grabOther.String())
 	}
 }
 

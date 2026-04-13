@@ -183,12 +183,12 @@ else:                                    base styles
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] write failing test `TestTUI_CKeyOpensAddModal` — pressing `c` enters `modeAdd`
-- [ ] write failing test `TestTUI_AKeyDoesNotOpenAddModal` — after pressing `a` in normal mode, model is NOT in `modeAdd` (it's free for the active toggle in the next task)
-- [ ] update existing add-modal tests (any `key(t, m, "a")` that expects modeAdd) to use `"c"` instead
-- [ ] in `updateNormal`, swap the `a` → openAdd binding for `c` → openAdd
-- [ ] update `helpLine()` normal-mode string: `a add` → `c add`
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] write failing test `TestTUI_CKeyOpensAddModal` — pressing `c` enters `modeAdd`
+- [x] write failing test `TestTUI_AKeyDoesNotOpenAddModal` — after pressing `a` in normal mode, model is NOT in `modeAdd` (it's free for the active toggle in the next task)
+- [x] update existing add-modal tests (any `key(t, m, "a")` that expects modeAdd) to use `"c"` instead
+- [x] in `updateNormal`, swap the `a` → openAdd binding for `c` → openAdd
+- [x] update `helpLine()` normal-mode string: `a add` → `c add`
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 6: TUI — `a` key toggles active on focused task; retag preserves active
 
