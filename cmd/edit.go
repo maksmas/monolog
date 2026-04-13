@@ -17,6 +17,7 @@ func newEditCmd() *cobra.Command {
 		body        string
 		scheduleArg string
 		tags        string
+		active      bool
 	)
 
 	cmd := &cobra.Command{
@@ -28,8 +29,8 @@ func newEditCmd() *cobra.Command {
 			prefix := args[0]
 
 			// Require at least one edit flag
-			if !cmd.Flags().Changed("title") && !cmd.Flags().Changed("body") && !cmd.Flags().Changed("schedule") && !cmd.Flags().Changed("tags") {
-				return fmt.Errorf("at least one of --title, --body, --schedule, or --tags is required")
+			if !cmd.Flags().Changed("title") && !cmd.Flags().Changed("body") && !cmd.Flags().Changed("schedule") && !cmd.Flags().Changed("tags") && !cmd.Flags().Changed("active") {
+				return fmt.Errorf("at least one of --title, --body, --schedule, --tags, or --active is required")
 			}
 
 			now := time.Now()
@@ -66,7 +67,12 @@ func newEditCmd() *cobra.Command {
 				task.Schedule = schedule.Normalize(task.Schedule, now)
 			}
 			if cmd.Flags().Changed("tags") {
+				wasActive := task.IsActive()
 				task.Tags = sanitizeTags(tags)
+				task.SetActive(wasActive)
+			}
+			if cmd.Flags().Changed("active") {
+				task.SetActive(active)
 			}
 
 			task.UpdatedAt = now.UTC().Format(time.RFC3339)
@@ -87,8 +93,9 @@ func newEditCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&body, "body", "", "New body text")
-	cmd.Flags().StringVar(&scheduleArg, "schedule", "", "New schedule (today, tomorrow, week, someday, or ISO date)")
+	cmd.Flags().StringVar(&scheduleArg, "schedule", "", "New schedule (today, tomorrow, week, month, someday, or ISO date)")
 	cmd.Flags().StringVar(&tags, "tags", "", "New comma-separated tags")
+	cmd.Flags().BoolVar(&active, "active", false, "Set task active state (true or false)")
 
 	return cmd
 }

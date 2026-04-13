@@ -168,14 +168,14 @@ else:                                    base styles
 - Modify: `cmd/edit.go`
 - Modify: `cmd/task_commands_test.go` (or wherever edit is tested)
 
-- [ ] write failing test `TestEdit_ActivateAndDeactivate` — start with no active tag; `--active=true` adds it; `--active=false` removes it; flag absent leaves tags unchanged
-- [ ] write failing test `TestEdit_TagsPreservesActive` — given an active task, `edit --tags "work"` results in tags `["active", "work"]` (or equivalent ordering); the active state survives a tag rewrite
-- [ ] add `bool` for `--active` flag via `BoolVar`; detect via `cmd.Flags().Changed("active")`
-- [ ] include `--active` in the "at least one of" required-flag check
-- [ ] when `--tags` is changed: capture `wasActive := task.IsActive()` before assigning new tags, then `task.SetActive(wasActive)` after
-- [ ] when `--active` is changed: call `task.SetActive(value)` (after the tags rewrite, if both flags were given, so explicit intent wins)
-- [ ] commit message reflects the change (e.g., `edit: <title>` is fine; no need for special `active:` prefix)
-- [ ] run `go test ./cmd/ -run TestEdit` — must pass before next task
+- [x] write failing test `TestEdit_ActivateAndDeactivate` — start with no active tag; `--active=true` adds it; `--active=false` removes it; flag absent leaves tags unchanged
+- [x] write failing test `TestEdit_TagsPreservesActive` — given an active task, `edit --tags "work"` results in tags `["active", "work"]` (or equivalent ordering); the active state survives a tag rewrite
+- [x] add `bool` for `--active` flag via `BoolVar`; detect via `cmd.Flags().Changed("active")`
+- [x] include `--active` in the "at least one of" required-flag check
+- [x] when `--tags` is changed: capture `wasActive := task.IsActive()` before assigning new tags, then `task.SetActive(wasActive)` after
+- [x] when `--active` is changed: call `task.SetActive(value)` (after the tags rewrite, if both flags were given, so explicit intent wins)
+- [x] commit message reflects the change (e.g., `edit: <title>` is fine; no need for special `active:` prefix)
+- [x] run `go test ./cmd/ -run TestEdit` — must pass before next task
 
 ### Task 5: TUI — rebind add from `a` to `c`
 
