@@ -2286,6 +2286,29 @@ func TestBuildTagTabs_Ordering(t *testing.T) {
 	}
 }
 
+func TestBuildTagTabs_CaseInsensitiveSort(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01A", Title: "task a", Tags: []string{"mlog"}},
+		{ID: "01B", Title: "task b", Tags: []string{"Warsaw"}},
+		{ID: "01C", Title: "task c", Tags: []string{"jean"}},
+	}
+	tabs := buildTagTabs(tasks)
+
+	// Expect: Active, jean, mlog, Warsaw, Untagged (case-insensitive alpha).
+	if len(tabs) != 5 {
+		t.Fatalf("len(tabs) = %d, want 5", len(tabs))
+	}
+	if tabs[1].label != "jean" {
+		t.Errorf("tabs[1].label = %q, want %q", tabs[1].label, "jean")
+	}
+	if tabs[2].label != "mlog" {
+		t.Errorf("tabs[2].label = %q, want %q", tabs[2].label, "mlog")
+	}
+	if tabs[3].label != "Warsaw" {
+		t.Errorf("tabs[3].label = %q, want %q", tabs[3].label, "Warsaw")
+	}
+}
+
 func TestBuildTagTabs_NoTags(t *testing.T) {
 	// Tasks with no tags at all (or only active tag which is excluded by CollectTags).
 	tasks := []model.Task{
@@ -2721,6 +2744,93 @@ func TestTagViewReload_BucketGroupingAndSeparators(t *testing.T) {
 	it3 := items[3].(item)
 	if it3.isSeparator || it3.task.ID != "01BKT2" {
 		t.Errorf("item 3: expected task 01BKT2, got separator=%v id=%q", it3.isSeparator, it3.task.ID)
+	}
+}
+
+func TestTagViewReload_DoneTasksAppearUnderDoneSeparator(t *testing.T) {
+	openTask := makeTask(t, "01OPEN", "open task", schedule.Today, []string{"proj"})
+	openTask.Position = 1000
+
+	doneTask := makeTask(t, "01DONE", "done task", schedule.Today, []string{"proj"})
+	doneTask.Status = "done"
+	doneTask.UpdatedAt = "2026-04-14T10:00:00Z"
+
+	m := newTestModel(t, openTask, doneTask)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	projIdx := findTabByLabel(t, m, "proj")
+	items := m.lists[projIdx].Items()
+
+	// Expect: separator("Today"), openTask, separator("Done"), doneTask
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+
+	sep0 := items[0].(item)
+	if !sep0.isSeparator || sep0.task.Title != "Today" {
+		t.Errorf("item 0: expected Today separator, got separator=%v title=%q", sep0.isSeparator, sep0.task.Title)
+	}
+
+	it1 := items[1].(item)
+	if it1.task.ID != "01OPEN" {
+		t.Errorf("item 1: expected 01OPEN, got %q", it1.task.ID)
+	}
+
+	sep2 := items[2].(item)
+	if !sep2.isSeparator || sep2.task.Title != "Done" {
+		t.Errorf("item 2: expected Done separator, got separator=%v title=%q", sep2.isSeparator, sep2.task.Title)
+	}
+
+	it3 := items[3].(item)
+	if it3.task.ID != "01DONE" {
+		t.Errorf("item 3: expected 01DONE, got %q", it3.task.ID)
+	}
+}
+
+func TestTagViewReload_DoneOnlyTagHidden(t *testing.T) {
+	// A tag with only done tasks should NOT create a tab.
+	doneTask := makeTask(t, "01DTAG", "done tagged", schedule.Today, []string{"archived"})
+	doneTask.Status = "done"
+
+	m := newTestModel(t, doneTask)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// The "archived" tab should NOT exist — only Active and Untagged.
+	for _, tt := range m.tagTabs {
+		if tt.label == "archived" {
+			t.Error("done-only tag 'archived' should not create a tab")
+		}
+	}
+}
+
+func TestTagViewReload_DoneTasksVisibleWhenOpenTaskExists(t *testing.T) {
+	// A tag with open + done tasks: tab exists and shows both.
+	openTask := makeTask(t, "01OPEN", "open task", schedule.Today, []string{"proj"})
+	openTask.Position = 1000
+	doneTask := makeTask(t, "01DONE", "done task", schedule.Today, []string{"proj"})
+	doneTask.Status = "done"
+
+	m := newTestModel(t, openTask, doneTask)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	idx := findTabByLabel(t, m, "proj")
+	items := m.lists[idx].Items()
+
+	// Should have: separator("Today"), openTask, separator("Done"), doneTask
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+	if items[2].(item).task.Title != "Done" {
+		t.Errorf("item 2: expected Done separator, got %q", items[2].(item).task.Title)
+	}
+	if items[3].(item).task.ID != "01DONE" {
+		t.Errorf("item 3: expected 01DONE, got %q", items[3].(item).task.ID)
 	}
 }
 

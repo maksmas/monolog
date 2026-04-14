@@ -386,7 +386,7 @@ func (m *Model) reloadAll() error {
 // refreshTagTabs rescans tasks and rebuilds tagTabs/tabs/lists if the set of
 // tags has changed. Called from reloadAll in tag view mode.
 func (m *Model) refreshTagTabs() error {
-	allTasks, err := m.store.List(store.ListOptions{Status: "open"})
+	allTasks, err := m.store.List(store.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list tasks for tag refresh: %w", err)
 	}
@@ -469,34 +469,37 @@ func (m *Model) reloadTagTab(idx int) error {
 	tt := m.tagTabs[idx]
 	nowT := time.Now()
 
-	// Load all open tasks — we filter by tag in-process.
-	allTasks, err := m.store.List(store.ListOptions{Status: "open"})
+	// Load all tasks (open + done) — we filter by tag in-process.
+	allTasks, err := m.store.List(store.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list tasks: %w", err)
 	}
 
-	// Filter tasks by this tab's tag criterion.
-	var filtered []model.Task
+	// Filter tasks by this tab's tag criterion, splitting open and done.
+	var openFiltered, doneFiltered []model.Task
 	for _, task := range allTasks {
+		match := false
 		switch {
 		case tt.isActive:
-			if task.IsActive() {
-				filtered = append(filtered, task)
-			}
+			match = task.IsActive()
 		case tt.isUntagged:
-			if len(display.VisibleTags(task.Tags)) == 0 {
-				filtered = append(filtered, task)
-			}
+			match = len(display.VisibleTags(task.Tags)) == 0
 		default:
-			if taskHasTag(task, tt.tag) {
-				filtered = append(filtered, task)
-			}
+			match = taskHasTag(task, tt.tag)
+		}
+		if !match {
+			continue
+		}
+		if task.Status == "done" {
+			doneFiltered = append(doneFiltered, task)
+		} else {
+			openFiltered = append(openFiltered, task)
 		}
 	}
 
-	// Group by bucket, preserving reschedulePresets order.
+	// Group open tasks by bucket, preserving reschedulePresets order.
 	bucketTasks := make(map[string][]model.Task)
-	for _, task := range filtered {
+	for _, task := range openFiltered {
 		bkt := schedule.Bucket(task.Schedule, nowT)
 		bucketTasks[bkt] = append(bucketTasks[bkt], task)
 	}
@@ -515,10 +518,20 @@ func (m *Model) reloadTagTab(idx int) error {
 		if len(tasks) == 0 {
 			continue
 		}
-		// Capitalize the bucket name for the separator label.
 		label := bucketDisplayName(bkt)
 		items = append(items, newSeparatorItem(label))
 		for _, task := range tasks {
+			items = append(items, item{task: task, now: nowT})
+		}
+	}
+
+	// Append done tasks at the bottom, sorted by completion time (newest first).
+	if len(doneFiltered) > 0 {
+		sort.SliceStable(doneFiltered, func(i, j int) bool {
+			return doneFiltered[i].UpdatedAt > doneFiltered[j].UpdatedAt
+		})
+		items = append(items, newSeparatorItem("Done"))
+		for _, task := range doneFiltered {
 			items = append(items, item{task: task, now: nowT})
 		}
 	}
@@ -606,8 +619,21 @@ func (m *Model) reloadActive() error {
 // buildTagTabs builds the tagTab slice for tag view mode from the given tasks.
 // Ordering: Active first, then alphabetically sorted tags, then Untagged last.
 // The Active and Untagged tabs are always present, even when empty.
+// Only tags that have at least one open task generate a tab (done tasks still
+// appear inside those tabs via reloadTagTab).
 func buildTagTabs(tasks []model.Task) []tagTab {
-	tags := model.CollectTags(tasks) // sorted, ActiveTag excluded
+	// Derive tabs only from open tasks so tags with only done tasks are hidden.
+	var open []model.Task
+	for _, t := range tasks {
+		if t.Status != "done" {
+			open = append(open, t)
+		}
+	}
+	tags := model.CollectTags(open) // ActiveTag excluded
+	// Re-sort case-insensitively so "jean" < "mlog" < "Warsaw 26".
+	sort.Slice(tags, func(i, j int) bool {
+		return strings.ToLower(tags[i]) < strings.ToLower(tags[j])
+	})
 
 	tabs := make([]tagTab, 0, len(tags)+2)
 
@@ -639,8 +665,8 @@ func buildTagTabs(tasks []model.Task) []tagTab {
 // rebuildForTagView switches the model to tag view mode. It scans all tasks,
 // builds tag tabs, recreates list widgets, and reloads data.
 func (m *Model) rebuildForTagView() error {
-	// Load all open tasks to derive tags.
-	allTasks, err := m.store.List(store.ListOptions{Status: "open"})
+	// Load all tasks (open + done) to derive tags.
+	allTasks, err := m.store.List(store.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list tasks for tag view: %w", err)
 	}
@@ -1557,16 +1583,23 @@ func (m *Model) commitGrab() tea.Cmd {
 	nowT := time.Now()
 
 	if m.viewMode == viewTag {
-		// In tag view, derive the schedule from the separator above the task.
+		// In tag view, derive the schedule and status from the separator above.
 		bucket := m.findBucketAbove()
-		if bucket != "" {
-			if schedule.Bucket(t.Schedule, nowT) != bucket {
-				scheduleDate, err := schedule.Parse(bucket, nowT)
-				if err == nil {
-					t.Schedule = scheduleDate
+		if bucket == "done" {
+			// Moved into the Done section.
+			t.Status = "done"
+			t.SetActive(false)
+		} else {
+			t.Status = "open"
+			if bucket != "" {
+				if schedule.Bucket(t.Schedule, nowT) != bucket {
+					scheduleDate, err := schedule.Parse(bucket, nowT)
+					if err == nil {
+						t.Schedule = scheduleDate
+					}
+				} else {
+					t.Schedule = schedule.Normalize(t.Schedule, nowT)
 				}
-			} else {
-				t.Schedule = schedule.Normalize(t.Schedule, nowT)
 			}
 		}
 	} else {
@@ -1587,19 +1620,23 @@ func (m *Model) commitGrab() tea.Cmd {
 			}
 		}
 	}
-	t.Status = targetTab.status
-	if t.Status == "" {
-		t.Status = "open"
-	}
-	if t.Status == "done" {
-		t.SetActive(false)
+	// In tag view the status was already set from the separator above.
+	// In schedule view derive it from the target tab.
+	if m.viewMode != viewTag {
+		t.Status = targetTab.status
+		if t.Status == "" {
+			t.Status = "open"
+		}
+		if t.Status == "done" {
+			t.SetActive(false)
+		}
 	}
 	t.UpdatedAt = now()
 
 	// Compute the new Position from the grabbed task's in-memory neighbors
-	// within the destination tab. The Done tab has no meaningful ordering
+	// within the destination tab. Done tasks have no meaningful ordering
 	// (sorted by UpdatedAt), but we still keep a sane Position value.
-	if targetTab.status != "done" {
+	if t.Status != "done" {
 		t.Position = m.computeGrabPosition(t.ID)
 	}
 
