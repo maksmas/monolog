@@ -449,6 +449,108 @@ func TestAddCommand_EmptyTagsProducesNil(t *testing.T) {
 	}
 }
 
+func TestAddCommand_AutoTagFromTitlePrefix(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create an existing task with the tag "jean"
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"add", "some task", "-t", "jean"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("setup add error = %v", err)
+	}
+
+	// Now add a task with title prefix "jean: do thing" — should auto-tag "jean"
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"add", "jean: do thing"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	var newTask model.Task
+	for _, task := range tasks {
+		if task.Title == "jean: do thing" {
+			newTask = task
+			break
+		}
+	}
+	if newTask.ID == "" {
+		t.Fatal("could not find the new task")
+	}
+	if len(newTask.Tags) != 1 || newTask.Tags[0] != "jean" {
+		t.Errorf("Tags: got %v, want [jean]", newTask.Tags)
+	}
+}
+
+func TestAddCommand_AutoTagNotAppliedForUnknownTag(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Add a task with title prefix "jean: do thing" but no existing task has tag "jean"
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"add", "jean: do thing"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if len(tasks[0].Tags) != 0 {
+		t.Errorf("Tags: got %v, want nil/empty (no auto-tag for unknown prefix)", tasks[0].Tags)
+	}
+}
+
+func TestAddCommand_AutoTagNoDuplicate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create an existing task with the tag "jean"
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"add", "some task", "-t", "jean"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("setup add error = %v", err)
+	}
+
+	// Add task with title prefix "jean: do thing" AND explicit --tags jean
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"add", "jean: do thing", "-t", "jean"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	var newTask model.Task
+	for _, task := range tasks {
+		if task.Title == "jean: do thing" {
+			newTask = task
+			break
+		}
+	}
+	if newTask.ID == "" {
+		t.Fatal("could not find the new task")
+	}
+	// Should have exactly one "jean" tag, not two
+	if len(newTask.Tags) != 1 || newTask.Tags[0] != "jean" {
+		t.Errorf("Tags: got %v, want [jean] (no duplicate)", newTask.Tags)
+	}
+}
+
 func TestAddCommand_MultipleAddsCreateSeparateCommits(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

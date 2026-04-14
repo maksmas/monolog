@@ -60,8 +60,9 @@ func newAddCmd() *cobra.Command {
 				UpdatedAt: nowStr,
 			}
 
-			// Parse and sanitize tags
+			// Parse and sanitize tags, then auto-tag from title prefix
 			task.Tags = model.SanitizeTags(tags)
+			task.Tags = model.AutoTag(title, model.CollectTags(existing), task.Tags)
 
 			if err := s.Create(task); err != nil {
 				return fmt.Errorf("create task: %w", err)
