@@ -82,12 +82,12 @@
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Define `addField` type and constants (`addFocusTitle`, `addFocusTags`)
-- [ ] Add `tagInput textinput.Model` and `addFocus addField` fields to `Model` struct
-- [ ] Initialize `tagInput` in `newModel` (placeholder "tag1, tag2", CharLimit 512)
-- [ ] Update `closeModal()` to call `m.tagInput.Blur()`, `m.tagInput.SetValue("")`, and reset `addFocus`
-- [ ] Update `openAdd()` to reset both inputs, set `addFocus = addFocusTitle`, focus title input
-- [ ] Run tests — Task 1 tests expected to still fail (fields exist but behavior not yet wired)
+- [x] Define `addField` type and constants (`addFocusTitle`, `addFocusTags`)
+- [x] Add `tagInput textinput.Model` and `addFocus addField` fields to `Model` struct
+- [x] Initialize `tagInput` in `newModel` (placeholder "tag1, tag2", CharLimit 512)
+- [x] Update `closeModal()` to call `m.tagInput.Blur()`, `m.tagInput.SetValue("")`, and reset `addFocus`
+- [x] Update `openAdd()` to reset both inputs, set `addFocus = addFocusTitle`, focus title input
+- [x] Run tests — Task 1 tests expected to still fail (fields exist but behavior not yet wired)
 
 ### Task 3: Update `updateAdd` to handle Tab and pass tags to `createCmd`
 

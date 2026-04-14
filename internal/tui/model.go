@@ -37,6 +37,14 @@ const (
 	modeConfirmDelete
 )
 
+// addField tracks which input has focus in the add modal.
+type addField int
+
+const (
+	addFocusTitle addField = iota
+	addFocusTags
+)
+
 // reschedulePresets are the quick-pick bucket names shown in the reschedule
 // modal. The index + 1 is the numeric shortcut key. They are resolved into
 // concrete ISO dates via schedule.Parse before being written.
@@ -76,6 +84,10 @@ type Model struct {
 	input         textinput.Model
 	modalTask     *model.Task // task the modal is acting on (nil for add)
 	rescheduleSub int         // 0 = picker, 1 = custom date input
+
+	// Add-modal state: second text input for tags and focus tracker.
+	tagInput textinput.Model
+	addFocus addField
 
 	// Grab-mode state. grabTask is a working copy whose Position is not
 	// mutated until Enter drop; its current visual location is (activeTab,
@@ -196,12 +208,17 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 	ti := textinput.New()
 	ti.CharLimit = 512
 
+	tagTi := textinput.New()
+	tagTi.Placeholder = "tag1, tag2"
+	tagTi.CharLimit = 512
+
 	m := &Model{
 		store:    s,
 		repoPath: repoPath,
 		tabs:     defaultTabs,
 		lists:    make([]list.Model, len(defaultTabs)),
 		input:    ti,
+		tagInput: tagTi,
 	}
 
 	delegate := newItemDelegate(m)
@@ -409,6 +426,9 @@ func (m *Model) closeModal() {
 	m.rescheduleSub = 0
 	m.input.Blur()
 	m.input.SetValue("")
+	m.tagInput.Blur()
+	m.tagInput.SetValue("")
+	m.addFocus = addFocusTitle
 }
 
 // --- done action -----------------------------------------------------------
@@ -585,6 +605,9 @@ func (m *Model) openAdd() tea.Cmd {
 	m.input.Placeholder = "task title"
 	m.input.SetValue("")
 	m.input.Focus()
+	m.tagInput.SetValue("")
+	m.tagInput.Blur()
+	m.addFocus = addFocusTitle
 	return textinput.Blink
 }
 
