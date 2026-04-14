@@ -1447,7 +1447,7 @@ func (m *Model) helpLine() string {
 	case modeNormal:
 		return helpStyle.Render("←/→ tabs  1-6 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  s sync  q quit")
 	case modeGrab:
-		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
+		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ bucket  g/G top/bottom  enter drop  esc cancel  +d/e/r/t/a/c/x/s")
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
 			return helpStyle.Render("1 today  2 tomorrow  3 week  4 month  5 someday  6 custom  esc cancel")

@@ -79,24 +79,24 @@
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Update `helpLine()` grab-mode text to include the available actions alongside the existing grab controls
-- [ ] Keep it concise — e.g. `"GRAB  ↑/↓ reorder  ←/→ bucket  g/G top/bottom  enter drop  esc cancel  +d/e/r/t/a/c/x/s"`
-- [ ] Write test: verify `helpLine()` in grab mode contains the action key hints
-- [ ] Run tests — must pass before task 4
+- [x] Update `helpLine()` grab-mode text to include the available actions alongside the existing grab controls
+- [x] Keep it concise — e.g. `"GRAB  ↑/↓ reorder  ←/→ bucket  g/G top/bottom  enter drop  esc cancel  +d/e/r/t/a/c/x/s"`
+- [x] Write test: verify `helpLine()` in grab mode contains the action key hints
+- [x] Run tests — must pass before task 4
 
 ### Task 4: Verify acceptance criteria
-- [ ] Verify: pressing `e` in grab mode saves position and opens editor
-- [ ] Verify: pressing `r` in grab mode saves position and opens reschedule modal
-- [ ] Verify: pressing `t` in grab mode saves position and opens retag modal
-- [ ] Verify: pressing `d`/`a`/`c`/`x`/`s` all work in grab mode
-- [ ] Verify: `Esc` still cancels grab without saving
-- [ ] Verify: grab mode after cross-tab move + action key correctly saves to new tab
-- [ ] Run full test suite: `go test ./...`
-- [ ] Run lint: `go vet ./...`
+- [x] Verify: pressing `e` in grab mode saves position and opens editor (manual test — skipped, covered by TestGrab_EditKey_SetsPendingAndCommits)
+- [x] Verify: pressing `r` in grab mode saves position and opens reschedule modal (manual test — skipped, covered by TestGrab_RescheduleKey_OpensModalAfterCommit)
+- [x] Verify: pressing `t` in grab mode saves position and opens retag modal (manual test — skipped, covered by TestGrab_RetagKey_OpensModalAfterCommit)
+- [x] Verify: pressing `d`/`a`/`c`/`x`/`s` all work in grab mode (manual test — skipped, covered by TestGrab_DoneKey_MarksTaskDoneAfterCommit, TestGrab_ActiveKey_TogglesActiveAfterCommit, and other unit tests)
+- [x] Verify: `Esc` still cancels grab without saving (manual test — skipped, covered by TestGrab_EscCancels)
+- [x] Verify: grab mode after cross-tab move + action key correctly saves to new tab (manual test — skipped, covered by TestGrab_RightMovesToNextTabAndSetsSchedule + action key tests)
+- [x] Run full test suite: `go test ./...`
+- [x] Run lint: `go vet ./...`
 
 ### Task 5: [Final] Update documentation
-- [ ] Update CLAUDE.md if new patterns discovered
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Update CLAUDE.md if new patterns discovered (reviewed — no new architectural patterns; pendingAction is TUI-internal)
+- [x] Move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

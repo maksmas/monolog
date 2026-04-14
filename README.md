@@ -122,7 +122,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `r` | Reschedule (modal with 1–5 presets or 6 for custom date) |
 | `t` | Retag focused task |
 | `e` | Edit in `$EDITOR` (YAML round-trip) |
-| `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom) |
+| `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
 | `x` | Delete task (with confirmation) |
 | `s` | Sync (commit, pull --rebase, push) |
 | `q` | Quit |
