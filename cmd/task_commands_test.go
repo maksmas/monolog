@@ -193,6 +193,53 @@ func TestDoneCommand_DoubleDone(t *testing.T) {
 	}
 }
 
+func TestDone_DeactivatesTask(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Active then done")
+
+	// Activate the task first via edit --active=true.
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --active=true error = %v", err)
+	}
+
+	// Verify it's active.
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after activate")
+	}
+	if !task.IsActive() {
+		t.Fatal("task should be active before done")
+	}
+
+	// Mark as done.
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("done command error = %v\noutput: %s", err, buf.String())
+	}
+
+	// Verify task is done AND no longer active.
+	task, ok = getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after done")
+	}
+	if task.Status != "done" {
+		t.Errorf("Status: got %q, want %q", task.Status, "done")
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after done — done must auto-deactivate")
+	}
+}
+
 func TestDoneCommand_ErrorNoArgs(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
@@ -645,5 +692,149 @@ func TestEditCommand_NoFlagsNoChange(t *testing.T) {
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Fatal("expected error when no edit flags provided, got nil")
+	}
+}
+
+// --- Edit --active tests ---
+
+func TestEdit_ActivateAndDeactivate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Active toggle")
+
+	// Initially task should not be active
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if task.IsActive() {
+		t.Fatal("new task should not be active")
+	}
+
+	// Activate with --active=true
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --active=true error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok = getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after activate")
+	}
+	if !task.IsActive() {
+		t.Error("task should be active after --active=true")
+	}
+
+	// Deactivate with --active=false
+	rootCmd2 := NewRootCmd()
+	buf2 := new(bytes.Buffer)
+	rootCmd2.SetOut(buf2)
+	rootCmd2.SetErr(buf2)
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--active=false"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("edit --active=false error = %v\noutput: %s", err, buf2.String())
+	}
+
+	task, ok = getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after deactivate")
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after --active=false")
+	}
+
+	// Omitting --active leaves tags unchanged (task stays inactive)
+	rootCmd3 := NewRootCmd()
+	rootCmd3.SetOut(new(bytes.Buffer))
+	rootCmd3.SetErr(new(bytes.Buffer))
+	rootCmd3.SetArgs([]string{"edit", id[:8], "--title", "Renamed"})
+	if err := rootCmd3.Execute(); err != nil {
+		t.Fatalf("edit --title error = %v", err)
+	}
+
+	task, ok = getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after title edit")
+	}
+	if task.IsActive() {
+		t.Error("task should remain inactive when --active is not passed")
+	}
+}
+
+func TestEdit_TagsPreservesActive(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Tag preserve")
+
+	// Activate the task first
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("activate error = %v", err)
+	}
+
+	// Now rewrite tags without mentioning active
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--tags", "work,urgent"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("edit --tags error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after tag rewrite")
+	}
+	if !task.IsActive() {
+		t.Error("active state should be preserved after --tags rewrite")
+	}
+	// Check that the user's tags are present
+	hasWork, hasUrgent := false, false
+	for _, tag := range task.Tags {
+		if tag == "work" {
+			hasWork = true
+		}
+		if tag == "urgent" {
+			hasUrgent = true
+		}
+	}
+	if !hasWork || !hasUrgent {
+		t.Errorf("expected tags to contain 'work' and 'urgent', got %v", task.Tags)
+	}
+
+	// Test: when both --tags AND --active=false are given, explicit --active wins
+	rootCmd3 := NewRootCmd()
+	rootCmd3.SetOut(new(bytes.Buffer))
+	rootCmd3.SetErr(new(bytes.Buffer))
+	rootCmd3.SetArgs([]string{"edit", id[:8], "--tags", "personal", "--active=false"})
+	if err := rootCmd3.Execute(); err != nil {
+		t.Fatalf("edit --tags --active=false error = %v", err)
+	}
+
+	task, ok = getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after combined edit")
+	}
+	if task.IsActive() {
+		t.Error("task should not be active when --active=false is explicitly given with --tags")
+	}
+	hasPersonal := false
+	for _, tag := range task.Tags {
+		if tag == "personal" {
+			hasPersonal = true
+		}
+	}
+	if !hasPersonal {
+		t.Errorf("expected tags to contain 'personal', got %v", task.Tags)
 	}
 }

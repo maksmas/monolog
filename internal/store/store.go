@@ -138,6 +138,15 @@ func (s *Store) List(opts ListOptions) ([]model.Task, error) {
 	return tasks, nil
 }
 
+// Tags returns a sorted, deduplicated list of all tags across all stored tasks.
+func (s *Store) Tags() ([]string, error) {
+	tasks, err := s.List(ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list tasks for tags: %w", err)
+	}
+	return model.CollectTags(tasks), nil
+}
+
 // matchesFilters returns true if the task matches all specified filter criteria.
 func matchesFilters(task model.Task, opts ListOptions) bool {
 	if opts.Status != "" && task.Status != opts.Status {

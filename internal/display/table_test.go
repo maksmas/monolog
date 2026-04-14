@@ -304,9 +304,17 @@ func TestFormatTasks_LongTitleAlignment(t *testing.T) {
 
 	var buf bytes.Buffer
 	FormatTasks(&buf, tasks, fixedNow)
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	output := buf.String()
+	// Split on newline but do NOT TrimSpace the whole output, because
+	// lines start with a 2-char active marker ("  " for non-active) and
+	// TrimSpace would strip the leading spaces on the first line.
+	lines := strings.Split(output, "\n")
+	// Drop empty trailing element from the final newline.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	if len(lines) != 2 {
-		t.Fatalf("expected 2 lines, got %d:\n%s", len(lines), buf.String())
+		t.Fatalf("expected 2 lines, got %d:\n%s", len(lines), output)
 	}
 
 	// Schedule ("today") should appear at the same rune offset on both lines.
@@ -324,7 +332,7 @@ func TestFormatTasks_LongTitleAlignment(t *testing.T) {
 		t.Fatalf("'today' missing from a line: %q / %q", lines[0], lines[1])
 	}
 	if idx0 != idx1 {
-		t.Errorf("schedule column misaligned: short-title line has 'today' at rune %d, long-title line at %d\n%s", idx0, idx1, buf.String())
+		t.Errorf("schedule column misaligned: short-title line has 'today' at rune %d, long-title line at %d\n%s", idx0, idx1, output)
 	}
 
 	// Long title must be truncated with ellipsis.
@@ -356,5 +364,82 @@ func TestFormatTasks_DoneWithBothDates(t *testing.T) {
 	// Should contain the compact dates "5d→1h" for a done task
 	if !strings.Contains(output, "5d\u21921h") {
 		t.Errorf("output should contain '5d\u21921h' for done task, got:\n%s", output)
+	}
+}
+
+func TestFormatTasks_ActiveMarker(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:       "01AAAAAAAAAAAAAAAAAAAAAAAA",
+			Title:    "Active task",
+			Schedule: "today",
+			Status:   "open",
+			Position: 1000,
+			Tags:     []string{model.ActiveTag, "work"},
+		},
+		{
+			ID:       "01BBBBBBBBBBBBBBBBBBBBBBBB",
+			Title:    "Inactive task",
+			Schedule: "today",
+			Status:   "open",
+			Position: 2000,
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow)
+	// Split on newline directly (do not TrimSpace — it strips the leading
+	// "  " active-marker prefix on inactive rows). Drop trailing empty
+	// elements from the final newline, matching the LongTitleAlignment pattern.
+	lines := strings.Split(buf.String(), "\n")
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d:\n%s", len(lines), buf.String())
+	}
+
+	// Active task line should start with "* "
+	if !strings.HasPrefix(lines[0], "* ") {
+		t.Errorf("active task line should start with '* ', got: %q", lines[0])
+	}
+
+	// Non-active task line should start with "  " (two spaces, not a star)
+	if !strings.HasPrefix(lines[1], "  ") {
+		t.Errorf("non-active task line should start with '  ' (two spaces), got: %q", lines[1])
+	}
+
+	// The star marker should not appear on the non-active line's prefix
+	if strings.HasPrefix(lines[1], "* ") {
+		t.Errorf("non-active task should not have '* ' prefix, got: %q", lines[1])
+	}
+}
+
+func TestVisibleTags(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil input", nil, nil},
+		{"empty input", []string{}, nil},
+		{"no active tag", []string{"work", "urgent"}, []string{"work", "urgent"}},
+		{"only active tag", []string{"active"}, nil},
+		{"active with others", []string{"active", "work", "personal"}, []string{"work", "personal"}},
+		{"active in middle", []string{"work", "active", "personal"}, []string{"work", "personal"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := VisibleTags(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("VisibleTags(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("VisibleTags(%v)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }

@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -125,7 +128,7 @@ func TestSkeleton_TabsPopulatedByBucket(t *testing.T) {
 	if got := len(m.lists[1].Items()); got != 1 {
 		t.Errorf("Tomorrow tab items = %d, want 1", got)
 	}
-	if got := len(m.lists[4].Items()); got != 1 {
+	if got := len(m.lists[5].Items()); got != 1 {
 		t.Errorf("Done tab items = %d, want 1", got)
 	}
 }
@@ -155,9 +158,9 @@ func TestSkeleton_NumberKeysJump(t *testing.T) {
 	if m.activeTab != 2 {
 		t.Errorf("after '3': tab = %d, want 2", m.activeTab)
 	}
-	m, _ = key(t, m, "5")
-	if m.activeTab != 4 {
-		t.Errorf("after '5': tab = %d, want 4", m.activeTab)
+	m, _ = key(t, m, "6")
+	if m.activeTab != 5 {
+		t.Errorf("after '6': tab = %d, want 5", m.activeTab)
 	}
 }
 
@@ -170,7 +173,7 @@ func TestSkeleton_DoneSortedByUpdatedAtDesc(t *testing.T) {
 		model.Task{ID: "01C", Title: "middle done", Status: "done", Position: 3000,
 			UpdatedAt: "2026-04-11T00:00:00Z"},
 	)
-	items := m.lists[4].Items()
+	items := m.lists[5].Items()
 	first := items[0].(item).task
 	if first.Title != "newest done" {
 		t.Errorf("Done[0] = %q, want %q", first.Title, "newest done")
@@ -206,7 +209,7 @@ func TestDone_MovesTaskToDoneTab(t *testing.T) {
 	if got := len(m.lists[0].Items()); got != 0 {
 		t.Errorf("Today tab should be empty after completion, got %d items", got)
 	}
-	if got := len(m.lists[4].Items()); got != 1 {
+	if got := len(m.lists[5].Items()); got != 1 {
 		t.Errorf("Done tab should have 1 item, got %d", got)
 	}
 }
@@ -244,7 +247,7 @@ func TestReschedule_CustomDate(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m, _ = key(t, m, "r")
-	m, _ = key(t, m, "5")
+	m, _ = key(t, m, "6")
 	if m.rescheduleSub != 1 {
 		t.Fatalf("rescheduleSub = %d, want 1", m.rescheduleSub)
 	}
@@ -271,7 +274,7 @@ func TestReschedule_InvalidCustomDateSurfacesError(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m, _ = key(t, m, "r")
-	m, _ = key(t, m, "5")
+	m, _ = key(t, m, "6")
 	m = typeString(t, m, "not-a-date")
 	m, cmd := key(t, m, "enter")
 	if cmd != nil {
@@ -310,10 +313,29 @@ func TestRetag_UpdatesTags(t *testing.T) {
 	}
 }
 
+func TestTUI_CKeyOpensAddModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Errorf("after pressing 'c': mode = %v, want modeAdd", m.mode)
+	}
+}
+
+func TestTUI_AKeyDoesNotOpenAddModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "a")
+	if m.mode == modeAdd {
+		t.Errorf("after pressing 'a': mode = modeAdd, want modeNormal (a should no longer open add modal)")
+	}
+	if m.mode != modeNormal {
+		t.Errorf("after pressing 'a': mode = %v, want modeNormal", m.mode)
+	}
+}
+
 func TestAdd_CreatesTaskInActiveTab(t *testing.T) {
 	m := newTestModel(t)
-	// On the Today tab (default); press 'a', type title, enter.
-	m, _ = key(t, m, "a")
+	// On the Today tab (default); press 'c', type title, enter.
+	m, _ = key(t, m, "c")
 	if m.mode != modeAdd {
 		t.Fatalf("mode = %v, want modeAdd", m.mode)
 	}
@@ -341,7 +363,7 @@ func TestAdd_FocusesNewTaskAfterCreate(t *testing.T) {
 			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	// Cursor starts at index 0; add a task and expect cursor to move to it.
-	m, _ = key(t, m, "a")
+	m, _ = key(t, m, "c")
 	m = typeString(t, m, "fresh task")
 	m, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -359,11 +381,11 @@ func TestAdd_FocusesNewTaskAcrossTab(t *testing.T) {
 	// Adding from the Done tab falls back to the Today bucket. The new task
 	// should be focused in whatever tab it actually lands in.
 	m := newTestModel(t)
-	m, _ = key(t, m, "5") // Done tab
-	if m.activeTab != 4 {
-		t.Fatalf("precondition: activeTab = %d, want 4", m.activeTab)
+	m, _ = key(t, m, "6") // Done tab
+	if m.activeTab != 5 {
+		t.Fatalf("precondition: activeTab = %d, want 5", m.activeTab)
 	}
-	m, _ = key(t, m, "a")
+	m, _ = key(t, m, "c")
 	m = typeString(t, m, "stray task")
 	m, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -381,7 +403,7 @@ func TestAdd_UsesActiveTabSchedule(t *testing.T) {
 	m := newTestModel(t)
 	// Switch to Week tab first.
 	m, _ = key(t, m, "3")
-	m, _ = key(t, m, "a")
+	m, _ = key(t, m, "c")
 	m = typeString(t, m, "weekly thing")
 	m, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -516,12 +538,12 @@ func TestGrab_RightIntoDoneSetsStatusDone(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m, _ = key(t, m, "m")
-	// Today -> Tomorrow -> Week -> Someday -> Done = 4 right presses.
-	for i := 0; i < 4; i++ {
+	// Today -> Tomorrow -> Week -> Month -> Someday -> Done = 5 right presses.
+	for i := 0; i < 5; i++ {
 		m, _ = key(t, m, "right")
 	}
-	if m.activeTab != 4 {
-		t.Fatalf("activeTab = %d, want 4 (Done)", m.activeTab)
+	if m.activeTab != 5 {
+		t.Fatalf("activeTab = %d, want 5 (Done)", m.activeTab)
 	}
 	_, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -542,11 +564,11 @@ func TestGrab_LeftOutOfDoneSetsStatusOpen(t *testing.T) {
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	// Jump to Done tab, grab, press left (-> Someday).
-	m, _ = key(t, m, "5")
+	m, _ = key(t, m, "6")
 	m, _ = key(t, m, "m")
 	m, _ = key(t, m, "left")
-	if m.activeTab != 3 {
-		t.Fatalf("activeTab = %d, want 3 (Someday)", m.activeTab)
+	if m.activeTab != 4 {
+		t.Fatalf("activeTab = %d, want 4 (Someday)", m.activeTab)
 	}
 	_, cmd := key(t, m, "enter")
 	m = runCmd(t, m, cmd)
@@ -585,14 +607,59 @@ func TestGrab_UpDownNoOpInDoneTab(t *testing.T) {
 		model.Task{ID: "01B", Title: "done two", Status: "done", Schedule: "today",
 			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
-	m, _ = key(t, m, "5") // Done tab
-	m.lists[4].Select(1)
+	m, _ = key(t, m, "6") // Done tab
+	m.lists[5].Select(1)
 	m, _ = key(t, m, "m")
 	before := m.grabIndex
 	m, _ = key(t, m, "up")
 	if m.grabIndex != before {
 		t.Errorf("grabIndex should not change in Done tab, before=%d after=%d",
 			before, m.grabIndex)
+	}
+}
+
+func TestGrab_DelegateHighlightsGrabbedItemOnly(t *testing.T) {
+	// Force a color profile so the rendered output actually contains ANSI
+	// escape codes; otherwise lipgloss strips them when stdout isn't a TTY
+	// (as under `go test`) and styled vs. unstyled text becomes identical.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Delegate needs a non-zero list width to render.
+	m.lists[0].SetSize(80, 20)
+
+	d := newItemDelegate(m)
+	items := m.lists[0].Items()
+
+	// Index 0 is the selected/cursor row in normal mode.
+	var normalSel, normalOther bytes.Buffer
+	d.Render(&normalSel, m.lists[0], 0, items[0])
+	d.Render(&normalOther, m.lists[0], 1, items[1])
+
+	// Grab the first item.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	var grabSel, grabOther bytes.Buffer
+	d.Render(&grabSel, m.lists[0], 0, items[0])
+	d.Render(&grabOther, m.lists[0], 1, items[1])
+
+	if normalSel.String() == grabSel.String() {
+		t.Errorf("grabbed row should render with different styling than normal selected row;\n normal=%q\n grab  =%q",
+			normalSel.String(), grabSel.String())
+	}
+	if normalOther.String() != grabOther.String() {
+		t.Errorf("non-grabbed row should render identically in grab mode;\n normal=%q\n grab  =%q",
+			normalOther.String(), grabOther.String())
 	}
 }
 
@@ -707,25 +774,6 @@ func TestResolveEditor(t *testing.T) {
 	}
 }
 
-func TestSanitizeTags(t *testing.T) {
-	tests := []struct {
-		in   string
-		want []string
-	}{
-		{"", nil},
-		{"   ", nil},
-		{"one", []string{"one"}},
-		{"one, two", []string{"one", "two"}},
-		{" a , , b ", []string{"a", "b"}},
-	}
-	for _, tc := range tests {
-		got := sanitizeTags(tc.in)
-		if !sliceEq(got, tc.want) {
-			t.Errorf("sanitizeTags(%q) = %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
-
 func sliceEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -736,6 +784,31 @@ func sliceEq(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestTruncateTitle(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		width int
+		want  string
+	}{
+		{"short string unchanged", "abc", 10, "abc"},
+		{"exact width unchanged", "abcde", 5, "abcde"},
+		{"truncated with ellipsis", "abcdefgh", 5, "abcd\u2026"},
+		{"width zero returns unchanged", "abc", 0, "abc"},
+		{"negative width returns unchanged", "abc", -1, "abc"},
+		{"width 1 truncates to ellipsis", "abc", 1, "\u2026"},
+		{"empty string unchanged", "", 5, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateTitle(tc.in, tc.width)
+			if got != tc.want {
+				t.Errorf("truncateTitle(%q, %d) = %q, want %q", tc.in, tc.width, got, tc.want)
+			}
+		})
+	}
 }
 
 // --- item.Description compact date tests ------------------------------------
@@ -805,6 +878,220 @@ func TestItemDescription_NoTimestampsOmitsDate(t *testing.T) {
 	}
 }
 
+// --- active toggle tests -----------------------------------------------------
+
+func TestTUI_AKeyTogglesActive(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "toggle me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Press 'a' to activate.
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Error("task should be active after first 'a' press")
+	}
+
+	// Press 'a' again to deactivate.
+	m, cmd = key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("second 'a' should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err = m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after second 'a' press")
+	}
+}
+
+func TestTUI_AKeyNoOpWhenListEmpty(t *testing.T) {
+	m := newTestModel(t) // no tasks
+	m, cmd := key(t, m, "a")
+	if cmd != nil {
+		t.Error("a on empty list should return nil cmd, got non-nil")
+	}
+}
+
+func TestTUI_RetagPreservesActive(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "active tag me", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active", "old"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Open retag modal.
+	m, _ = key(t, m, "t")
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	// Clear input and type new tags.
+	// The input is pre-filled with "old" (visibleTags filters out "active").
+	m.input.SetValue("work, personal")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should save")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Errorf("task should still be active after retag, tags = %v", task.Tags)
+	}
+	// Also verify new tags are present.
+	hasWork := false
+	hasPersonal := false
+	for _, tag := range task.Tags {
+		if tag == "work" {
+			hasWork = true
+		}
+		if tag == "personal" {
+			hasPersonal = true
+		}
+	}
+	if !hasWork || !hasPersonal {
+		t.Errorf("expected work and personal tags, got %v", task.Tags)
+	}
+}
+
+// --- done deactivates active tests -------------------------------------------
+
+func TestTUI_DKeyOnActiveTaskDeactivates(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "active task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Verify the task starts active.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Fatal("task should be active before done")
+	}
+
+	// Verify it appears in the active panel before done.
+	if len(m.activeTasks) != 1 {
+		t.Fatalf("activeTasks = %d, want 1", len(m.activeTasks))
+	}
+
+	// Press 'd' to mark done.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Verify on disk: task is done AND no longer active.
+	task, err = m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("Status: got %q, want %q", task.Status, "done")
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after done — done must auto-deactivate")
+	}
+
+	// Active panel should no longer contain the task.
+	if len(m.activeTasks) != 0 {
+		t.Errorf("activeTasks = %d, want 0 after done", len(m.activeTasks))
+	}
+}
+
+// --- active delegate styling tests -------------------------------------------
+
+func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
+	// Force color profile so ANSI codes survive in test output.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	d := newItemDelegate(m)
+	items := m.lists[0].Items()
+
+	// Render the active item (index 0 = selected row) and the normal item
+	// (index 1 = unselected row).
+	var activeBuf, normalBuf bytes.Buffer
+	d.Render(&activeBuf, m.lists[0], 0, items[0])
+	d.Render(&normalBuf, m.lists[0], 1, items[1])
+
+	activeOut := activeBuf.String()
+	normalOut := normalBuf.String()
+
+	// The active (green) delegate uses AdaptiveColor Dark="#22C55E" = RGB(34,197,94).
+	// In TrueColor mode this produces the ANSI sequence "38;2;34;197;94".
+	greenSeq := "38;2;34;197;94"
+	if !strings.Contains(activeOut, greenSeq) {
+		t.Errorf("active item should contain green ANSI sequence %q;\n rendered=%q", greenSeq, activeOut)
+	}
+	if strings.Contains(normalOut, greenSeq) {
+		t.Errorf("normal item should NOT contain green ANSI sequence %q;\n rendered=%q", greenSeq, normalOut)
+	}
+}
+
+func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
+	// Force color profile so ANSI codes survive in test output.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "the task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "other", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	d := newItemDelegate(m)
+
+	// Grab the active task (index 0 is selected by default).
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	// Render the grabbed+active task at cursor index using the same item.
+	theItem := m.lists[0].Items()[0]
+	var grabbedBuf bytes.Buffer
+	d.Render(&grabbedBuf, m.lists[0], 0, theItem)
+
+	grabbedOut := grabbedBuf.String()
+
+	// Grab style uses orange/yellow. Active style uses green. When both
+	// apply, grab must win — so green should NOT appear in the output, and
+	// the grab color (orange) SHOULD appear.
+	greenSeq := "38;2;34;197;94"
+	grabSeq := "38;2;255;179;84" // AdaptiveColor Dark="#FFB454" rendered by lipgloss
+	if strings.Contains(grabbedOut, greenSeq) {
+		t.Errorf("grabbed+active row should NOT contain green ANSI sequence (grab wins);\n rendered=%q", grabbedOut)
+	}
+	if !strings.Contains(grabbedOut, grabSeq) {
+		t.Errorf("grabbed+active row should contain grab (orange) ANSI sequence %q;\n rendered=%q", grabSeq, grabbedOut)
+	}
+}
+
 func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	// When now is zero (e.g. item constructed without setting now),
 	// a valid CreatedAt is far in the future relative to time.Time{},
@@ -826,6 +1113,733 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	// With zero now, the date should render as YY-MM-DD (different year from year 1)
 	if !strings.Contains(desc, "26-04-11") {
 		t.Errorf("Description() = %q, should contain far-future date '26-04-11'", desc)
+	}
+}
+
+// --- active panel tests ------------------------------------------------------
+
+func TestActivePanel_HiddenWhenNoActiveTasks(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "normal task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Give the model a window size so View() renders properly.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+	if panel != "" {
+		t.Errorf("activePanelView() should return empty string when no active tasks, got %q", panel)
+	}
+	if h := m.activePanelHeight(); h != 0 {
+		t.Errorf("activePanelHeight() = %d, want 0 when no active tasks", h)
+	}
+}
+
+func TestActivePanel_ShownWithActiveTasks(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "my active task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+	if panel == "" {
+		t.Fatal("activePanelView() should not be empty when active tasks exist")
+	}
+	if !strings.Contains(panel, "my active task") {
+		t.Errorf("active panel should contain the task title; got %q", panel)
+	}
+	if !strings.Contains(panel, "01A") {
+		t.Errorf("active panel should contain short ID; got %q", panel)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "my active task") {
+		t.Errorf("View() should contain the active task title somewhere; got %q", view)
+	}
+}
+
+func TestActivePanel_RefreshedAfterToggle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "toggle panel task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Activate.
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	panel := m.activePanelView()
+	if !strings.Contains(panel, "toggle panel task") {
+		t.Errorf("panel should contain task after activation; got %q", panel)
+	}
+
+	// Deactivate.
+	m, cmd = key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("second 'a' should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	panel = m.activePanelView()
+	if strings.Contains(panel, "toggle panel task") {
+		t.Errorf("panel should NOT contain task after deactivation; got %q", panel)
+	}
+	if panel != "" {
+		t.Errorf("panel should be empty after deactivation; got %q", panel)
+	}
+}
+
+func TestActivePanel_ShrinksListHeight(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "shrink test", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// No active tasks: record height.
+	heightBefore := m.lists[0].Height()
+
+	// Activate a task.
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	heightAfter := m.lists[0].Height()
+	panelH := m.activePanelHeight()
+
+	if panelH == 0 {
+		t.Fatal("activePanelHeight() should be > 0 with an active task")
+	}
+	if heightAfter >= heightBefore {
+		t.Errorf("list height should shrink when panel is shown: before=%d after=%d", heightBefore, heightAfter)
+	}
+	if heightBefore-heightAfter != panelH {
+		t.Errorf("list height difference should equal panel height: before=%d after=%d panelH=%d diff=%d",
+			heightBefore, heightAfter, panelH, heightBefore-heightAfter)
+	}
+}
+
+func TestActivePanel_HeightMatchesRendered(t *testing.T) {
+	// Verify the fast activePanelHeight() matches lipgloss.Height(activePanelView())
+	// so the two never drift apart.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first active", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second active", Status: "open", Schedule: "today",
+			Position: 2000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	fast := m.activePanelHeight()
+	rendered := lipgloss.Height(m.activePanelView())
+	if fast != rendered {
+		t.Errorf("activePanelHeight() = %d, lipgloss.Height(activePanelView()) = %d; they must match", fast, rendered)
+	}
+}
+
+func TestActivePanel_TruncatesLongTitles(t *testing.T) {
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+	longTitle := strings.Repeat("x", 200)
+	m := newTestModel(t,
+		model.Task{ID: "01AAAAAA", Title: longTitle, Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	width := 60
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+	panelLines := strings.Split(panel, "\n")
+	for _, line := range panelLines {
+		lineLen := len([]rune(line))
+		if lineLen > width {
+			t.Errorf("panel line exceeds terminal width (%d): got %d runes: %q", width, lineLen, line)
+		}
+	}
+	// The panel must contain the ellipsis character and must NOT contain the full title.
+	if !strings.Contains(panel, "\u2026") {
+		t.Error("panel should contain ellipsis character '\u2026' for truncated title")
+	}
+	if strings.Contains(panel, longTitle) {
+		t.Error("panel should NOT contain the full 200-char title")
+	}
+}
+
+// --- grab-to-Done auto-deactivation test ------------------------------------
+
+func TestGrab_RightIntoDoneOnActiveTaskDeactivates(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "active grab done", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Verify task starts active.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Fatal("task should be active before grab")
+	}
+
+	// Grab (m), then navigate right to Done tab (5 presses: Today->Tomorrow->Week->Month->Someday->Done).
+	m, _ = key(t, m, "m")
+	for i := 0; i < 5; i++ {
+		m, _ = key(t, m, "right")
+	}
+	if m.activeTab != 5 {
+		t.Fatalf("activeTab = %d, want 5 (Done)", m.activeTab)
+	}
+
+	// Drop with enter.
+	_, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+
+	// Verify on disk: task is done AND no longer active.
+	task, err = m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("Status = %q, want done", task.Status)
+	}
+	if task.IsActive() {
+		t.Error("task should not be active after grab-to-Done — commitGrab must auto-deactivate")
+	}
+
+	// Active panel should be empty.
+	if len(m.activeTasks) != 0 {
+		t.Errorf("activeTasks = %d, want 0 after grab-to-Done", len(m.activeTasks))
+	}
+}
+
+// --- YAML edit active-tag tests ---------------------------------------------
+
+func TestTUI_YAMLEditOmitsActiveFromYAML(t *testing.T) {
+	task := model.Task{
+		ID: "01A", Title: "yaml test", Status: "open", Schedule: "today",
+		Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	data, err := marshalTaskForEdit(task)
+	if err != nil {
+		t.Fatalf("marshalTaskForEdit: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "active") {
+		t.Errorf("marshalTaskForEdit should omit 'active' tag from YAML, got:\n%s", content)
+	}
+	if !strings.Contains(content, "work") {
+		t.Errorf("marshalTaskForEdit should include 'work' tag, got:\n%s", content)
+	}
+}
+
+func TestTUI_YAMLEditPreservesActive(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "yaml active", Status: "open", Schedule: "today",
+		Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	// Simulate editing: YAML with a new tag but no "active" (since it's hidden).
+	edited := []byte("title: yaml active\nschedule: today\ntags:\n- work\n- personal\n")
+	got, err := applyEditedYAML(orig, edited, time.Now())
+	if err != nil {
+		t.Fatalf("applyEditedYAML: %v", err)
+	}
+	if !got.IsActive() {
+		t.Errorf("task should still be active after YAML edit, tags = %v", got.Tags)
+	}
+	// Verify the new tag is present.
+	hasPersonal := false
+	for _, tag := range got.Tags {
+		if tag == "personal" {
+			hasPersonal = true
+		}
+	}
+	if !hasPersonal {
+		t.Errorf("expected 'personal' tag after edit, got %v", got.Tags)
+	}
+}
+
+// --- retag prefill test ------------------------------------------------------
+
+func TestTUI_RetagPrefillOmitsActive(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "prefill test", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active", "work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Open retag modal.
+	m, _ = key(t, m, "t")
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	// The input should only show "work", not "active, work".
+	val := m.input.Value()
+	if strings.Contains(val, "active") {
+		t.Errorf("retag input should not contain 'active', got %q", val)
+	}
+	if !strings.Contains(val, "work") {
+		t.Errorf("retag input should contain 'work', got %q", val)
+	}
+}
+
+// --- add modal with tags tests -----------------------------------------------
+
+func TestAdd_TabThenTypeSetsTagsOnCreatedTask(t *testing.T) {
+	m := newTestModel(t)
+	// Open add modal, type a title, Tab to switch to tags, type tags, Enter.
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "tagged task")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "foo, bar")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// The created task should have the tags.
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Fatalf("Today tab items = %d, want 1", got)
+	}
+	task := m.lists[0].Items()[0].(item).task
+	if task.Title != "tagged task" {
+		t.Errorf("Title = %q, want %q", task.Title, "tagged task")
+	}
+	if len(task.Tags) != 2 || task.Tags[0] != "foo" || task.Tags[1] != "bar" {
+		t.Errorf("Tags = %v, want [foo bar]", task.Tags)
+	}
+}
+
+func TestAdd_EnterWithTitleAndTagsCreatesBoth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "buy milk")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "shopping, errands")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should save")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Verify in store.
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	stored, err := m.store.GetByPrefix(task.ID[:4])
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.Title != "buy milk" {
+		t.Errorf("Title = %q, want %q", stored.Title, "buy milk")
+	}
+	if len(stored.Tags) != 2 || stored.Tags[0] != "shopping" || stored.Tags[1] != "errands" {
+		t.Errorf("Tags = %v, want [shopping errands]", stored.Tags)
+	}
+}
+
+func TestAdd_EmptyTagsCreatesTaskWithNoTags(t *testing.T) {
+	// Backward compat: enter with only a title and no tags should work.
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "plain task")
+	// Do not press Tab or type tags — enter directly.
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if len(task.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty", task.Tags)
+	}
+}
+
+func TestAdd_TagsSanitized(t *testing.T) {
+	// Extra whitespace and empty segments should be stripped.
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "sanitize test")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, " a , , b ")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	task := m.lists[0].Items()[0].(item).task
+	if len(task.Tags) != 2 || task.Tags[0] != "a" || task.Tags[1] != "b" {
+		t.Errorf("Tags = %v, want [a b]", task.Tags)
+	}
+}
+
+func TestAdd_EscCancelsFromTagsField(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "will cancel")
+	m, _ = key(t, m, "tab") // move to tags
+	m = typeString(t, m, "some, tags")
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc from tags = %v, want modeNormal", m.mode)
+	}
+	// No task should have been created.
+	if got := len(m.lists[0].Items()); got != 0 {
+		t.Errorf("Today tab should be empty after esc, got %d items", got)
+	}
+}
+
+func TestAdd_FromDoneTabWithTags(t *testing.T) {
+	// Adding from the Done tab falls back to Today bucket; tags should persist.
+	m := newTestModel(t)
+	m, _ = key(t, m, "6") // Done tab
+	if m.activeTab != 5 {
+		t.Fatalf("activeTab = %d, want 5", m.activeTab)
+	}
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "done-tab task")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "urgent")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Task should land in Today tab.
+	if m.activeTab != 0 {
+		t.Errorf("activeTab = %d, want 0 (Today)", m.activeTab)
+	}
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Title != "done-tab task" {
+		t.Errorf("Title = %q, want %q", task.Title, "done-tab task")
+	}
+	if len(task.Tags) != 1 || task.Tags[0] != "urgent" {
+		t.Errorf("Tags = %v, want [urgent]", task.Tags)
+	}
+}
+
+func TestAdd_ModalViewShowsBothLabels(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	view := m.modalView()
+	if !strings.Contains(view, "Title:") {
+		t.Errorf("modalView should contain 'Title:', got %q", view)
+	}
+	if !strings.Contains(view, "Tags:") {
+		t.Errorf("modalView should contain 'Tags:', got %q", view)
+	}
+}
+
+// --- wrapText tests ----------------------------------------------------------
+
+func TestWrapText(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		width int
+		want  []string
+	}{
+		{"short fits", "hello", 10, []string{"hello"}},
+		{"exact width", "hello", 5, []string{"hello"}},
+		{"wraps at space", "hello world", 7, []string{"hello", "world"}},
+		{"wraps long sentence", "one two three four", 9, []string{"one two", "three", "four"}},
+		{"hard break no spaces", "abcdefghij", 4, []string{"abcd", "efgh", "ij"}},
+		{"zero width unchanged", "hello", 0, []string{"hello"}},
+		{"negative width unchanged", "hello", -1, []string{"hello"}},
+		{"empty string", "", 5, []string{""}},
+		{"trailing space at break", "ab cd ef", 5, []string{"ab cd", "ef"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapText(tc.in, tc.width)
+			if !sliceEq(got, tc.want) {
+				t.Errorf("wrapText(%q, %d) = %v, want %v", tc.in, tc.width, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- itemHeight tests --------------------------------------------------------
+
+func TestComputeItemHeight_DefaultWhenShortTitles(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "short", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+	if m.itemHeight != 2 {
+		t.Errorf("itemHeight = %d, want 2 for short titles", m.itemHeight)
+	}
+}
+
+func TestComputeItemHeight_BumpsWhenLongTitle(t *testing.T) {
+	longTitle := strings.Repeat("x", 100)
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longTitle, Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+	// 60 - 2 (padding) = 58 text width; 100 chars > 58, so height should be 3.
+	if m.itemHeight != 3 {
+		t.Errorf("itemHeight = %d, want 3 for long title", m.itemHeight)
+	}
+}
+
+func TestItemHeightChangesOnTabSwitch(t *testing.T) {
+	longTitle := strings.Repeat("word ", 20) // 100 chars
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "short", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: longTitle, Status: "open", Schedule: "tomorrow",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+
+	// Today tab: short title → height 2.
+	if m.itemHeight != 2 {
+		t.Errorf("Today tab: itemHeight = %d, want 2", m.itemHeight)
+	}
+	// Switch to Tomorrow tab: long title → height 3.
+	m, _ = key(t, m, "right")
+	if m.itemHeight != 3 {
+		t.Errorf("Tomorrow tab: itemHeight = %d, want 3", m.itemHeight)
+	}
+	// Switch back to Today: height should return to 2.
+	m, _ = key(t, m, "left")
+	if m.itemHeight != 2 {
+		t.Errorf("Today tab after return: itemHeight = %d, want 2", m.itemHeight)
+	}
+}
+
+func TestActivePanel_WrapsLongTitles(t *testing.T) {
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	longTitle := strings.Repeat("word ", 20) // 100 chars
+	m := newTestModel(t,
+		model.Task{ID: "01AAAAAA", Title: longTitle, Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	width := 60
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+
+	// Panel should use at least 2 content lines for this task (1 wrapped + 1 continuation).
+	fast := m.activePanelHeight()
+	if fast < 4 { // 2 content lines + 2 border lines = 4
+		t.Errorf("activePanelHeight() = %d, want >= 4 for wrapped title", fast)
+	}
+
+	// Rendered height must still match the fast calculation.
+	rendered := lipgloss.Height(panel)
+	if fast != rendered {
+		t.Errorf("activePanelHeight() = %d, rendered = %d; they must match", fast, rendered)
+	}
+
+	// No line should exceed terminal width.
+	for _, line := range strings.Split(panel, "\n") {
+		if len([]rune(line)) > width {
+			t.Errorf("panel line exceeds width %d: %d runes: %q", width, len([]rune(line)), line)
+		}
+	}
+}
+
+func TestAdd_AutoTagFromTitlePrefix(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, type a title with known tag prefix, then Enter.
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "jean: create integration")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Find the newly created task (not the seed).
+	var created *model.Task
+	for _, li := range m.lists[0].Items() {
+		task := li.(item).task
+		if task.ID != "01SEED01" {
+			created = &task
+			break
+		}
+	}
+	if created == nil {
+		t.Fatal("new task not found in Today tab")
+	}
+	if created.Title != "jean: create integration" {
+		t.Errorf("Title = %q, want %q", created.Title, "jean: create integration")
+	}
+	// Should have auto-tag "jean" applied.
+	found := false
+	for _, tag := range created.Tags {
+		if tag == "jean" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Tags = %v, want to contain 'jean' via auto-tag", created.Tags)
+	}
+}
+
+func TestAdd_NoAutoTagForUnknownPrefix(t *testing.T) {
+	// No existing tasks with tag "unknown", so auto-tag should not fire.
+	m := newTestModel(t)
+
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "unknown: some title")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if len(task.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty (unknown prefix should not auto-tag)", task.Tags)
+	}
+}
+
+func TestAdd_AutoTagNoDuplicate(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, type title with known prefix, Tab to tags, type "jean", Enter.
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "jean: do thing")
+	m, _ = key(t, m, "tab")   // switch to tags field
+	m = typeString(t, m, "jean")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Find the newly created task (not the seed).
+	var created *model.Task
+	for _, li := range m.lists[0].Items() {
+		task := li.(item).task
+		if task.ID != "01SEED01" {
+			created = &task
+			break
+		}
+	}
+	if created == nil {
+		t.Fatal("new task not found in Today tab")
+	}
+	// Should have exactly one "jean" tag — no duplicate.
+	count := 0
+	for _, tag := range created.Tags {
+		if tag == "jean" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("Tags = %v, want exactly one 'jean' tag (no duplicate from auto-tag)", created.Tags)
+	}
+}
+
+func TestAdd_ColonAutoPopulatesTagField(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, type "jean:" — the tags field should auto-populate.
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "jean: ")
+	got := m.tagInput.Value()
+	if got != "jean" {
+		t.Errorf("tagInput = %q, want %q after typing known prefix + colon", got, "jean")
+	}
+}
+
+func TestAdd_ColonNoAutoPopulateForUnknownTag(t *testing.T) {
+	// No tasks with tag "unknown".
+	m := newTestModel(t)
+
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "unknown: ")
+	got := m.tagInput.Value()
+	if got != "" {
+		t.Errorf("tagInput = %q, want empty for unknown prefix", got)
+	}
+}
+
+func TestAdd_ColonNoAutoPopulateDuplicate(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, manually type "jean" in tags field first, then type title.
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "jean")
+	m, _ = key(t, m, "tab") // focus title
+	m = typeString(t, m, "jean: ")
+	got := m.tagInput.Value()
+	// Should still be just "jean", not "jean, jean" or "jean,jean".
+	if got != "jean" {
+		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean")
 	}
 }
 

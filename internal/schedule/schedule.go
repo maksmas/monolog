@@ -1,9 +1,9 @@
 // Package schedule converts between bucket names and ISO dates and computes
 // which virtual bucket a stored schedule date falls into.
 //
-// Tasks store schedule as an ISO date (YYYY-MM-DD). The four bucket names
-// (today, tomorrow, week, someday) exist only as input shorthand and as
-// display-time predicates over schedule vs. today's date. Legacy bucket
+// Tasks store schedule as an ISO date (YYYY-MM-DD). The five bucket names
+// (today, tomorrow, week, month, someday) exist only as input shorthand and
+// as display-time predicates over schedule vs. today's date. Legacy bucket
 // strings written by older versions are tolerated by Bucket and Normalize so
 // that on-disk data migrates lazily as tasks are touched.
 package schedule
@@ -21,13 +21,14 @@ const (
 	Today    = "today"
 	Tomorrow = "tomorrow"
 	Week     = "week"
+	Month    = "month"
 	Someday  = "someday"
 )
 
-// IsBucket reports whether s is one of the four bucket names.
+// IsBucket reports whether s is one of the five bucket names.
 func IsBucket(s string) bool {
 	switch s {
-	case Today, Tomorrow, Week, Someday:
+	case Today, Tomorrow, Week, Month, Someday:
 		return true
 	}
 	return false
@@ -46,7 +47,8 @@ func todayDate(now time.Time) time.Time {
 }
 
 // Parse turns user input (a bucket name or ISO date) into an ISO date string.
-// Bucket names are resolved relative to now: today, today+1, today+7, today+365.
+// Bucket names are resolved relative to now: today, today+1, today+7, today+31,
+// today+365.
 func Parse(input string, now time.Time) (string, error) {
 	today := todayDate(now)
 	switch input {
@@ -56,19 +58,21 @@ func Parse(input string, now time.Time) (string, error) {
 		return today.AddDate(0, 0, 1).Format(IsoLayout), nil
 	case Week:
 		return today.AddDate(0, 0, 7).Format(IsoLayout), nil
+	case Month:
+		return today.AddDate(0, 0, 31).Format(IsoLayout), nil
 	case Someday:
 		return today.AddDate(0, 0, 365).Format(IsoLayout), nil
 	}
 	if IsISODate(input) {
 		return input, nil
 	}
-	return "", fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, someday, or ISO date (YYYY-MM-DD)", input)
+	return "", fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or ISO date (YYYY-MM-DD)", input)
 }
 
-// Bucket returns the virtual bucket (today/tomorrow/week/someday) that the
-// stored schedule falls into. Accepts ISO dates and legacy bucket strings.
-// Anything unrecognized (empty, malformed) is treated as today so the task
-// remains visible in the default list.
+// Bucket returns the virtual bucket (today/tomorrow/week/month/someday) that
+// the stored schedule falls into. Accepts ISO dates and legacy bucket
+// strings. Anything unrecognized (empty, malformed) is treated as today so
+// the task remains visible in the default list.
 func Bucket(schedule string, now time.Time) string {
 	if IsBucket(schedule) {
 		return schedule
@@ -80,6 +84,7 @@ func Bucket(schedule string, now time.Time) string {
 	today := todayDate(now)
 	plus1 := today.AddDate(0, 0, 1)
 	plus7 := today.AddDate(0, 0, 7)
+	plus31 := today.AddDate(0, 0, 31)
 	switch {
 	case !d.After(today):
 		return Today
@@ -87,6 +92,8 @@ func Bucket(schedule string, now time.Time) string {
 		return Tomorrow
 	case d.After(plus1) && !d.After(plus7):
 		return Week
+	case d.After(plus7) && !d.After(plus31):
+		return Month
 	default:
 		return Someday
 	}

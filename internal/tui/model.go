@@ -2,12 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -35,23 +37,36 @@ const (
 	modeConfirmDelete
 )
 
+// addField tracks which input has focus in the add modal.
+type addField int
+
+const (
+	addFocusTitle addField = iota
+	addFocusTags
+)
+
+// activePanelChromeWidth is the number of non-title characters per line in the
+// active panel: border (2) + padding (2) + ShortID (8) + separator (2) = 14.
+const activePanelChromeWidth = 14
+
 // reschedulePresets are the quick-pick bucket names shown in the reschedule
 // modal. The index + 1 is the numeric shortcut key. They are resolved into
 // concrete ISO dates via schedule.Parse before being written.
-var reschedulePresets = []string{schedule.Today, schedule.Tomorrow, schedule.Week, schedule.Someday}
+var reschedulePresets = []string{schedule.Today, schedule.Tomorrow, schedule.Week, schedule.Month, schedule.Someday}
 
 // tab describes one virtual schedule bucket shown in the TUI.
 type tab struct {
 	label  string
-	bucket string // bucket name (today/tomorrow/week/someday); empty for Done
+	bucket string // bucket name (today/tomorrow/week/month/someday); empty for Done
 	status string // "open" for regular tabs, "done" for the Done tab
 }
 
-// defaultTabs are the tabs shown in display order. 1-5 shortcut keys index in.
+// defaultTabs are the tabs shown in display order. 1-6 shortcut keys index in.
 var defaultTabs = []tab{
 	{label: "Today", bucket: schedule.Today, status: "open"},
 	{label: "Tomorrow", bucket: schedule.Tomorrow, status: "open"},
 	{label: "Week", bucket: schedule.Week, status: "open"},
+	{label: "Month", bucket: schedule.Month, status: "open"},
 	{label: "Someday", bucket: schedule.Someday, status: "open"},
 	{label: "Done", bucket: "", status: "done"},
 }
@@ -74,11 +89,24 @@ type Model struct {
 	modalTask     *model.Task // task the modal is acting on (nil for add)
 	rescheduleSub int         // 0 = picker, 1 = custom date input
 
+	// Add-modal state: second text input for tags and focus tracker.
+	tagInput  textinput.Model
+	addFocus  addField
+	knownTags []string // cached known tags, populated when add modal opens
+
 	// Grab-mode state. grabTask is a working copy whose Position is not
 	// mutated until Enter drop; its current visual location is (activeTab,
 	// grabIndex) within that tab's list items.
 	grabTask  *model.Task
 	grabIndex int
+
+	// Active tasks panel: tasks that carry the "active" tag, shown in a
+	// persistent panel above the tab bar.
+	activeTasks []model.Task
+
+	// itemHeight is the delegate height for list items: 2 when all titles
+	// in the active tab fit in one line, 3 when any title requires wrapping.
+	itemHeight int
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
@@ -100,8 +128,8 @@ func (i item) Description() string {
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
 		parts = append(parts, i.task.Schedule)
 	}
-	if len(i.task.Tags) > 0 {
-		parts = append(parts, "["+strings.Join(i.task.Tags, ", ")+"]")
+	if vt := display.VisibleTags(i.task.Tags); len(vt) > 0 {
+		parts = append(parts, "["+strings.Join(vt, ", ")+"]")
 	}
 	if dates := display.FormatTaskDates(i.now, i.task); dates != "" {
 		parts = append(parts, dates)
@@ -110,6 +138,114 @@ func (i item) Description() string {
 }
 
 func (i item) FilterValue() string { return i.task.Title }
+
+// itemDelegate wraps list.DefaultDelegate to apply context-dependent styling.
+// A pointer to Model lets Render consult the current mode and task state.
+// Render decision tree (first match wins):
+//   - grab: in modeGrab the selected row uses orange grabStyles to signal it's being moved.
+//   - active: tasks with the "active" tag use green activeStyles (both selected and unselected).
+//   - base: all other tasks use the default delegate styles.
+type itemDelegate struct {
+	base         list.DefaultDelegate
+	grabStyles   list.DefaultItemStyles
+	activeStyles list.DefaultItemStyles
+	m            *Model
+}
+
+func newItemDelegate(m *Model) *itemDelegate {
+	base := list.NewDefaultDelegate()
+	grab := list.NewDefaultItemStyles()
+	// Distinct from default pink selection: orange/yellow reads as "held".
+	grabColor := lipgloss.AdaptiveColor{Light: "#D97706", Dark: "#FFB454"}
+	grab.SelectedTitle = grab.SelectedTitle.
+		Foreground(grabColor).
+		BorderForeground(grabColor).
+		Bold(true)
+	grab.SelectedDesc = grab.SelectedDesc.
+		Foreground(grabColor).
+		BorderForeground(grabColor)
+
+	// Green styling for active tasks (persistent "currently working on" state).
+	active := list.NewDefaultItemStyles()
+	activeColor := lipgloss.AdaptiveColor{Light: "#16A34A", Dark: "#22C55E"}
+	active.NormalTitle = active.NormalTitle.Foreground(activeColor)
+	active.NormalDesc = active.NormalDesc.Foreground(activeColor)
+	active.SelectedTitle = active.SelectedTitle.
+		Foreground(activeColor).
+		BorderForeground(activeColor)
+	active.SelectedDesc = active.SelectedDesc.
+		Foreground(activeColor).
+		BorderForeground(activeColor)
+
+	return &itemDelegate{base: base, grabStyles: grab, activeStyles: active, m: m}
+}
+
+func (d *itemDelegate) Height() int {
+	if d.m.itemHeight > 0 {
+		return d.m.itemHeight
+	}
+	return d.base.Height()
+}
+func (d *itemDelegate) Spacing() int { return d.base.Spacing() }
+func (d *itemDelegate) Update(msg tea.Msg, lm *list.Model) tea.Cmd {
+	return d.base.Update(msg, lm)
+}
+
+func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Item) {
+	i, ok := it.(item)
+	if !ok || lm.Width() <= 0 {
+		return
+	}
+
+	// Pick the style set based on mode and task state.
+	var s *list.DefaultItemStyles
+	switch {
+	case d.m.mode == modeGrab && index == lm.Index():
+		s = &d.grabStyles
+	case i.task.IsActive():
+		s = &d.activeStyles
+	default:
+		s = &d.base.Styles
+	}
+
+	isSelected := index == lm.Index()
+
+	// Available text width (left padding is 2 for both normal and selected).
+	textWidth := lm.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight()
+
+	// Wrap title across available lines (height − 1 reserved for description).
+	titleLines := wrapText(i.Title(), textWidth)
+	maxTitleLines := d.Height() - 1
+	if maxTitleLines < 1 {
+		maxTitleLines = 1
+	}
+	if len(titleLines) > maxTitleLines {
+		titleLines = titleLines[:maxTitleLines]
+		// Add ellipsis to signal truncation.
+		last := titleLines[len(titleLines)-1]
+		runes := []rune(last)
+		if len(runes) >= textWidth {
+			titleLines[len(titleLines)-1] = string(runes[:textWidth-1]) + "…"
+		} else {
+			titleLines[len(titleLines)-1] = last + "…"
+		}
+	}
+	title := strings.Join(titleLines, "\n")
+
+	desc := i.Description()
+	desc = truncateTitle(desc, textWidth)
+
+	// Apply styles.
+	if isSelected {
+		title = s.SelectedTitle.Render(title)
+		desc = s.SelectedDesc.Render(desc)
+	} else {
+		title = s.NormalTitle.Render(title)
+		desc = s.NormalDesc.Render(desc)
+	}
+
+	fmt.Fprintf(w, "%s\n%s", title, desc)
+}
 
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
 // focusID, if non-empty, asks the handler to move the cursor to the task with
@@ -125,16 +261,22 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 	ti := textinput.New()
 	ti.CharLimit = 512
 
+	tagTi := textinput.New()
+	tagTi.Placeholder = "tag1, tag2"
+	tagTi.CharLimit = 512
+
 	m := &Model{
 		store:    s,
 		repoPath: repoPath,
 		tabs:     defaultTabs,
 		lists:    make([]list.Model, len(defaultTabs)),
 		input:    ti,
+		tagInput: tagTi,
 	}
 
+	delegate := newItemDelegate(m)
 	for i, t := range m.tabs {
-		l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+		l := list.New(nil, delegate, 0, 0)
 		l.Title = t.label
 		l.SetShowStatusBar(false)
 		l.SetShowHelp(false)
@@ -149,12 +291,15 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 	return m, nil
 }
 
-// reloadAll refreshes every tab from the store.
+// reloadAll refreshes every tab from the store and the active-tasks panel.
 func (m *Model) reloadAll() error {
 	for i := range m.tabs {
 		if err := m.reloadTab(i); err != nil {
 			return err
 		}
+	}
+	if err := m.reloadActive(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -192,6 +337,20 @@ func (m *Model) reloadTab(idx int) error {
 	return nil
 }
 
+// reloadActive refreshes the activeTasks slice from the store.
+func (m *Model) reloadActive() error {
+	tasks, err := m.store.List(store.ListOptions{Tag: model.ActiveTag, Status: "open"})
+	if err != nil {
+		return fmt.Errorf("list active tasks: %w", err)
+	}
+	// Sort by position for stable display order.
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].Position < tasks[j].Position
+	})
+	m.activeTasks = tasks
+	return nil
+}
+
 // selectedTask returns a pointer to the currently selected task in the
 // active tab, or nil if the tab is empty.
 func (m *Model) selectedTask() *model.Task {
@@ -212,13 +371,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		listH := msg.Height - 4
-		if listH < 3 {
-			listH = 3
-		}
-		for i := range m.lists {
-			m.lists[i].SetSize(msg.Width, listH)
-		}
+		m.recomputeLayout()
 		return m, nil
 
 	case taskSavedMsg:
@@ -232,6 +385,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.reloadAll(); err != nil {
 			m.err = err
 		}
+		m.recomputeLayout()
 		if msg.focusID != "" {
 			m.focusTaskByID(msg.focusID)
 		}
@@ -259,14 +413,17 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "left", "shift+tab":
 		m.activeTab = (m.activeTab - 1 + len(m.tabs)) % len(m.tabs)
+		m.recomputeLayout()
 		return m, nil
 	case "right", "tab":
 		m.activeTab = (m.activeTab + 1) % len(m.tabs)
+		m.recomputeLayout()
 		return m, nil
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		n := int(msg.String()[0] - '1')
 		if n < len(m.tabs) {
 			m.activeTab = n
+			m.recomputeLayout()
 		}
 		return m, nil
 
@@ -276,13 +433,15 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openReschedule()
 	case "t":
 		return m, m.openRetag()
-	case "a":
+	case "c":
 		return m, m.openAdd()
 	case "x":
 		return m, m.openConfirmDelete()
 	case "m":
 		m.openGrab()
 		return m, nil
+	case "a":
+		return m, m.toggleActive()
 	case "e":
 		return m, m.openEdit()
 	case "s":
@@ -323,6 +482,9 @@ func (m *Model) closeModal() {
 	m.rescheduleSub = 0
 	m.input.Blur()
 	m.input.SetValue("")
+	m.tagInput.Blur()
+	m.tagInput.SetValue("")
+	m.addFocus = addFocusTitle
 }
 
 // --- done action -----------------------------------------------------------
@@ -338,8 +500,26 @@ func (m *Model) doneSelected() tea.Cmd {
 	}
 	t := *task
 	t.Status = "done"
+	t.SetActive(false)
 	t.UpdatedAt = now()
 	return m.saveCmd(t, fmt.Sprintf("done: %s", t.Title), fmt.Sprintf("Completed: %s", t.Title))
+}
+
+// --- active toggle ---------------------------------------------------------
+
+func (m *Model) toggleActive() tea.Cmd {
+	task := m.selectedTask()
+	if task == nil {
+		return nil
+	}
+	t := *task
+	t.SetActive(!t.IsActive())
+	t.UpdatedAt = now()
+	label := "activated"
+	if !t.IsActive() {
+		label = "deactivated"
+	}
+	return m.saveCmd(t, fmt.Sprintf("edit: %s", t.Title), fmt.Sprintf("%s: %s", label, t.Title))
 }
 
 // --- reschedule modal ------------------------------------------------------
@@ -361,10 +541,10 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.rescheduleSub == 0 {
 		// Picker step.
 		switch msg.String() {
-		case "1", "2", "3", "4":
+		case "1", "2", "3", "4", "5":
 			n := int(msg.String()[0] - '1')
 			return m, m.applyReschedule(reschedulePresets[n])
-		case "5":
+		case "6":
 			m.rescheduleSub = 1
 			m.input.Placeholder = "YYYY-MM-DD"
 			m.input.SetValue("")
@@ -445,7 +625,9 @@ func (m *Model) openRetag() tea.Cmd {
 	m.modalTask = &t
 	m.mode = modeRetag
 	m.input.Placeholder = "tag1, tag2"
-	m.input.SetValue(strings.Join(t.Tags, ", "))
+	// Filter out the reserved active tag so the user only sees their own tags.
+	// Active state is preserved separately via wasActive/SetActive in updateRetag.
+	m.input.SetValue(strings.Join(display.VisibleTags(t.Tags), ", "))
 	m.input.CursorEnd()
 	m.input.Focus()
 	return textinput.Blink
@@ -458,7 +640,9 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		t := *m.modalTask
-		t.Tags = sanitizeTags(m.input.Value())
+		wasActive := t.IsActive()
+		t.Tags = model.SanitizeTags(m.input.Value())
+		t.SetActive(wasActive)
 		t.UpdatedAt = now()
 		m.closeModal()
 		return m, m.saveCmd(t,
@@ -477,22 +661,78 @@ func (m *Model) openAdd() tea.Cmd {
 	m.input.Placeholder = "task title"
 	m.input.SetValue("")
 	m.input.Focus()
+	m.tagInput.SetValue("")
+	m.tagInput.Blur()
+	m.addFocus = addFocusTitle
+	// Cache known tags from all loaded list items for instant auto-tag on ":".
+	var allTasks []model.Task
+	for i := range m.lists {
+		for _, li := range m.lists[i].Items() {
+			allTasks = append(allTasks, li.(item).task)
+		}
+	}
+	m.knownTags = model.CollectTags(allTasks)
 	return textinput.Blink
 }
 
 func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Tab toggles focus between title and tags — intercept before the
+	// textinput swallows it.
+	if msg.Type == tea.KeyTab {
+		if m.addFocus == addFocusTitle {
+			m.addFocus = addFocusTags
+			m.input.Blur()
+			m.tagInput.Focus()
+		} else {
+			m.addFocus = addFocusTitle
+			m.tagInput.Blur()
+			m.input.Focus()
+		}
+		return m, textinput.Blink
+	}
+
 	if msg.Type == tea.KeyEnter {
 		title := strings.TrimSpace(m.input.Value())
 		if title == "" {
 			m.closeModal()
 			return m, nil
 		}
+		tags := model.SanitizeTags(m.tagInput.Value())
 		m.closeModal()
-		return m, m.createCmd(title)
+		return m, m.createCmd(title, tags)
 	}
+
+	// Route remaining keys to the focused input only.
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	if m.addFocus == addFocusTags {
+		m.tagInput, cmd = m.tagInput.Update(msg)
+	} else {
+		m.input, cmd = m.input.Update(msg)
+		// After updating the title input, check if a known tag prefix was typed.
+		// Auto-populate the tags field on ":" so the user gets instant feedback.
+		if autoTag := model.ParseTitleTag(m.input.Value(), m.knownTags); autoTag != "" {
+			existing := m.tagInput.Value()
+			if !tagFieldContains(existing, autoTag) {
+				if existing == "" {
+					m.tagInput.SetValue(autoTag)
+				} else {
+					m.tagInput.SetValue(existing + ", " + autoTag)
+				}
+			}
+		}
+	}
 	return m, cmd
+}
+
+// tagFieldContains reports whether the comma-separated tag field text already
+// contains the given tag (trimming whitespace around each entry).
+func tagFieldContains(field, tag string) bool {
+	for _, part := range strings.Split(field, ",") {
+		if strings.TrimSpace(part) == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // --- delete confirm --------------------------------------------------------
@@ -536,12 +776,14 @@ type editableFields struct {
 }
 
 // marshalTaskForEdit renders a task into the YAML shown in the editor.
+// The reserved "active" tag is filtered out so the user only sees their own
+// tags; active state is preserved separately in applyEditedYAML.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
 	return yaml.Marshal(editableFields{
 		Title:    t.Title,
 		Body:     t.Body,
 		Schedule: t.Schedule,
-		Tags:     t.Tags,
+		Tags:     display.VisibleTags(t.Tags),
 	})
 }
 
@@ -564,10 +806,12 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 		return model.Task{}, err
 	}
 	out := orig
+	wasActive := orig.IsActive()
 	out.Title = edit.Title
 	out.Body = edit.Body
 	out.Schedule = scheduleDate
 	out.Tags = edit.Tags
+	out.SetActive(wasActive)
 	out.UpdatedAt = now.UTC().Format(time.RFC3339)
 	return out, nil
 }
@@ -800,6 +1044,9 @@ func (m *Model) commitGrab() tea.Cmd {
 	if t.Status == "" {
 		t.Status = "open"
 	}
+	if t.Status == "done" {
+		t.SetActive(false)
+	}
 	t.UpdatedAt = now()
 
 	// Compute the new Position from the grabbed task's in-memory neighbors
@@ -908,7 +1155,7 @@ func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
 }
 
 // createCmd creates a new task in the current tab's bucket at the bottom.
-func (m *Model) createCmd(title string) tea.Cmd {
+func (m *Model) createCmd(title string, tags []string) tea.Cmd {
 	// Capture active-tab bucket at dispatch time; if user changes tabs
 	// while the cmd is in flight, we still place it in the intended bucket.
 	t := m.tabs[m.activeTab]
@@ -925,10 +1172,25 @@ func (m *Model) createCmd(title string) tea.Cmd {
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("schedule: %w", err)}
 		}
-		existing, err := bucketSiblings(storeRef, scheduleDate, nowT)
+
+		// Load all tasks once — derive bucket siblings (for position) and
+		// known tags (for auto-tag) from the same scan, avoiding a second
+		// full directory read.
+		allTasks, err := storeRef.List(store.ListOptions{})
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("list: %w", err)}
 		}
+		bkt := schedule.Bucket(scheduleDate, nowT)
+		var siblings []model.Task
+		for _, tk := range allTasks {
+			if tk.Status == "open" && schedule.MatchesBucket(tk.Schedule, bkt, nowT) {
+				siblings = append(siblings, tk)
+			}
+		}
+
+		// Auto-tag from title prefix using already-loaded tasks
+		tags = model.AutoTag(title, model.CollectTags(allTasks), tags)
+
 		id, err := model.NewID()
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("id: %w", err)}
@@ -939,8 +1201,9 @@ func (m *Model) createCmd(title string) tea.Cmd {
 			Title:     title,
 			Source:    "tui",
 			Status:    "open",
-			Position:  ordering.NextPosition(existing),
+			Position:  ordering.NextPosition(siblings),
 			Schedule:  scheduleDate,
+			Tags:      tags,
 			CreatedAt: n,
 			UpdatedAt: n,
 		}
@@ -1000,6 +1263,108 @@ func (m *Model) deleteCmd(task model.Task) tea.Cmd {
 	}
 }
 
+// --- active panel ----------------------------------------------------------
+
+// activePanelView renders a bordered panel listing each active task. Returns
+// an empty string when there are no active tasks (auto-hide).
+func (m *Model) activePanelView() string {
+	if len(m.activeTasks) == 0 {
+		return ""
+	}
+	titleWidth := m.width - activePanelChromeWidth
+	var lines []string
+	for _, t := range m.activeTasks {
+		titleLines := wrapText(t.Title, titleWidth)
+		if len(titleLines) > 2 {
+			titleLines = titleLines[:2]
+			last := titleLines[1]
+			runes := []rune(last)
+			if len(runes) >= titleWidth {
+				titleLines[1] = string(runes[:titleWidth-1]) + "…"
+			} else {
+				titleLines[1] = last + "…"
+			}
+		}
+		prefix := display.ShortID(t.ID) + "  "
+		indent := strings.Repeat(" ", utf8.RuneCountInString(prefix))
+		for i, line := range titleLines {
+			if i == 0 {
+				lines = append(lines, prefix+line)
+			} else {
+				lines = append(lines, indent+line)
+			}
+		}
+	}
+	content := strings.Join(lines, "\n")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("28")).
+		Padding(0, 1).
+		Render(content)
+}
+
+// activePanelHeight returns the rendered line count of the active panel. Returns
+// 0 when there are no active tasks (panel hidden). Mirrors the wrapping logic
+// in activePanelView so the two never drift apart.
+// Structure: 1 top border + content lines + 1 bottom border.
+func (m *Model) activePanelHeight() int {
+	if len(m.activeTasks) == 0 {
+		return 0
+	}
+	titleWidth := m.width - activePanelChromeWidth
+	if titleWidth <= 0 {
+		return len(m.activeTasks) + 2
+	}
+	contentLines := 0
+	for _, t := range m.activeTasks {
+		n := len(wrapText(t.Title, titleWidth))
+		if n > 2 {
+			n = 2
+		}
+		contentLines += n
+	}
+	return contentLines + 2
+}
+
+// recomputeLayout recalculates list sizes based on the current terminal
+// dimensions and active panel height. Called from WindowSizeMsg and after
+// any mutation that might change the panel (taskSavedMsg).
+func (m *Model) recomputeLayout() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	m.itemHeight = m.computeItemHeight()
+	listH := m.height - 4 - m.activePanelHeight()
+	if listH < 3 {
+		listH = 3
+	}
+	for i := range m.lists {
+		m.lists[i].SetSize(m.width, listH)
+	}
+}
+
+// computeItemHeight returns 3 if any title in the active tab exceeds the
+// available text width (needs wrapping), otherwise 2.
+func (m *Model) computeItemHeight() int {
+	if m.width <= 0 {
+		return 2
+	}
+	// Text width matches the delegate Render calculation: list width minus
+	// NormalTitle left padding (2).
+	textWidth := m.width - 2
+	if textWidth <= 0 {
+		return 2
+	}
+	for _, it := range m.lists[m.activeTab].Items() {
+		if task, ok := it.(item); ok {
+			if utf8.RuneCountInString(task.Title()) > textWidth {
+				return 3
+			}
+		}
+	}
+	return 2
+}
+
 // --- View ------------------------------------------------------------------
 
 func (m *Model) View() string {
@@ -1022,7 +1387,13 @@ func (m *Model) View() string {
 	}
 
 	help := m.helpLine()
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, help)
+
+	parts := []string{}
+	if panel := m.activePanelView(); panel != "" {
+		parts = append(parts, panel)
+	}
+	parts = append(parts, header, body, help)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (m *Model) helpLine() string {
@@ -1034,16 +1405,18 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-5 jump  d done  e edit  r resched  t tag  a add  x del  m grab  s sync  q quit")
+		return helpStyle.Render("←/→ tabs  1-6 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  s sync  q quit")
 	case modeGrab:
 		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ move bucket  g/G top/bottom  enter drop  esc cancel")
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
-			return helpStyle.Render("1 today  2 tomorrow  3 week  4 someday  5 custom  esc cancel")
+			return helpStyle.Render("1 today  2 tomorrow  3 week  4 month  5 someday  6 custom  esc cancel")
 		}
 		return helpStyle.Render("enter save  esc cancel")
-	case modeRetag, modeAdd:
+	case modeRetag:
 		return helpStyle.Render("enter save  esc cancel")
+	case modeAdd:
+		return helpStyle.Render("tab switch field  enter save  esc cancel")
 	case modeConfirmDelete:
 		return helpStyle.Render("y confirm  anything else cancels")
 	}
@@ -1058,15 +1431,16 @@ func (m *Model) modalView() string {
 				"  1  Today\n" +
 				"  2  Tomorrow\n" +
 				"  3  Week\n" +
-				"  4  Someday\n" +
-				"  5  Custom date...")
+				"  4  Month\n" +
+				"  5  Someday\n" +
+				"  6  Custom date...")
 		}
 		return modalBox("Custom date:\n\n" + m.input.View())
 	case modeRetag:
 		return modalBox("Tags (comma-separated):\n\n" + m.input.View())
 	case modeAdd:
 		t := m.tabs[m.activeTab]
-		return modalBox(fmt.Sprintf("Add task to %s:\n\n%s", t.label, m.input.View()))
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s", t.label, m.input.View(), m.tagInput.View()))
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""
@@ -1095,20 +1469,49 @@ func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// sanitizeTags splits a comma-separated string into tags, trimming and
-// dropping empties. Duplicates preserved in input order (caller's choice).
-func sanitizeTags(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
+// wrapText breaks s into lines of at most width runes, splitting at word
+// boundaries when possible. Falls back to hard-breaking mid-word when a
+// single word exceeds the width. Returns at least one line.
+func wrapText(s string, width int) []string {
+	if width <= 0 || utf8.RuneCountInString(s) <= width {
+		return []string{s}
 	}
-	parts := strings.Split(raw, ",")
-	var tags []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			tags = append(tags, p)
+	runes := []rune(s)
+	var lines []string
+	start := 0
+	for start < len(runes) {
+		end := start + width
+		if end >= len(runes) {
+			lines = append(lines, string(runes[start:]))
+			break
+		}
+		// Look backwards for a space to break at.
+		cut := end
+		for cut > start && runes[cut] != ' ' {
+			cut--
+		}
+		if cut == start {
+			// No space found — hard-break at width.
+			lines = append(lines, string(runes[start:end]))
+			start = end
+		} else {
+			lines = append(lines, string(runes[start:cut]))
+			start = cut + 1 // skip the space
 		}
 	}
-	return tags
+	return lines
 }
 
+// truncateTitle shortens s to width runes, appending "…" if truncated.
+// If width <= 0 (e.g., terminal size not yet known), returns s unchanged.
+func truncateTitle(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	n := utf8.RuneCountInString(s)
+	if n <= width {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:width-1]) + "…"
+}

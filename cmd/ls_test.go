@@ -2,9 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 )
 
 func addTask(t *testing.T, args ...string) {
@@ -310,5 +316,193 @@ func TestLsCommand_ScheduleAndTagCombined(t *testing.T) {
 	}
 	if strings.Contains(output, "Tomorrow work") {
 		t.Errorf("should NOT show 'Tomorrow work', got:\n%s", output)
+	}
+}
+
+// setTaskActive marks a task on disk as active by adding the ActiveTag to its tags.
+func setTaskActive(t *testing.T, dir, id string) {
+	t.Helper()
+	path := filepath.Join(dir, ".monolog", "tasks", id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read task %s: %v", id, err)
+	}
+	var task model.Task
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	task.SetActive(true)
+	data, err = json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+}
+
+func TestLs_ActiveFlag_LiftsScheduleFilter(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create three tasks: two today (one active, one not), one week (active).
+	addTestTask(t, dir, "Today not active")
+	weekID := addTestTaskWithSchedule(t, dir, "Week active", "week")
+	addTestTask(t, dir, "Today also not active")
+
+	// Mark the week task as active on disk.
+	setTaskActive(t, dir, weekID)
+
+	// Verify schedule.Parse("week") gives us the right ISO date
+	weekISO, err := schedule.Parse("week", time.Now())
+	if err != nil {
+		t.Fatalf("schedule.Parse(week): %v", err)
+	}
+	task, ok := getTaskByID(t, dir, weekID)
+	if !ok {
+		t.Fatal("week task not found on disk")
+	}
+	if task.Schedule != weekISO {
+		t.Fatalf("week task schedule = %q, want %q", task.Schedule, weekISO)
+	}
+
+	// Run: ls --active (no --schedule)
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--active"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --active error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	// The active week task must appear (schedule filter was lifted).
+	if !strings.Contains(output, "Week active") {
+		t.Errorf("--active should show 'Week active' (schedule filter lifted), got:\n%s", output)
+	}
+	// The non-active today tasks must NOT appear.
+	if strings.Contains(output, "Today not active") {
+		t.Errorf("--active should NOT show 'Today not active', got:\n%s", output)
+	}
+	if strings.Contains(output, "Today also not active") {
+		t.Errorf("--active should NOT show 'Today also not active', got:\n%s", output)
+	}
+}
+
+func TestLs_ActiveFlag_RespectsExplicitSchedule(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create two active tasks in different schedules.
+	todayID := addTestTask(t, dir, "Today active")
+	weekID := addTestTaskWithSchedule(t, dir, "Week active", "week")
+
+	setTaskActive(t, dir, todayID)
+	setTaskActive(t, dir, weekID)
+
+	// Run: ls --active --schedule today
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--active", "--schedule", "today"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --active --schedule today error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	// Only the today-active task should appear.
+	if !strings.Contains(output, "Today active") {
+		t.Errorf("should show 'Today active', got:\n%s", output)
+	}
+	if strings.Contains(output, "Week active") {
+		t.Errorf("should NOT show 'Week active' when --schedule today is explicit, got:\n%s", output)
+	}
+}
+
+func TestLs_ActiveWithDoneFlag(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create two tasks, mark both as done, then re-activate one on disk.
+	// (The done command auto-deactivates, so we re-add the active tag after.)
+	id1 := addTestTask(t, dir, "Done active")
+	id2 := addTestTask(t, dir, "Done not active")
+
+	// Mark both as done using full IDs to avoid prefix collisions.
+	for _, id := range []string{id1, id2} {
+		rc := NewRootCmd()
+		rc.SetOut(new(bytes.Buffer))
+		rc.SetErr(new(bytes.Buffer))
+		rc.SetArgs([]string{"done", id})
+		if err := rc.Execute(); err != nil {
+			t.Fatalf("done %s: %v", id, err)
+		}
+	}
+
+	// Re-activate the first done task on disk to simulate a done+active state.
+	setTaskActive(t, dir, id1)
+
+	// Run: ls --active --done
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--active", "--done"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --active --done error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Done active") {
+		t.Errorf("--active --done should show 'Done active', got:\n%s", output)
+	}
+	if strings.Contains(output, "Done not active") {
+		t.Errorf("--active --done should NOT show 'Done not active', got:\n%s", output)
+	}
+}
+
+func TestFilterActive(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []model.Task
+		want int
+	}{
+		{"nil slice", nil, 0},
+		{"empty slice", []model.Task{}, 0},
+		{"no active tasks", []model.Task{
+			{ID: "01A", Title: "a"},
+			{ID: "01B", Title: "b"},
+		}, 0},
+		{"all active", []model.Task{
+			{ID: "01A", Title: "a", Tags: []string{"active"}},
+			{ID: "01B", Title: "b", Tags: []string{"active"}},
+		}, 2},
+		{"mixed", []model.Task{
+			{ID: "01A", Title: "a", Tags: []string{"active"}},
+			{ID: "01B", Title: "b"},
+			{ID: "01C", Title: "c", Tags: []string{"active", "work"}},
+		}, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Make a copy to avoid mutation issues from the [:0] trick.
+			input := make([]model.Task, len(tc.in))
+			copy(input, tc.in)
+			got := filterActive(input)
+			if len(got) != tc.want {
+				t.Errorf("filterActive() returned %d tasks, want %d", len(got), tc.want)
+			}
+			for _, task := range got {
+				if !task.IsActive() {
+					t.Errorf("filterActive() returned non-active task: %v", task)
+				}
+			}
+		})
 	}
 }
