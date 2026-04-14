@@ -103,6 +103,10 @@ type Model struct {
 	// persistent panel above the tab bar.
 	activeTasks []model.Task
 
+	// itemHeight is the delegate height for list items: 2 when all titles
+	// in the active tab fit in one line, 3 when any title requires wrapping.
+	itemHeight int
+
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
 }
@@ -175,27 +179,71 @@ func newItemDelegate(m *Model) *itemDelegate {
 	return &itemDelegate{base: base, grabStyles: grab, activeStyles: active, m: m}
 }
 
-func (d *itemDelegate) Height() int  { return d.base.Height() }
+func (d *itemDelegate) Height() int {
+	if d.m.itemHeight > 0 {
+		return d.m.itemHeight
+	}
+	return d.base.Height()
+}
 func (d *itemDelegate) Spacing() int { return d.base.Spacing() }
 func (d *itemDelegate) Update(msg tea.Msg, lm *list.Model) tea.Cmd {
 	return d.base.Update(msg, lm)
 }
 
 func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Item) {
+	i, ok := it.(item)
+	if !ok || lm.Width() <= 0 {
+		return
+	}
+
+	// Pick the style set based on mode and task state.
+	var s *list.DefaultItemStyles
 	switch {
 	case d.m.mode == modeGrab && index == lm.Index():
-		saved := d.base.Styles
-		d.base.Styles = d.grabStyles
-		d.base.Render(w, lm, index, it)
-		d.base.Styles = saved
-	case it.(item).task.IsActive():
-		saved := d.base.Styles
-		d.base.Styles = d.activeStyles
-		d.base.Render(w, lm, index, it)
-		d.base.Styles = saved
+		s = &d.grabStyles
+	case i.task.IsActive():
+		s = &d.activeStyles
 	default:
-		d.base.Render(w, lm, index, it)
+		s = &d.base.Styles
 	}
+
+	isSelected := index == lm.Index()
+
+	// Available text width (left padding is 2 for both normal and selected).
+	textWidth := lm.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight()
+
+	// Wrap title across available lines (height − 1 reserved for description).
+	titleLines := wrapText(i.Title(), textWidth)
+	maxTitleLines := d.Height() - 1
+	if maxTitleLines < 1 {
+		maxTitleLines = 1
+	}
+	if len(titleLines) > maxTitleLines {
+		titleLines = titleLines[:maxTitleLines]
+		// Add ellipsis to signal truncation.
+		last := titleLines[len(titleLines)-1]
+		runes := []rune(last)
+		if len(runes) >= textWidth {
+			titleLines[len(titleLines)-1] = string(runes[:textWidth-1]) + "…"
+		} else {
+			titleLines[len(titleLines)-1] = last + "…"
+		}
+	}
+	title := strings.Join(titleLines, "\n")
+
+	desc := i.Description()
+	desc = truncateTitle(desc, textWidth)
+
+	// Apply styles.
+	if isSelected {
+		title = s.SelectedTitle.Render(title)
+		desc = s.SelectedDesc.Render(desc)
+	} else {
+		title = s.NormalTitle.Render(title)
+		desc = s.NormalDesc.Render(desc)
+	}
+
+	fmt.Fprintf(w, "%s\n%s", title, desc)
 }
 
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
@@ -364,14 +412,17 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "left", "shift+tab":
 		m.activeTab = (m.activeTab - 1 + len(m.tabs)) % len(m.tabs)
+		m.recomputeLayout()
 		return m, nil
 	case "right", "tab":
 		m.activeTab = (m.activeTab + 1) % len(m.tabs)
+		m.recomputeLayout()
 		return m, nil
 	case "1", "2", "3", "4", "5", "6":
 		n := int(msg.String()[0] - '1')
 		if n < len(m.tabs) {
 			m.activeTab = n
+			m.recomputeLayout()
 		}
 		return m, nil
 
@@ -1089,10 +1140,25 @@ func (m *Model) createCmd(title string, tags []string) tea.Cmd {
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("schedule: %w", err)}
 		}
-		existing, err := bucketSiblings(storeRef, scheduleDate, nowT)
+
+		// Load all tasks once — derive bucket siblings (for position) and
+		// known tags (for auto-tag) from the same scan, avoiding a second
+		// full directory read.
+		allTasks, err := storeRef.List(store.ListOptions{})
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("list: %w", err)}
 		}
+		bkt := schedule.Bucket(scheduleDate, nowT)
+		var siblings []model.Task
+		for _, tk := range allTasks {
+			if tk.Status == "open" && schedule.MatchesBucket(tk.Schedule, bkt, nowT) {
+				siblings = append(siblings, tk)
+			}
+		}
+
+		// Auto-tag from title prefix using already-loaded tasks
+		tags = model.AutoTag(title, model.CollectTags(allTasks), tags)
+
 		id, err := model.NewID()
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("id: %w", err)}
@@ -1103,7 +1169,7 @@ func (m *Model) createCmd(title string, tags []string) tea.Cmd {
 			Title:     title,
 			Source:    "tui",
 			Status:    "open",
-			Position:  ordering.NextPosition(existing),
+			Position:  ordering.NextPosition(siblings),
 			Schedule:  scheduleDate,
 			Tags:      tags,
 			CreatedAt: n,
@@ -1176,8 +1242,26 @@ func (m *Model) activePanelView() string {
 	titleWidth := m.width - activePanelChromeWidth
 	var lines []string
 	for _, t := range m.activeTasks {
-		title := truncateTitle(t.Title, titleWidth)
-		lines = append(lines, fmt.Sprintf("%s  %s", display.ShortID(t.ID), title))
+		titleLines := wrapText(t.Title, titleWidth)
+		if len(titleLines) > 2 {
+			titleLines = titleLines[:2]
+			last := titleLines[1]
+			runes := []rune(last)
+			if len(runes) >= titleWidth {
+				titleLines[1] = string(runes[:titleWidth-1]) + "…"
+			} else {
+				titleLines[1] = last + "…"
+			}
+		}
+		prefix := display.ShortID(t.ID) + "  "
+		indent := strings.Repeat(" ", utf8.RuneCountInString(prefix))
+		for i, line := range titleLines {
+			if i == 0 {
+				lines = append(lines, prefix+line)
+			} else {
+				lines = append(lines, indent+line)
+			}
+		}
 	}
 	content := strings.Join(lines, "\n")
 	return lipgloss.NewStyle().
@@ -1188,14 +1272,26 @@ func (m *Model) activePanelView() string {
 }
 
 // activePanelHeight returns the rendered line count of the active panel. Returns
-// 0 when there are no active tasks (panel hidden). Computed from the slice
-// length directly to avoid rendering the panel twice (once here, once in View).
-// Structure: 1 top border + len(activeTasks) content lines + 1 bottom border.
+// 0 when there are no active tasks (panel hidden). Mirrors the wrapping logic
+// in activePanelView so the two never drift apart.
+// Structure: 1 top border + content lines + 1 bottom border.
 func (m *Model) activePanelHeight() int {
 	if len(m.activeTasks) == 0 {
 		return 0
 	}
-	return len(m.activeTasks) + 2
+	titleWidth := m.width - activePanelChromeWidth
+	if titleWidth <= 0 {
+		return len(m.activeTasks) + 2
+	}
+	contentLines := 0
+	for _, t := range m.activeTasks {
+		n := len(wrapText(t.Title, titleWidth))
+		if n > 2 {
+			n = 2
+		}
+		contentLines += n
+	}
+	return contentLines + 2
 }
 
 // recomputeLayout recalculates list sizes based on the current terminal
@@ -1205,6 +1301,7 @@ func (m *Model) recomputeLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
+	m.itemHeight = m.computeItemHeight()
 	listH := m.height - 4 - m.activePanelHeight()
 	if listH < 3 {
 		listH = 3
@@ -1212,6 +1309,28 @@ func (m *Model) recomputeLayout() {
 	for i := range m.lists {
 		m.lists[i].SetSize(m.width, listH)
 	}
+}
+
+// computeItemHeight returns 3 if any title in the active tab exceeds the
+// available text width (needs wrapping), otherwise 2.
+func (m *Model) computeItemHeight() int {
+	if m.width <= 0 {
+		return 2
+	}
+	// Text width matches the delegate Render calculation: list width minus
+	// NormalTitle left padding (2).
+	textWidth := m.width - 2
+	if textWidth <= 0 {
+		return 2
+	}
+	for _, it := range m.lists[m.activeTab].Items() {
+		if task, ok := it.(item); ok {
+			if utf8.RuneCountInString(task.Title()) > textWidth {
+				return 3
+			}
+		}
+	}
+	return 2
 }
 
 // --- View ------------------------------------------------------------------
@@ -1318,6 +1437,39 @@ func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// wrapText breaks s into lines of at most width runes, splitting at word
+// boundaries when possible. Falls back to hard-breaking mid-word when a
+// single word exceeds the width. Returns at least one line.
+func wrapText(s string, width int) []string {
+	if width <= 0 || utf8.RuneCountInString(s) <= width {
+		return []string{s}
+	}
+	runes := []rune(s)
+	var lines []string
+	start := 0
+	for start < len(runes) {
+		end := start + width
+		if end >= len(runes) {
+			lines = append(lines, string(runes[start:]))
+			break
+		}
+		// Look backwards for a space to break at.
+		cut := end
+		for cut > start && runes[cut] != ' ' {
+			cut--
+		}
+		if cut == start {
+			// No space found — hard-break at width.
+			lines = append(lines, string(runes[start:end]))
+			start = end
+		} else {
+			lines = append(lines, string(runes[start:cut]))
+			start = cut + 1 // skip the space
+		}
+	}
+	return lines
+}
+
 // truncateTitle shortens s to width runes, appending "…" if truncated.
 // If width <= 0 (e.g., terminal size not yet known), returns s unchanged.
 func truncateTitle(s string, width int) string {
@@ -1331,5 +1483,3 @@ func truncateTitle(s string, width int) string {
 	runes := []rune(s)
 	return string(runes[:width-1]) + "…"
 }
-
-

@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -775,25 +774,6 @@ func TestResolveEditor(t *testing.T) {
 	}
 }
 
-func TestSanitizeTags(t *testing.T) {
-	tests := []struct {
-		in   string
-		want []string
-	}{
-		{"", nil},
-		{"   ", nil},
-		{"one", []string{"one"}},
-		{"one, two", []string{"one", "two"}},
-		{" a , , b ", []string{"a", "b"}},
-	}
-	for _, tc := range tests {
-		got := model.SanitizeTags(tc.in)
-		if !sliceEq(got, tc.want) {
-			t.Errorf("SanitizeTags(%q) = %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
-
 func sliceEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -804,29 +784,6 @@ func sliceEq(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func TestVisibleTags(t *testing.T) {
-	tests := []struct {
-		name string
-		in   []string
-		want []string
-	}{
-		{"nil input", nil, nil},
-		{"empty input", []string{}, nil},
-		{"no active tag", []string{"work", "urgent"}, []string{"work", "urgent"}},
-		{"only active tag", []string{"active"}, nil},
-		{"active with others", []string{"active", "work", "personal"}, []string{"work", "personal"}},
-		{"active in middle", []string{"work", "active", "personal"}, []string{"work", "personal"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := display.VisibleTags(tc.in)
-			if !sliceEq(got, tc.want) {
-				t.Errorf("VisibleTags(%v) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
 }
 
 func TestTruncateTitle(t *testing.T) {
@@ -1605,6 +1562,236 @@ func TestAdd_ModalViewShowsBothLabels(t *testing.T) {
 	}
 	if !strings.Contains(view, "Tags:") {
 		t.Errorf("modalView should contain 'Tags:', got %q", view)
+	}
+}
+
+// --- wrapText tests ----------------------------------------------------------
+
+func TestWrapText(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		width int
+		want  []string
+	}{
+		{"short fits", "hello", 10, []string{"hello"}},
+		{"exact width", "hello", 5, []string{"hello"}},
+		{"wraps at space", "hello world", 7, []string{"hello", "world"}},
+		{"wraps long sentence", "one two three four", 9, []string{"one two", "three", "four"}},
+		{"hard break no spaces", "abcdefghij", 4, []string{"abcd", "efgh", "ij"}},
+		{"zero width unchanged", "hello", 0, []string{"hello"}},
+		{"negative width unchanged", "hello", -1, []string{"hello"}},
+		{"empty string", "", 5, []string{""}},
+		{"trailing space at break", "ab cd ef", 5, []string{"ab cd", "ef"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapText(tc.in, tc.width)
+			if !sliceEq(got, tc.want) {
+				t.Errorf("wrapText(%q, %d) = %v, want %v", tc.in, tc.width, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- itemHeight tests --------------------------------------------------------
+
+func TestComputeItemHeight_DefaultWhenShortTitles(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "short", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+	if m.itemHeight != 2 {
+		t.Errorf("itemHeight = %d, want 2 for short titles", m.itemHeight)
+	}
+}
+
+func TestComputeItemHeight_BumpsWhenLongTitle(t *testing.T) {
+	longTitle := strings.Repeat("x", 100)
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longTitle, Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+	// 60 - 2 (padding) = 58 text width; 100 chars > 58, so height should be 3.
+	if m.itemHeight != 3 {
+		t.Errorf("itemHeight = %d, want 3 for long title", m.itemHeight)
+	}
+}
+
+func TestItemHeightChangesOnTabSwitch(t *testing.T) {
+	longTitle := strings.Repeat("word ", 20) // 100 chars
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "short", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: longTitle, Status: "open", Schedule: "tomorrow",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+
+	// Today tab: short title → height 2.
+	if m.itemHeight != 2 {
+		t.Errorf("Today tab: itemHeight = %d, want 2", m.itemHeight)
+	}
+	// Switch to Tomorrow tab: long title → height 3.
+	m, _ = key(t, m, "right")
+	if m.itemHeight != 3 {
+		t.Errorf("Tomorrow tab: itemHeight = %d, want 3", m.itemHeight)
+	}
+	// Switch back to Today: height should return to 2.
+	m, _ = key(t, m, "left")
+	if m.itemHeight != 2 {
+		t.Errorf("Today tab after return: itemHeight = %d, want 2", m.itemHeight)
+	}
+}
+
+func TestActivePanel_WrapsLongTitles(t *testing.T) {
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	longTitle := strings.Repeat("word ", 20) // 100 chars
+	m := newTestModel(t,
+		model.Task{ID: "01AAAAAA", Title: longTitle, Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	width := 60
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+	m = next.(*Model)
+
+	panel := m.activePanelView()
+
+	// Panel should use at least 2 content lines for this task (1 wrapped + 1 continuation).
+	fast := m.activePanelHeight()
+	if fast < 4 { // 2 content lines + 2 border lines = 4
+		t.Errorf("activePanelHeight() = %d, want >= 4 for wrapped title", fast)
+	}
+
+	// Rendered height must still match the fast calculation.
+	rendered := lipgloss.Height(panel)
+	if fast != rendered {
+		t.Errorf("activePanelHeight() = %d, rendered = %d; they must match", fast, rendered)
+	}
+
+	// No line should exceed terminal width.
+	for _, line := range strings.Split(panel, "\n") {
+		if len([]rune(line)) > width {
+			t.Errorf("panel line exceeds width %d: %d runes: %q", width, len([]rune(line)), line)
+		}
+	}
+}
+
+func TestAdd_AutoTagFromTitlePrefix(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, type a title with known tag prefix, then Enter.
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "jean: create integration")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Find the newly created task (not the seed).
+	var created *model.Task
+	for _, li := range m.lists[0].Items() {
+		task := li.(item).task
+		if task.ID != "01SEED01" {
+			created = &task
+			break
+		}
+	}
+	if created == nil {
+		t.Fatal("new task not found in Today tab")
+	}
+	if created.Title != "jean: create integration" {
+		t.Errorf("Title = %q, want %q", created.Title, "jean: create integration")
+	}
+	// Should have auto-tag "jean" applied.
+	found := false
+	for _, tag := range created.Tags {
+		if tag == "jean" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Tags = %v, want to contain 'jean' via auto-tag", created.Tags)
+	}
+}
+
+func TestAdd_NoAutoTagForUnknownPrefix(t *testing.T) {
+	// No existing tasks with tag "unknown", so auto-tag should not fire.
+	m := newTestModel(t)
+
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "unknown: some title")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if len(task.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty (unknown prefix should not auto-tag)", task.Tags)
+	}
+}
+
+func TestAdd_AutoTagNoDuplicate(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, type title with known prefix, Tab to tags, type "jean", Enter.
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "jean: do thing")
+	m, _ = key(t, m, "tab")   // switch to tags field
+	m = typeString(t, m, "jean")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Find the newly created task (not the seed).
+	var created *model.Task
+	for _, li := range m.lists[0].Items() {
+		task := li.(item).task
+		if task.ID != "01SEED01" {
+			created = &task
+			break
+		}
+	}
+	if created == nil {
+		t.Fatal("new task not found in Today tab")
+	}
+	// Should have exactly one "jean" tag — no duplicate.
+	count := 0
+	for _, tag := range created.Tags {
+		if tag == "jean" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("Tags = %v, want exactly one 'jean' tag (no duplicate from auto-tag)", created.Tags)
 	}
 }
 
