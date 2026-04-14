@@ -90,8 +90,9 @@ type Model struct {
 	rescheduleSub int         // 0 = picker, 1 = custom date input
 
 	// Add-modal state: second text input for tags and focus tracker.
-	tagInput textinput.Model
-	addFocus addField
+	tagInput  textinput.Model
+	addFocus  addField
+	knownTags []string // cached known tags, populated when add modal opens
 
 	// Grab-mode state. grabTask is a working copy whose Position is not
 	// mutated until Enter drop; its current visual location is (activeTab,
@@ -663,6 +664,14 @@ func (m *Model) openAdd() tea.Cmd {
 	m.tagInput.SetValue("")
 	m.tagInput.Blur()
 	m.addFocus = addFocusTitle
+	// Cache known tags from all loaded list items for instant auto-tag on ":".
+	var allTasks []model.Task
+	for i := range m.lists {
+		for _, li := range m.lists[i].Items() {
+			allTasks = append(allTasks, li.(item).task)
+		}
+	}
+	m.knownTags = model.CollectTags(allTasks)
 	return textinput.Blink
 }
 
@@ -699,8 +708,31 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 	} else {
 		m.input, cmd = m.input.Update(msg)
+		// After updating the title input, check if a known tag prefix was typed.
+		// Auto-populate the tags field on ":" so the user gets instant feedback.
+		if autoTag := model.ParseTitleTag(m.input.Value(), m.knownTags); autoTag != "" {
+			existing := m.tagInput.Value()
+			if !tagFieldContains(existing, autoTag) {
+				if existing == "" {
+					m.tagInput.SetValue(autoTag)
+				} else {
+					m.tagInput.SetValue(existing + ", " + autoTag)
+				}
+			}
+		}
 	}
 	return m, cmd
+}
+
+// tagFieldContains reports whether the comma-separated tag field text already
+// contains the given tag (trimming whitespace around each entry).
+func tagFieldContains(field, tag string) bool {
+	for _, part := range strings.Split(field, ",") {
+		if strings.TrimSpace(part) == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // --- delete confirm --------------------------------------------------------

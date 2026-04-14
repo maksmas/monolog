@@ -8,7 +8,7 @@ A CLI personal backlog tool. Tasks are stored as individual JSON files in a git 
 go install github.com/mmaksmas/monolog@latest
 ```
 
-Requires Go 1.22+.
+Requires Go 1.26+.
 
 ## Quick start
 
@@ -19,6 +19,7 @@ monolog add "Write tests" -s week   # schedule for this week
 monolog ls                          # list today's open tasks
 monolog done 01J5K                  # mark done by ID prefix
 monolog sync                        # push/pull with a git remote
+monolog                             # launch the interactive TUI
 ```
 
 Set `MONOLOG_DIR` to store data somewhere other than `~/.monolog`.
@@ -81,10 +82,6 @@ Reorder a task within its schedule group. Exactly one flag required:
 | `--before <id>` | Insert before another task |
 | `--after <id>` | Insert after another task |
 
-### `monolog bump`
-
-Promote tasks to today: `tomorrow` becomes `today`, past ISO dates become `today`. Intended for daily use (manually or via cron).
-
 ### `monolog log`
 
 Show tasks completed in the last 7 days, with `created→done` compact dates.
@@ -110,15 +107,25 @@ monolog ls --active --schedule week # active tasks scheduled for this week only
 
 Marking a task done automatically deactivates it. Editing tags with `--tags` preserves the active state.
 
-## TUI (`monolog tui`)
+## TUI (interactive mode)
+
+Running `monolog` with no subcommand launches the interactive TUI. Tabs across the top show `[Today] [Tomorrow] [Week] [Month] [Someday] [Done]`.
 
 | Key | Action |
 |-----|--------|
+| `←`/`→`, `Tab`/`Shift+Tab` | Switch tabs |
+| `1`–`6` | Jump to tab by number |
+| `↑`/`↓` | Move within list |
 | `c` | Open the add-task modal (title + tags fields, Tab to switch) |
-| `a` | Toggle active on the focused task |
 | `d` | Mark focused task as done |
+| `a` | Toggle active on the focused task |
+| `r` | Reschedule (modal with 1–5 presets or 6 for custom date) |
 | `t` | Retag focused task |
-| `m` | Grab/ungrab for reordering |
+| `e` | Edit in `$EDITOR` (YAML round-trip) |
+| `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom) |
+| `x` | Delete task (with confirmation) |
+| `s` | Sync (commit, pull --rebase, push) |
+| `q` | Quit |
 
 Active tasks render in green in the list and appear in a dedicated panel above the tab bar. The panel auto-hides when no tasks are active.
 

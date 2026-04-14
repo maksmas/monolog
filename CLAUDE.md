@@ -24,24 +24,27 @@ cmd/                    → One file per CLI command (add.go, ls.go, etc.)
 internal/model/task.go  → Task struct with JSON tags, ULID generation
 internal/store/         → File-based CRUD, prefix-match ID lookup, filtering/sorting
 internal/ordering/      → Fractional position math and rebalancing
+internal/schedule/      → Bucket names ↔ ISO dates, bucket classification
 internal/display/       → Terminal table formatting and compact date helpers
-internal/git/           → Git operations (init, auto-commit wrapper)
+internal/git/           → Git operations (init, auto-commit, sync with conflict resolution)
+internal/tui/           → Bubble Tea interactive TUI (default when run with no subcommand)
 ```
 
-Commands in `cmd/` handle CLI parsing and delegate to `internal/` packages. Every mutation auto-commits to git.
+Commands in `cmd/` handle CLI parsing and delegate to `internal/` packages. Running `monolog` with no subcommand launches the interactive TUI. Every mutation auto-commits to git.
 
 ## Key Design Decisions
 
 - **One JSON file per task** (`<repo>/.monolog/tasks/<ULID>.json`): eliminates merge conflicts on sync. Two devices editing different tasks rebase cleanly.
 - **ULID IDs**: time-sortable, globally unique, users type partial prefixes (e.g. `01J5K`) which resolve via directory scan.
 - **Fractional positions**: inserting between positions 1000 and 2000 gives 1500. Rebalance all positions in a schedule group when any gap drops below 1.0. Default spacing is 1000.
-- **Schedule values**: `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date (`2026-04-15`). `monolog bump` promotes `tomorrow` and past dates to `today`.
+- **Schedule values**: `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date (`2026-04-15`). Stored on disk as ISO dates; bucket names are input shorthand and display-time predicates.
 - **Runtime data directory**: `~/.monolog/` by default, override with `MONOLOG_DIR` env var.
+- **Active tasks**: the reserved `active` tag marks tasks in the current working set. Active tasks render in green in the TUI and appear in a dedicated panel above the tab bar. `done` auto-deactivates; `edit --tags` preserves active state.
 - **Auto-tag from title prefix**: when creating a task, if the title starts with `"tagname: ..."` and `tagname` is a tag that already exists on another task, it is automatically added as a tag. Title is kept as-is. The reserved `active` tag is excluded. Implemented via `model.ParseTitleTag()` and `model.CollectTags()`.
 
 ## Dependencies
 
-Minimal: cobra (CLI framework), oklog/ulid/v2 (ID generation), Go stdlib for everything else.
+Minimal: cobra (CLI framework), oklog/ulid/v2 (ID generation), charmbracelet stack (bubbletea, bubbles, lipgloss for TUI), yaml.v3 (YAML editor round-trip in TUI edit). Go stdlib for everything else.
 
 ## Development Rules
 

@@ -1795,3 +1795,51 @@ func TestAdd_AutoTagNoDuplicate(t *testing.T) {
 	}
 }
 
+func TestAdd_ColonAutoPopulatesTagField(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, type "jean:" — the tags field should auto-populate.
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "jean: ")
+	got := m.tagInput.Value()
+	if got != "jean" {
+		t.Errorf("tagInput = %q, want %q after typing known prefix + colon", got, "jean")
+	}
+}
+
+func TestAdd_ColonNoAutoPopulateForUnknownTag(t *testing.T) {
+	// No tasks with tag "unknown".
+	m := newTestModel(t)
+
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "unknown: ")
+	got := m.tagInput.Value()
+	if got != "" {
+		t.Errorf("tagInput = %q, want empty for unknown prefix", got)
+	}
+}
+
+func TestAdd_ColonNoAutoPopulateDuplicate(t *testing.T) {
+	// Seed a task with tag "jean" so it's a known tag.
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open add modal, manually type "jean" in tags field first, then type title.
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "jean")
+	m, _ = key(t, m, "tab") // focus title
+	m = typeString(t, m, "jean: ")
+	got := m.tagInput.Value()
+	// Should still be just "jean", not "jean, jean" or "jean,jean".
+	if got != "jean" {
+		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean")
+	}
+}
+
