@@ -433,6 +433,61 @@ func TestJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// --- Tags tests ---
+
+func TestTagsEmpty(t *testing.T) {
+	s := newTestStore(t)
+	tags, err := s.Tags()
+	if err != nil {
+		t.Fatalf("Tags() failed: %v", err)
+	}
+	if len(tags) != 0 {
+		t.Errorf("expected 0 tags on empty store, got %d: %v", len(tags), tags)
+	}
+}
+
+func TestTagsSortedUnique(t *testing.T) {
+	s := newTestStore(t)
+	createTestTasks(t, s) // has tags: work, personal, work, work
+
+	tags, err := s.Tags()
+	if err != nil {
+		t.Fatalf("Tags() failed: %v", err)
+	}
+	want := []string{"personal", "work"}
+	if len(tags) != len(want) {
+		t.Fatalf("Tags() = %v, want %v", tags, want)
+	}
+	for i := range tags {
+		if tags[i] != want[i] {
+			t.Errorf("Tags()[%d] = %q, want %q", i, tags[i], want[i])
+		}
+	}
+}
+
+func TestTagsMultipleTagsPerTask(t *testing.T) {
+	s := newTestStore(t)
+	task := sampleTask("01MULTI", "Multi-tag task")
+	task.Tags = []string{"zebra", "alpha", "middle"}
+	if err := s.Create(task); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	tags, err := s.Tags()
+	if err != nil {
+		t.Fatalf("Tags() failed: %v", err)
+	}
+	want := []string{"alpha", "middle", "zebra"}
+	if len(tags) != len(want) {
+		t.Fatalf("Tags() = %v, want %v", tags, want)
+	}
+	for i := range tags {
+		if tags[i] != want[i] {
+			t.Errorf("Tags()[%d] = %q, want %q", i, tags[i], want[i])
+		}
+	}
+}
+
 // createTestTasks populates the store with a known set of tasks for filter tests.
 // Tasks:
 //   - "Today work"     schedule=today, status=open, tags=[work], position=1000

@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/rand"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,6 +72,74 @@ func SanitizeTags(raw string) []string {
 		}
 	}
 	return tags
+}
+
+// CollectTags extracts a sorted, deduplicated list of tag strings from the given tasks.
+// The reserved ActiveTag is excluded from the result.
+func CollectTags(tasks []Task) []string {
+	seen := make(map[string]struct{})
+	for _, t := range tasks {
+		for _, tag := range t.Tags {
+			if tag != ActiveTag {
+				seen[tag] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	tags := make([]string, 0, len(seen))
+	for tag := range seen {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	return tags
+}
+
+// ParseTitleTag checks if the title starts with a "tag: ..." pattern where the
+// tag is a known tag. It returns the matching tag name, or an empty string if
+// no match is found. Only single-word tags match (no spaces or colons in the
+// candidate). At least one whitespace character must follow the colon.
+// Callers are expected to pass knownTags from CollectTags, which already
+// excludes ActiveTag.
+func ParseTitleTag(title string, knownTags []string) string {
+	idx := strings.IndexByte(title, ':')
+	if idx <= 0 {
+		return ""
+	}
+	candidate := title[:idx]
+	// reject candidates containing spaces (multi-word prefixes)
+	if strings.ContainsAny(candidate, " \t") {
+		return ""
+	}
+	// require at least one whitespace character after the colon
+	rest := title[idx+1:]
+	if len(rest) == 0 || (rest[0] != ' ' && rest[0] != '\t') {
+		return ""
+	}
+	// look up candidate in known tags
+	for _, tag := range knownTags {
+		if tag == candidate {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// AutoTag checks if the title matches a known tag prefix and merges the
+// auto-tag into the existing tag slice, avoiding duplicates. It returns the
+// (possibly extended) tag slice.
+func AutoTag(title string, knownTags []string, existingTags []string) []string {
+	autoTag := ParseTitleTag(title, knownTags)
+	if autoTag == "" {
+		return existingTags
+	}
+	for _, t := range existingTags {
+		if t == autoTag {
+			return existingTags
+		}
+	}
+	return append(existingTags, autoTag)
 }
 
 // NewID generates a new ULID string.

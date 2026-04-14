@@ -111,6 +111,125 @@ func TestTask_SetActive(t *testing.T) {
 	})
 }
 
+func TestCollectTags(t *testing.T) {
+	tests := []struct {
+		name  string
+		tasks []Task
+		want  []string
+	}{
+		{"empty slice", nil, nil},
+		{"tasks with no tags", []Task{{Title: "a"}, {Title: "b"}}, nil},
+		{"single task single tag", []Task{{Tags: []string{"work"}}}, []string{"work"}},
+		{"sorted output", []Task{{Tags: []string{"zebra"}}, {Tags: []string{"alpha"}}}, []string{"alpha", "zebra"}},
+		{"deduplicates across tasks", []Task{
+			{Tags: []string{"work", "urgent"}},
+			{Tags: []string{"work", "personal"}},
+		}, []string{"personal", "urgent", "work"}},
+		{"excludes tasks with empty tags", []Task{
+			{Tags: nil},
+			{Tags: []string{}},
+			{Tags: []string{"solo"}},
+		}, []string{"solo"}},
+		{"multiple tags per task", []Task{
+			{Tags: []string{"a", "c", "b"}},
+		}, []string{"a", "b", "c"}},
+		{"excludes active tag", []Task{
+			{Tags: []string{"work", ActiveTag, "personal"}},
+		}, []string{"personal", "work"}},
+		{"only active tag yields nil", []Task{
+			{Tags: []string{ActiveTag}},
+		}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CollectTags(tc.tasks)
+			if len(got) != len(tc.want) {
+				t.Fatalf("CollectTags() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("CollectTags()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseTitleTag(t *testing.T) {
+	tests := []struct {
+		name      string
+		title     string
+		knownTags []string
+		want      string
+	}{
+		// basic matching
+		{"matching known tag", "jean: create integration", []string{"jean", "work"}, "jean"},
+		{"unknown tag returns empty", "jean: create integration", []string{"work", "personal"}, ""},
+
+		// no colon in title
+		{"no colon in title", "create integration", []string{"jean"}, ""},
+
+		// edge cases
+		{"empty title", "", []string{"jean"}, ""},
+		{"colon at start", ": some text", []string{""}, ""},
+		{"no space after colon", "jean:nospace", []string{"jean"}, ""},
+		{"tag with spaces not matched", "hello world: text", []string{"hello world"}, ""},
+		{"tag containing colon not matched", "a:b: text", []string{"a:b"}, ""},
+
+		// edge case: ActiveTag passed directly (CollectTags normally excludes it)
+		{"active tag matches if in knownTags", "active: do something", []string{"active", "work"}, "active"},
+
+		// additional edge cases
+		{"empty known tags", "jean: do thing", nil, ""},
+		{"empty known tags slice", "jean: do thing", []string{}, ""},
+		{"multiple spaces after colon", "jean:  extra spaces", []string{"jean"}, "jean"},
+		{"tab after colon", "jean:\tdo thing", []string{"jean"}, "jean"},
+		{"only colon and space", ": ", []string{""}, ""},
+		{"candidate with trailing space", "jean : do thing", []string{"jean"}, ""},
+		{"case sensitive match", "Jean: do thing", []string{"jean"}, ""},
+		{"case sensitive match exact", "Jean: do thing", []string{"Jean"}, "Jean"},
+		{"first colon used", "a: b: c", []string{"a"}, "a"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseTitleTag(tc.title, tc.knownTags)
+			if got != tc.want {
+				t.Errorf("ParseTitleTag(%q, %v) = %q, want %q", tc.title, tc.knownTags, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAutoTag(t *testing.T) {
+	tests := []struct {
+		name         string
+		title        string
+		knownTags    []string
+		existingTags []string
+		want         []string
+	}{
+		{"adds matching tag", "jean: do thing", []string{"jean"}, nil, []string{"jean"}},
+		{"no match returns existing", "unknown: do thing", []string{"jean"}, []string{"work"}, []string{"work"}},
+		{"no duplicate when already present", "jean: do thing", []string{"jean"}, []string{"jean"}, []string{"jean"}},
+		{"appends to existing tags", "jean: do thing", []string{"jean"}, []string{"work"}, []string{"work", "jean"}},
+		{"nil existing tags", "jean: do thing", []string{"jean"}, nil, []string{"jean"}},
+		{"empty title", "", []string{"jean"}, []string{"work"}, []string{"work"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AutoTag(tc.title, tc.knownTags, tc.existingTags)
+			if len(got) != len(tc.want) {
+				t.Fatalf("AutoTag(%q, %v, %v) = %v, want %v", tc.title, tc.knownTags, tc.existingTags, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("AutoTag()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestSanitizeTags(t *testing.T) {
 	tests := []struct {
 		name string
