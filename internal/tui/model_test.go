@@ -4356,3 +4356,83 @@ func TestCreateCmd_TagViewDefaultsToToday(t *testing.T) {
 	}
 }
 
+func TestHelpLine_ScheduleView_UpdatedLabels(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+	m.viewMode = viewSchedule
+
+	help := m.helpLine()
+	for _, want := range []string{"r date", "c create", "h help"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("schedule view help line missing %q, got: %s", want, help)
+		}
+	}
+	for _, old := range []string{"r resched", "c add"} {
+		if strings.Contains(help, old) {
+			t.Errorf("schedule view help line should not contain old label %q, got: %s", old, help)
+		}
+	}
+}
+
+func TestHelpLine_TagView_UpdatedLabels(t *testing.T) {
+	task := makeTask(t, "01HH01", "task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	m.mode = modeNormal
+
+	help := m.helpLine()
+	for _, want := range []string{"r date", "c create", "h help"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("tag view help line missing %q, got: %s", want, help)
+		}
+	}
+}
+
+func TestHelpMode_HKeyEntersModeHelp(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+
+	m, _ = key(t, m, "h")
+	if m.mode != modeHelp {
+		t.Errorf("after 'h', mode = %v, want modeHelp", m.mode)
+	}
+}
+
+func TestHelpMode_AnyKeyClosesModal(t *testing.T) {
+	for _, k := range []string{"esc", "q", "enter", "j"} {
+		t.Run(k, func(t *testing.T) {
+			m := newTestModel(t)
+			m.mode = modeHelp
+			m, _ = key(t, m, k)
+			if m.mode != modeNormal {
+				t.Errorf("after %q in modeHelp, mode = %v, want modeNormal", k, m.mode)
+			}
+		})
+	}
+}
+
+func TestHelpMode_HelpLineText(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeHelp
+
+	help := m.helpLine()
+	if !strings.Contains(help, "press any key to close") {
+		t.Errorf("modeHelp help line = %q, want to contain 'press any key to close'", help)
+	}
+}
+
+func TestHelpMode_ModalViewNonEmpty(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeHelp
+
+	view := m.modalView()
+	if view == "" {
+		t.Error("modeHelp modalView() returned empty string")
+	}
+	if !strings.Contains(view, "Keybindings") {
+		t.Errorf("modeHelp modalView() should contain 'Keybindings', got: %s", view)
+	}
+}
+

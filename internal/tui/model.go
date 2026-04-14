@@ -35,6 +35,7 @@ const (
 	modeRetag
 	modeAdd
 	modeConfirmDelete
+	modeHelp
 )
 
 // addField tracks which input has focus in the add modal.
@@ -835,6 +836,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNormal(msg)
 		case modeGrab:
 			return m.updateGrab(msg)
+		case modeHelp:
+			m.mode = modeNormal
+			return m, nil
 		default:
 			return m.updateModal(msg)
 		}
@@ -896,6 +900,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.syncCmd()
 	case "v":
 		return m, m.toggleViewMode()
+	case "h":
+		m.mode = modeHelp
+		return m, nil
 	}
 
 	prevIdx := m.lists[m.activeTab].Index()
@@ -1989,6 +1996,28 @@ func (m *Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
+// renderHelpBar composes a styled status-bar line from key/desc pairs.
+// Each key is rendered bold+light-red; descriptions and separators are dim grey.
+// Pass an empty key ("") to render the desc as unstyled label (e.g., "GRAB").
+// Pass an empty desc ("") to render the key alone (e.g., "+d/e/r/t/a/c/x/s").
+func renderHelpBar(pairs ...[2]string) string {
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		key, desc := p[0], p[1]
+		switch {
+		case key == "":
+			parts = append(parts, helpTextStyle.Render(desc))
+		case desc == "":
+			parts = append(parts, helpKeyStyle.Render(key))
+		default:
+			parts = append(parts, helpKeyStyle.Render(key)+helpTextStyle.Render(" "+desc))
+		}
+	}
+	return lipgloss.NewStyle().Padding(0, 1).Render(
+		strings.Join(parts, helpTextStyle.Render("  ")),
+	)
+}
+
 func (m *Model) helpLine() string {
 	if m.err != nil {
 		return statusStyle.Render("error: " + m.err.Error())
@@ -1999,31 +2028,119 @@ func (m *Model) helpLine() string {
 	switch m.mode {
 	case modeNormal:
 		if m.viewMode == viewTag {
-			return helpStyle.Render("←/→ tabs  d done  e edit  r resched  t tag  c add  x del  m grab  a active  v schedule  s sync  q quit")
+			return renderHelpBar(
+				[2]string{"←/→", "tabs"},
+				[2]string{"d", "done"},
+				[2]string{"e", "edit"},
+				[2]string{"r", "date"},
+				[2]string{"t", "tag"},
+				[2]string{"c", "create"},
+				[2]string{"x", "del"},
+				[2]string{"m", "grab"},
+				[2]string{"a", "active"},
+				[2]string{"v", "schedule"},
+				[2]string{"s", "sync"},
+				[2]string{"h", "help"},
+				[2]string{"q", "quit"},
+			)
 		}
-		return helpStyle.Render("←/→ tabs  1-6 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  v tags  s sync  q quit")
+		return renderHelpBar(
+			[2]string{"←/→", "tabs"},
+			[2]string{"1-6", "jump"},
+			[2]string{"d", "done"},
+			[2]string{"e", "edit"},
+			[2]string{"r", "date"},
+			[2]string{"t", "tag"},
+			[2]string{"c", "create"},
+			[2]string{"x", "del"},
+			[2]string{"m", "grab"},
+			[2]string{"a", "active"},
+			[2]string{"v", "tags"},
+			[2]string{"s", "sync"},
+			[2]string{"h", "help"},
+			[2]string{"q", "quit"},
+		)
+	case modeHelp:
+		return helpStyle.Render("press any key to close")
 	case modeGrab:
 		if m.viewMode == viewTag {
-			return helpStyle.Render("GRAB  ↑/↓ reorder  g/G top/bottom  enter drop  esc cancel  +d/e/r/t/a/c/x/s")
+			return renderHelpBar(
+				[2]string{"", "GRAB"},
+				[2]string{"↑/↓", "reorder"},
+				[2]string{"g/G", "top/bottom"},
+				[2]string{"enter", "drop"},
+				[2]string{"esc", "cancel"},
+				[2]string{"+d/e/r/t/a/c/x/s", ""},
+			)
 		}
-		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ bucket  g/G top/bottom  enter drop  esc cancel  +d/e/r/t/a/c/x/s")
+		return renderHelpBar(
+			[2]string{"", "GRAB"},
+			[2]string{"↑/↓", "reorder"},
+			[2]string{"←/→", "bucket"},
+			[2]string{"g/G", "top/bottom"},
+			[2]string{"enter", "drop"},
+			[2]string{"esc", "cancel"},
+			[2]string{"+d/e/r/t/a/c/x/s", ""},
+		)
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
-			return helpStyle.Render("1 today  2 tomorrow  3 week  4 month  5 someday  6 custom  esc cancel")
+			return renderHelpBar(
+				[2]string{"1", "today"},
+				[2]string{"2", "tomorrow"},
+				[2]string{"3", "week"},
+				[2]string{"4", "month"},
+				[2]string{"5", "someday"},
+				[2]string{"6", "custom"},
+				[2]string{"esc", "cancel"},
+			)
 		}
-		return helpStyle.Render("enter save  esc cancel")
+		return renderHelpBar(
+			[2]string{"enter", "save"},
+			[2]string{"esc", "cancel"},
+		)
 	case modeRetag:
-		return helpStyle.Render("enter save  esc cancel")
+		return renderHelpBar(
+			[2]string{"enter", "save"},
+			[2]string{"esc", "cancel"},
+		)
 	case modeAdd:
-		return helpStyle.Render("tab switch field  enter save  esc cancel")
+		return renderHelpBar(
+			[2]string{"tab", "switch field"},
+			[2]string{"enter", "save"},
+			[2]string{"esc", "cancel"},
+		)
 	case modeConfirmDelete:
-		return helpStyle.Render("y confirm  anything else cancels")
+		return renderHelpBar(
+			[2]string{"y", "confirm"},
+			[2]string{"", "anything else cancels"},
+		)
 	}
 	return ""
 }
 
+func helpModalContent() string {
+	k := helpKeyStyle.Render
+	return "Keybindings:\n\n" +
+		"  " + k("←/→") + "  navigate tabs\n" +
+		"  " + k("1-6") + "  jump to tab\n" +
+		"  " + k("d") + "    mark done\n" +
+		"  " + k("e") + "    edit task\n" +
+		"  " + k("r") + "    reschedule\n" +
+		"  " + k("t") + "    retag\n" +
+		"  " + k("c") + "    create task\n" +
+		"  " + k("x") + "    delete\n" +
+		"  " + k("m") + "    grab / reorder\n" +
+		"  " + k("a") + "    toggle active\n" +
+		"  " + k("v") + "    toggle view\n" +
+		"  " + k("s") + "    sync\n" +
+		"  " + k("h") + "    this help\n" +
+		"  " + k("q") + "    quit"
+}
+
 func (m *Model) modalView() string {
 	switch m.mode {
+	case modeHelp:
+		return modalBox(helpModalContent())
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
 			return modalBox("Reschedule:\n\n" +
