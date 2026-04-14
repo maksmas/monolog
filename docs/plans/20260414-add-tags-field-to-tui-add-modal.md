@@ -94,11 +94,11 @@
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Intercept `tea.KeyTab` in `updateAdd` **before** forwarding to `textinput.Update` — toggle `addFocus`, call Focus/Blur on the appropriate input
-- [ ] On Enter: read title from `input`, call `sanitizeTags(m.tagInput.Value())` to parse tags, then call `createCmd(title, tags)`
-- [ ] Update `createCmd` signature to accept `tags []string` and set `task.Tags`
-- [ ] Route remaining key events to focused input only; unfocused input must not receive updates
-- [ ] Run tests — Task 1 tests should now pass (TDD green phase)
+- [x] Intercept `tea.KeyTab` in `updateAdd` **before** forwarding to `textinput.Update` — toggle `addFocus`, call Focus/Blur on the appropriate input
+- [x] On Enter: read title from `input`, call `sanitizeTags(m.tagInput.Value())` to parse tags, then call `createCmd(title, tags)`
+- [x] Update `createCmd` signature to accept `tags []string` and set `task.Tags`
+- [x] Route remaining key events to focused input only; unfocused input must not receive updates
+- [x] Run tests — Task 1 tests should now pass (TDD green phase)
 
 ### Task 4: Update modal view and help line
 

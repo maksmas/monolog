@@ -612,17 +612,39 @@ func (m *Model) openAdd() tea.Cmd {
 }
 
 func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Tab toggles focus between title and tags — intercept before the
+	// textinput swallows it.
+	if msg.Type == tea.KeyTab {
+		if m.addFocus == addFocusTitle {
+			m.addFocus = addFocusTags
+			m.input.Blur()
+			m.tagInput.Focus()
+		} else {
+			m.addFocus = addFocusTitle
+			m.tagInput.Blur()
+			m.input.Focus()
+		}
+		return m, textinput.Blink
+	}
+
 	if msg.Type == tea.KeyEnter {
 		title := strings.TrimSpace(m.input.Value())
 		if title == "" {
 			m.closeModal()
 			return m, nil
 		}
+		tags := sanitizeTags(m.tagInput.Value())
 		m.closeModal()
-		return m, m.createCmd(title)
+		return m, m.createCmd(title, tags)
 	}
+
+	// Route remaining keys to the focused input only.
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	if m.addFocus == addFocusTags {
+		m.tagInput, cmd = m.tagInput.Update(msg)
+	} else {
+		m.input, cmd = m.input.Update(msg)
+	}
 	return m, cmd
 }
 
@@ -1046,7 +1068,7 @@ func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
 }
 
 // createCmd creates a new task in the current tab's bucket at the bottom.
-func (m *Model) createCmd(title string) tea.Cmd {
+func (m *Model) createCmd(title string, tags []string) tea.Cmd {
 	// Capture active-tab bucket at dispatch time; if user changes tabs
 	// while the cmd is in flight, we still place it in the intended bucket.
 	t := m.tabs[m.activeTab]
@@ -1079,6 +1101,7 @@ func (m *Model) createCmd(title string) tea.Cmd {
 			Status:    "open",
 			Position:  ordering.NextPosition(existing),
 			Schedule:  scheduleDate,
+			Tags:      tags,
 			CreatedAt: n,
 			UpdatedAt: n,
 		}
