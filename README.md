@@ -109,7 +109,7 @@ Marking a task done automatically deactivates it. Editing tags with `--tags` pre
 
 ## TUI (interactive mode)
 
-Running `monolog` with no subcommand launches the interactive TUI. Tabs across the top show `[Today] [Tomorrow] [Week] [Month] [Someday] [Done]`.
+Running `monolog` with no subcommand launches the interactive TUI. Tabs across the top show `[Today] [Tomorrow] [Week] [Month] [Someday] [Done]`. Use `--tags` / `-T` to start in tag view, where tabs represent tags instead of schedule buckets.
 
 | Key | Action |
 |-----|--------|
@@ -123,6 +123,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `t` | Retag focused task |
 | `e` | Edit in `$EDITOR` (YAML round-trip) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
+| `v` | Toggle between schedule view and tag view |
 | `x` | Delete task (with confirmation) |
 | `s` | Sync (commit, pull --rebase, push) |
 | `q` | Quit |

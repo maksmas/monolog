@@ -45,6 +45,22 @@ const (
 	addFocusTags
 )
 
+// viewMode selects between schedule-based tabs and tag-based tabs.
+type viewMode int
+
+const (
+	viewSchedule viewMode = iota
+	viewTag
+)
+
+// tagTab describes one tab in tag view mode.
+type tagTab struct {
+	label      string // display label (tag name, or "Active", or "Untagged")
+	tag        string // tag to filter by; empty string means "untagged"
+	isActive   bool   // true for the active tab (filters by model.ActiveTag)
+	isUntagged bool   // true for the special untagged tab
+}
+
 // activePanelChromeWidth is the number of non-title characters per line in the
 // active panel: border (2) + padding (2) + ShortID (8) + separator (2) = 14.
 const activePanelChromeWidth = 14
@@ -79,6 +95,10 @@ type Model struct {
 	tabs      []tab
 	activeTab int
 	lists     []list.Model // one per tab
+
+	// View mode: schedule (default) or tag.
+	viewMode viewMode
+	tagTabs  []tagTab // populated when viewMode == viewTag
 
 	width, height int
 
@@ -121,9 +141,23 @@ type Model struct {
 // now is captured at reloadTab time. Dates won't refresh in a tab until the
 // next mutation or tab switch triggers a reload — acceptable tradeoff for a
 // personal CLI tool.
+//
+// When isSeparator is true, the item represents a bucket heading (e.g.
+// "Today", "Week") rather than a real task. The task field's Title holds the
+// bucket label; all other task fields are zero-valued. Separators are rendered
+// as dimmed, non-selectable dividers by the delegate.
 type item struct {
-	task model.Task
-	now  time.Time // render-time clock for compact date display
+	task        model.Task
+	now         time.Time // render-time clock for compact date display
+	isSeparator bool      // true for bucket heading items in tag view
+}
+
+// newSeparatorItem creates a separator item with the given bucket label.
+func newSeparatorItem(label string) item {
+	return item{
+		task:        model.Task{Title: label},
+		isSeparator: true,
+	}
 }
 
 func (i item) Title() string { return i.task.Title }
@@ -202,6 +236,12 @@ func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Ite
 		return
 	}
 
+	// Separator items: dimmed, non-selectable bucket headings.
+	if i.isSeparator {
+		d.renderSeparator(w, lm, i)
+		return
+	}
+
 	// Pick the style set based on mode and task state.
 	var s *list.DefaultItemStyles
 	switch {
@@ -252,6 +292,19 @@ func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Ite
 	fmt.Fprintf(w, "%s\n%s", title, desc)
 }
 
+// renderSeparator draws a bucket heading line with dimmed styling. The label
+// is framed by "── " / " ──" dashes and takes up the full delegate height with
+// blank lines padding below the title.
+func (d *itemDelegate) renderSeparator(w io.Writer, lm list.Model, i item) {
+	label := "── " + i.task.Title + " ──"
+	line := separatorStyle.Render(label)
+	// Pad remaining lines of the delegate height with empty lines.
+	for extra := 1; extra < d.Height(); extra++ {
+		line += "\n"
+	}
+	fmt.Fprint(w, line)
+}
+
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
 // focusID, if non-empty, asks the handler to move the cursor to the task with
 // that ID after reload — used by add so a new task is autofocused.
@@ -262,7 +315,7 @@ type taskSavedMsg struct {
 }
 
 // newModel constructs a Model and loads initial task data for each tab.
-func newModel(s *store.Store, repoPath string) (*Model, error) {
+func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	ti := textinput.New()
 	ti.CharLimit = 512
 
@@ -274,12 +327,30 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 		store:    s,
 		repoPath: repoPath,
 		tabs:     defaultTabs,
-		lists:    make([]list.Model, len(defaultTabs)),
 		input:    ti,
 		tagInput: tagTi,
 	}
 
+	m.lists = m.initLists()
+
+	if err := m.reloadAll(); err != nil {
+		return nil, err
+	}
+
+	// If the caller requested tag view at launch, switch now.
+	if opts.StartInTagView {
+		if err := m.rebuildForTagView(); err != nil {
+			return nil, err
+		}
+	}
+
+	return m, nil
+}
+
+// initLists creates a fresh slice of list.Model widgets, one per tab.
+func (m *Model) initLists() []list.Model {
 	delegate := newItemDelegate(m)
+	lists := make([]list.Model, len(m.tabs))
 	for i, t := range m.tabs {
 		l := list.New(nil, delegate, 0, 0)
 		l.Title = t.label
@@ -287,17 +358,20 @@ func newModel(s *store.Store, repoPath string) (*Model, error) {
 		l.SetShowHelp(false)
 		l.SetFilteringEnabled(false)
 		l.DisableQuitKeybindings()
-		m.lists[i] = l
+		lists[i] = l
 	}
-
-	if err := m.reloadAll(); err != nil {
-		return nil, err
-	}
-	return m, nil
+	return lists
 }
 
 // reloadAll refreshes every tab from the store and the active-tasks panel.
+// In tag view, it first rebuilds the tag tab list from the current task set
+// to reflect tag additions/removals since the last reload.
 func (m *Model) reloadAll() error {
+	if m.viewMode == viewTag {
+		if err := m.refreshTagTabs(); err != nil {
+			return err
+		}
+	}
 	for i := range m.tabs {
 		if err := m.reloadTab(i); err != nil {
 			return err
@@ -309,8 +383,51 @@ func (m *Model) reloadAll() error {
 	return nil
 }
 
-// reloadTab refreshes a single tab's list from the store.
+// refreshTagTabs rescans tasks and rebuilds tagTabs/tabs/lists if the set of
+// tags has changed. Called from reloadAll in tag view mode.
+func (m *Model) refreshTagTabs() error {
+	allTasks, err := m.store.List(store.ListOptions{Status: "open"})
+	if err != nil {
+		return fmt.Errorf("list tasks for tag refresh: %w", err)
+	}
+
+	newTagTabs := buildTagTabs(allTasks)
+
+	// Only rebuild list widgets if the tab count changed.
+	if len(newTagTabs) != len(m.tagTabs) {
+		m.tagTabs = newTagTabs
+		m.tabs = make([]tab, len(m.tagTabs))
+		for i, tt := range m.tagTabs {
+			m.tabs[i] = tab{label: tt.label, bucket: "", status: "open"}
+		}
+		if m.activeTab >= len(m.tabs) {
+			m.activeTab = 0
+		}
+		m.lists = m.initLists()
+	} else {
+		// Tab count unchanged — just update labels in case tag names shifted.
+		m.tagTabs = newTagTabs
+		for i, tt := range m.tagTabs {
+			m.tabs[i] = tab{label: tt.label, bucket: "", status: "open"}
+			m.lists[i].Title = tt.label
+		}
+	}
+	return nil
+}
+
+// reloadTab refreshes a single tab's list from the store. In tag view mode
+// it delegates to reloadTagTab; in schedule view it uses the original
+// bucket-based filtering.
 func (m *Model) reloadTab(idx int) error {
+	if m.viewMode == viewTag {
+		return m.reloadTagTab(idx)
+	}
+	return m.reloadScheduleTab(idx)
+}
+
+// reloadScheduleTab is the original schedule-view reload: filter tasks by
+// bucket and sort by position (or UpdatedAt for the Done tab).
+func (m *Model) reloadScheduleTab(idx int) error {
 	t := m.tabs[idx]
 	tasks, err := m.store.List(store.ListOptions{Status: t.status})
 	if err != nil {
@@ -342,6 +459,136 @@ func (m *Model) reloadTab(idx int) error {
 	return nil
 }
 
+// reloadTagTab loads tasks for a single tag tab. Tasks are filtered by the
+// tab's tag, grouped by schedule bucket, and each group is preceded by a
+// separator item. Within each bucket, tasks are sorted by position.
+func (m *Model) reloadTagTab(idx int) error {
+	if idx < 0 || idx >= len(m.tagTabs) {
+		return fmt.Errorf("tag tab index %d out of range", idx)
+	}
+	tt := m.tagTabs[idx]
+	nowT := time.Now()
+
+	// Load all open tasks — we filter by tag in-process.
+	allTasks, err := m.store.List(store.ListOptions{Status: "open"})
+	if err != nil {
+		return fmt.Errorf("list tasks: %w", err)
+	}
+
+	// Filter tasks by this tab's tag criterion.
+	var filtered []model.Task
+	for _, task := range allTasks {
+		switch {
+		case tt.isActive:
+			if task.IsActive() {
+				filtered = append(filtered, task)
+			}
+		case tt.isUntagged:
+			if len(display.VisibleTags(task.Tags)) == 0 {
+				filtered = append(filtered, task)
+			}
+		default:
+			if taskHasTag(task, tt.tag) {
+				filtered = append(filtered, task)
+			}
+		}
+	}
+
+	// Group by bucket, preserving reschedulePresets order.
+	bucketTasks := make(map[string][]model.Task)
+	for _, task := range filtered {
+		bkt := schedule.Bucket(task.Schedule, nowT)
+		bucketTasks[bkt] = append(bucketTasks[bkt], task)
+	}
+
+	// Sort within each bucket by position.
+	for bkt := range bucketTasks {
+		sort.SliceStable(bucketTasks[bkt], func(i, j int) bool {
+			return bucketTasks[bkt][i].Position < bucketTasks[bkt][j].Position
+		})
+	}
+
+	// Build items: for each bucket that has tasks, insert a separator + tasks.
+	var items []list.Item
+	for _, bkt := range reschedulePresets {
+		tasks := bucketTasks[bkt]
+		if len(tasks) == 0 {
+			continue
+		}
+		// Capitalize the bucket name for the separator label.
+		label := bucketDisplayName(bkt)
+		items = append(items, newSeparatorItem(label))
+		for _, task := range tasks {
+			items = append(items, item{task: task, now: nowT})
+		}
+	}
+
+	m.lists[idx].SetItems(items)
+	return nil
+}
+
+// taskHasTag reports whether a task has the given tag (case-sensitive).
+func taskHasTag(task model.Task, tag string) bool {
+	for _, t := range task.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// bucketLabels maps schedule bucket constants to their display labels.
+// Used by both bucketDisplayName and bucketNameFromLabel.
+var bucketLabels = map[string]string{
+	schedule.Today:    "Today",
+	schedule.Tomorrow: "Tomorrow",
+	schedule.Week:     "Week",
+	schedule.Month:    "Month",
+	schedule.Someday:  "Someday",
+}
+
+// labelBuckets is the reverse mapping of bucketLabels.
+var labelBuckets = func() map[string]string {
+	m := make(map[string]string, len(bucketLabels))
+	for k, v := range bucketLabels {
+		m[v] = k
+	}
+	return m
+}()
+
+// bucketDisplayName returns a human-friendly label for a schedule bucket.
+func bucketDisplayName(bucket string) string {
+	if label, ok := bucketLabels[bucket]; ok {
+		return label
+	}
+	return bucket
+}
+
+// findBucketAbove scans the items in the current tab list backwards from
+// m.grabIndex to find the nearest separator item. Returns the bucket name
+// (e.g. "today", "week") derived from the separator label, or empty string
+// if no separator is found above the grab position.
+func (m *Model) findBucketAbove() string {
+	items := m.lists[m.activeTab].Items()
+	for i := m.grabIndex - 1; i >= 0; i-- {
+		it, ok := items[i].(item)
+		if ok && it.isSeparator {
+			return bucketNameFromLabel(it.task.Title)
+		}
+	}
+	return ""
+}
+
+// bucketNameFromLabel returns the schedule bucket constant for a display label.
+// Returns the label lowered if no match (fallback; should not happen with
+// standard bucket labels).
+func bucketNameFromLabel(label string) string {
+	if bucket, ok := labelBuckets[label]; ok {
+		return bucket
+	}
+	return strings.ToLower(label)
+}
+
 // reloadActive refreshes the activeTasks slice from the store.
 func (m *Model) reloadActive() error {
 	tasks, err := m.store.List(store.ListOptions{Tag: model.ActiveTag, Status: "open"})
@@ -356,15 +603,166 @@ func (m *Model) reloadActive() error {
 	return nil
 }
 
+// buildTagTabs builds the tagTab slice for tag view mode from the given tasks.
+// Ordering: Active first, then alphabetically sorted tags, then Untagged last.
+// The Active and Untagged tabs are always present, even when empty.
+func buildTagTabs(tasks []model.Task) []tagTab {
+	tags := model.CollectTags(tasks) // sorted, ActiveTag excluded
+
+	tabs := make([]tagTab, 0, len(tags)+2)
+
+	// Always prepend the Active tab.
+	tabs = append(tabs, tagTab{
+		label:    "Active",
+		tag:      model.ActiveTag,
+		isActive: true,
+	})
+
+	// Alphabetically sorted tags in the middle.
+	for _, tag := range tags {
+		tabs = append(tabs, tagTab{
+			label: tag,
+			tag:   tag,
+		})
+	}
+
+	// Always append the Untagged tab.
+	tabs = append(tabs, tagTab{
+		label:      "Untagged",
+		tag:        "",
+		isUntagged: true,
+	})
+
+	return tabs
+}
+
+// rebuildForTagView switches the model to tag view mode. It scans all tasks,
+// builds tag tabs, recreates list widgets, and reloads data.
+func (m *Model) rebuildForTagView() error {
+	// Load all open tasks to derive tags.
+	allTasks, err := m.store.List(store.ListOptions{Status: "open"})
+	if err != nil {
+		return fmt.Errorf("list tasks for tag view: %w", err)
+	}
+
+	m.viewMode = viewTag
+	m.tagTabs = buildTagTabs(allTasks)
+
+	// Convert tagTabs to generic tabs.
+	m.tabs = make([]tab, len(m.tagTabs))
+	for i, tt := range m.tagTabs {
+		m.tabs[i] = tab{label: tt.label, bucket: "", status: "open"}
+	}
+
+	// Clamp activeTab to the new tab count.
+	if m.activeTab >= len(m.tabs) {
+		m.activeTab = 0
+	}
+
+	m.lists = m.initLists()
+	if err := m.reloadAll(); err != nil {
+		return err
+	}
+	// After reload, the cursor may rest on a separator at index 0. Skip
+	// forward so the first selectable item is highlighted.
+	m.skipSeparator(0)
+	return nil
+}
+
+// rebuildForScheduleView switches the model back to schedule view mode.
+// Restores default tabs, recreates list widgets, and reloads data.
+func (m *Model) rebuildForScheduleView() error {
+	m.viewMode = viewSchedule
+	m.tagTabs = nil
+	m.tabs = defaultTabs
+
+	// Clamp activeTab to the new tab count.
+	if m.activeTab >= len(m.tabs) {
+		m.activeTab = 0
+	}
+
+	m.lists = m.initLists()
+	return m.reloadAll()
+}
+
+// toggleViewMode switches between schedule view and tag view, preserving
+// the cursor on the currently selected task (if it exists in the new view).
+func (m *Model) toggleViewMode() tea.Cmd {
+	// Remember the currently selected task ID for refocusing after the switch.
+	var focusID string
+	if task := m.selectedTask(); task != nil {
+		focusID = task.ID
+	}
+
+	var err error
+	if m.viewMode == viewSchedule {
+		err = m.rebuildForTagView()
+	} else {
+		err = m.rebuildForScheduleView()
+	}
+	if err != nil {
+		m.err = err
+		return nil
+	}
+
+	m.recomputeLayout()
+
+	// Try to refocus the previously selected task in the new view.
+	if focusID != "" {
+		m.focusTaskByID(focusID)
+	}
+	return nil
+}
+
 // selectedTask returns a pointer to the currently selected task in the
-// active tab, or nil if the tab is empty.
+// active tab, or nil if the tab is empty or the selected item is a
+// separator (bucket heading).
 func (m *Model) selectedTask() *model.Task {
 	sel := m.lists[m.activeTab].SelectedItem()
 	if sel == nil {
 		return nil
 	}
 	it := sel.(item)
+	if it.isSeparator {
+		return nil
+	}
 	return &it.task
+}
+
+// skipSeparator advances the cursor past a separator item if the list's
+// current selection is one. prevIdx is the cursor position before the list
+// processed the key; the direction is inferred from the movement.
+func (m *Model) skipSeparator(prevIdx int) {
+	l := &m.lists[m.activeTab]
+	items := l.Items()
+	cur := l.Index()
+	if cur < 0 || cur >= len(items) {
+		return
+	}
+	it, ok := items[cur].(item)
+	if !ok || !it.isSeparator {
+		return
+	}
+	// Determine direction: default to down if the cursor didn't change
+	// (e.g. first render with cursor already on a separator).
+	delta := 1
+	if cur < prevIdx {
+		delta = -1
+	}
+	// Scan in the same direction for the next non-separator item.
+	for next := cur + delta; next >= 0 && next < len(items); next += delta {
+		if it2, ok := items[next].(item); ok && !it2.isSeparator {
+			l.Select(next)
+			return
+		}
+	}
+	// No non-separator found in that direction — try the opposite.
+	for next := cur - delta; next >= 0 && next < len(items); next -= delta {
+		if it2, ok := items[next].(item); ok && !it2.isSeparator {
+			l.Select(next)
+			return
+		}
+	}
 }
 
 // Init is the Bubble Tea Init hook.
@@ -395,6 +793,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.focusID != "" {
 			m.focusTaskByID(msg.focusID)
 		}
+		// After reload/focus, the cursor may rest on a separator in tag view.
+		if m.viewMode == viewTag {
+			m.skipSeparator(0)
+		}
 		if action := m.pendingAction; action != nil {
 			m.pendingAction = nil
 			return m, action()
@@ -424,16 +826,25 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "shift+tab":
 		m.activeTab = (m.activeTab - 1 + len(m.tabs)) % len(m.tabs)
 		m.recomputeLayout()
+		if m.viewMode == viewTag {
+			m.skipSeparator(0)
+		}
 		return m, nil
 	case "right", "tab":
 		m.activeTab = (m.activeTab + 1) % len(m.tabs)
 		m.recomputeLayout()
+		if m.viewMode == viewTag {
+			m.skipSeparator(0)
+		}
 		return m, nil
 	case "1", "2", "3", "4", "5", "6":
 		n := int(msg.String()[0] - '1')
 		if n < len(m.tabs) {
 			m.activeTab = n
 			m.recomputeLayout()
+			if m.viewMode == viewTag {
+				m.skipSeparator(0)
+			}
 		}
 		return m, nil
 
@@ -457,10 +868,18 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.statusMsg = "Syncing..."
 		return m, m.syncCmd()
+	case "v":
+		return m, m.toggleViewMode()
 	}
 
+	prevIdx := m.lists[m.activeTab].Index()
 	var cmd tea.Cmd
 	m.lists[m.activeTab], cmd = m.lists[m.activeTab].Update(msg)
+	// If the cursor landed on a separator, skip past it in the same
+	// direction so separators are not selectable during normal navigation.
+	if m.viewMode == viewTag {
+		m.skipSeparator(prevIdx)
+	}
 	return m, cmd
 }
 
@@ -679,6 +1098,9 @@ func (m *Model) openAdd() tea.Cmd {
 	var allTasks []model.Task
 	for i := range m.lists {
 		for _, li := range m.lists[i].Items() {
+			if li.(item).isSeparator {
+				continue
+			}
 			allTasks = append(allTasks, li.(item).task)
 		}
 	}
@@ -946,8 +1368,14 @@ func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.moveGrabWithin(+1)
 	case "left":
+		if m.viewMode == viewTag {
+			return m, nil // no cross-tab movement in tag view
+		}
 		m.moveGrabAcross(-1)
 	case "right":
+		if m.viewMode == viewTag {
+			return m, nil // no cross-tab movement in tag view
+		}
 		m.moveGrabAcross(+1)
 	case "g":
 		if m.tabs[m.activeTab].status == "done" {
@@ -996,13 +1424,44 @@ func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // moveGrabWithin swaps the grabbed task with its neighbor in the current tab.
-// delta is -1 (up) or +1 (down). No-op at the boundary.
+// delta is -1 (up) or +1 (down). No-op at the boundary. In tag view, separator
+// items are skipped — the grabbed task jumps over them to the next non-separator
+// item in the same direction.
 func (m *Model) moveGrabWithin(delta int) {
 	items := m.lists[m.activeTab].Items()
 	target := m.grabIndex + delta
 	if target < 0 || target >= len(items) {
 		return
 	}
+
+	// In tag view, skip over separator items.
+	if m.viewMode == viewTag {
+		if it, ok := items[target].(item); ok && it.isSeparator {
+			// Jump past the separator to the next non-separator item.
+			target += delta
+			if target < 0 || target >= len(items) {
+				return
+			}
+			// If the next item is also a separator (shouldn't happen normally),
+			// give up rather than continuing indefinitely.
+			if it2, ok := items[target].(item); ok && it2.isSeparator {
+				return
+			}
+			// Remove grabbed item from its current position and insert at target.
+			grabbed := items[m.grabIndex]
+			items = append(items[:m.grabIndex], items[m.grabIndex+1:]...)
+			// Adjust target after removal.
+			if target > m.grabIndex {
+				target--
+			}
+			items = append(items[:target], append([]list.Item{grabbed}, items[target:]...)...)
+			m.lists[m.activeTab].SetItems(items)
+			m.grabIndex = target
+			m.lists[m.activeTab].Select(m.grabIndex)
+			return
+		}
+	}
+
 	items[m.grabIndex], items[target] = items[target], items[m.grabIndex]
 	m.lists[m.activeTab].SetItems(items)
 	m.grabIndex = target
@@ -1010,15 +1469,48 @@ func (m *Model) moveGrabWithin(delta int) {
 }
 
 // moveGrabTo moves the grabbed task to a specific index in the current tab.
+// In tag view, the target index is adjusted to skip separator items.
 func (m *Model) moveGrabTo(idx int) {
 	items := m.lists[m.activeTab].Items()
 	if idx < 0 || idx >= len(items) || idx == m.grabIndex {
 		return
 	}
+
+	// In tag view, skip separator items at the target. Scan forward for
+	// g (top) and backward for G (bottom).
+	if m.viewMode == viewTag {
+		if idx < m.grabIndex {
+			// Moving toward the top: skip separators forward.
+			for idx < len(items) {
+				if it, ok := items[idx].(item); ok && it.isSeparator {
+					idx++
+				} else {
+					break
+				}
+			}
+		} else {
+			// Moving toward the bottom: skip separators backward.
+			for idx >= 0 {
+				if it, ok := items[idx].(item); ok && it.isSeparator {
+					idx--
+				} else {
+					break
+				}
+			}
+		}
+		if idx < 0 || idx >= len(items) || idx == m.grabIndex {
+			return
+		}
+	}
+
 	grabbed := items[m.grabIndex]
 	// Remove, then insert at target.
 	items = append(items[:m.grabIndex], items[m.grabIndex+1:]...)
-	// Re-insert — note len has decreased by 1.
+	// NOTE: when grabIndex < idx, the removal shifts items after grabIndex
+	// down by one, so `idx` effectively refers to one position past the
+	// original item at that index. For the current callers (g→idx=0 and
+	// G→idx=len-1) this is benign: g always has idx < grabIndex, and G
+	// relies on the clamp below to land at the very end.
 	if idx > len(items) {
 		idx = len(items)
 	}
@@ -1064,20 +1556,35 @@ func (m *Model) commitGrab() tea.Cmd {
 	t := *m.grabTask
 	nowT := time.Now()
 
-	// Apply the target tab's semantics. For bucket tabs, write the bucket's
-	// canonical date (today/+1/+7/+365). The Done tab leaves Schedule alone.
-	if targetTab.bucket != "" {
-		// Only rewrite Schedule when the task isn't already in the target
-		// bucket, otherwise dropping back into your current bucket would
-		// reset a custom-set date (e.g. a 3-day-out task in the Week tab).
-		if schedule.Bucket(t.Schedule, nowT) != targetTab.bucket {
-			scheduleDate, err := schedule.Parse(targetTab.bucket, nowT)
-			if err == nil {
-				t.Schedule = scheduleDate
+	if m.viewMode == viewTag {
+		// In tag view, derive the schedule from the separator above the task.
+		bucket := m.findBucketAbove()
+		if bucket != "" {
+			if schedule.Bucket(t.Schedule, nowT) != bucket {
+				scheduleDate, err := schedule.Parse(bucket, nowT)
+				if err == nil {
+					t.Schedule = scheduleDate
+				}
+			} else {
+				t.Schedule = schedule.Normalize(t.Schedule, nowT)
 			}
-		} else {
-			// Lazy-migrate any legacy bucket string to ISO on this write.
-			t.Schedule = schedule.Normalize(t.Schedule, nowT)
+		}
+	} else {
+		// Schedule view: apply the target tab's semantics. For bucket tabs,
+		// write the bucket's canonical date. The Done tab leaves Schedule alone.
+		if targetTab.bucket != "" {
+			// Only rewrite Schedule when the task isn't already in the target
+			// bucket, otherwise dropping back into your current bucket would
+			// reset a custom-set date (e.g. a 3-day-out task in the Week tab).
+			if schedule.Bucket(t.Schedule, nowT) != targetTab.bucket {
+				scheduleDate, err := schedule.Parse(targetTab.bucket, nowT)
+				if err == nil {
+					t.Schedule = scheduleDate
+				}
+			} else {
+				// Lazy-migrate any legacy bucket string to ISO on this write.
+				t.Schedule = schedule.Normalize(t.Schedule, nowT)
+			}
 		}
 	}
 	t.Status = targetTab.status
@@ -1151,20 +1658,28 @@ func (m *Model) computeGrabPosition(grabbedID string) float64 {
 		return ordering.DefaultSpacing
 	}
 	for i := grabIdx - 1; i >= 0; i-- {
-		task := items[i].(item).task
-		if task.ID != grabbedID {
-			t := task
-			prev = &t
-			break
+		it := items[i].(item)
+		if it.isSeparator {
+			break // stop at bucket boundary
 		}
+		if it.task.ID == grabbedID {
+			continue
+		}
+		t := it.task
+		prev = &t
+		break
 	}
 	for i := grabIdx + 1; i < len(items); i++ {
-		task := items[i].(item).task
-		if task.ID != grabbedID {
-			t := task
-			next = &t
-			break
+		it := items[i].(item)
+		if it.isSeparator {
+			break // stop at bucket boundary
 		}
+		if it.task.ID == grabbedID {
+			continue
+		}
+		t := it.task
+		next = &t
+		break
 	}
 
 	switch {
@@ -1306,9 +1821,10 @@ func (m *Model) deleteCmd(task model.Task) tea.Cmd {
 // --- active panel ----------------------------------------------------------
 
 // activePanelView renders a bordered panel listing each active task. Returns
-// an empty string when there are no active tasks (auto-hide).
+// an empty string when there are no active tasks (auto-hide) or when in tag
+// view mode (active tasks have their own tab there).
 func (m *Model) activePanelView() string {
-	if len(m.activeTasks) == 0 {
+	if m.viewMode == viewTag || len(m.activeTasks) == 0 {
 		return ""
 	}
 	titleWidth := m.width - activePanelChromeWidth
@@ -1344,11 +1860,11 @@ func (m *Model) activePanelView() string {
 }
 
 // activePanelHeight returns the rendered line count of the active panel. Returns
-// 0 when there are no active tasks (panel hidden). Mirrors the wrapping logic
-// in activePanelView so the two never drift apart.
+// 0 when there are no active tasks (panel hidden) or in tag view mode. Mirrors
+// the wrapping logic in activePanelView so the two never drift apart.
 // Structure: 1 top border + content lines + 1 bottom border.
 func (m *Model) activePanelHeight() int {
-	if len(m.activeTasks) == 0 {
+	if m.viewMode == viewTag || len(m.activeTasks) == 0 {
 		return 0
 	}
 	titleWidth := m.width - activePanelChromeWidth
@@ -1445,8 +1961,14 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
-		return helpStyle.Render("←/→ tabs  1-6 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  s sync  q quit")
+		if m.viewMode == viewTag {
+			return helpStyle.Render("←/→ tabs  d done  e edit  r resched  t tag  c add  x del  m grab  a active  v schedule  s sync  q quit")
+		}
+		return helpStyle.Render("←/→ tabs  1-6 jump  d done  e edit  r resched  t tag  c add  x del  m grab  a active  v tags  s sync  q quit")
 	case modeGrab:
+		if m.viewMode == viewTag {
+			return helpStyle.Render("GRAB  ↑/↓ reorder  g/G top/bottom  enter drop  esc cancel  +d/e/r/t/a/c/x/s")
+		}
 		return helpStyle.Render("GRAB  ↑/↓ reorder  ←/→ bucket  g/G top/bottom  enter drop  esc cancel  +d/e/r/t/a/c/x/s")
 	case modeReschedule:
 		if m.rescheduleSub == 0 {

@@ -10,9 +10,14 @@ import (
 	"github.com/mmaksmas/monolog/internal/store"
 )
 
+// Options configures how the TUI is launched.
+type Options struct {
+	StartInTagView bool // when true the TUI opens in tag-view mode
+}
+
 // Run launches the interactive TUI. Blocks until the user quits.
-func Run(s *store.Store, repoPath string) error {
-	m, err := newModel(s, repoPath)
+func Run(s *store.Store, repoPath string, opts Options) error {
+	m, err := newModel(s, repoPath, opts)
 	if err != nil {
 		return err
 	}
@@ -43,4 +48,11 @@ var (
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).
 			Padding(0, 1)
+
+	// separatorStyle renders bucket heading items in tag view — dimmed and
+	// left-padded to align with normal item titles.
+	separatorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Bold(true).
+			PaddingLeft(2)
 )
