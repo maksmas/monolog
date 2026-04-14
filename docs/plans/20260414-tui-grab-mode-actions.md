@@ -50,14 +50,14 @@
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Add `pendingAction func() tea.Cmd` field to the `Model` struct (after `grabIndex`)
-- [ ] In `taskSavedMsg` handler (inside `Update`), after reload + focus, check `pendingAction`: if non-nil, clear it and return `m, action()`; if the msg has an error, clear `pendingAction` without dispatching
-- [ ] In `commitGrab()`, include the task ID as `focusID` in the returned `taskSavedMsg`
-- [ ] In `closeModal()`, clear `pendingAction` to nil (safety — modal cancel shouldn't leave a stale action)
-- [ ] Write test: grab a task, verify `pendingAction` is nil by default
-- [ ] Write test: set `pendingAction`, simulate successful `taskSavedMsg`, verify action dispatched and `pendingAction` cleared
-- [ ] Write test: set `pendingAction`, simulate error `taskSavedMsg`, verify action NOT dispatched and `pendingAction` cleared
-- [ ] Run tests — must pass before task 2
+- [x] Add `pendingAction func() tea.Cmd` field to the `Model` struct (after `grabIndex`)
+- [x] In `taskSavedMsg` handler (inside `Update`), after reload + focus, check `pendingAction`: if non-nil, clear it and return `m, action()`; if the msg has an error, clear `pendingAction` without dispatching
+- [x] In `commitGrab()`, include the task ID as `focusID` in the returned `taskSavedMsg`
+- [x] In `closeModal()`, clear `pendingAction` to nil (safety — modal cancel shouldn't leave a stale action)
+- [x] Write test: grab a task, verify `pendingAction` is nil by default
+- [x] Write test: set `pendingAction`, simulate successful `taskSavedMsg`, verify action dispatched and `pendingAction` cleared
+- [x] Write test: set `pendingAction`, simulate error `taskSavedMsg`, verify action NOT dispatched and `pendingAction` cleared
+- [x] Run tests — must pass before task 2
 
 ### Task 2: Wire action keys in updateGrab
 

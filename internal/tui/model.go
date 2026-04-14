@@ -100,6 +100,11 @@ type Model struct {
 	grabTask  *model.Task
 	grabIndex int
 
+	// pendingAction holds an action to dispatch after a successful
+	// taskSavedMsg (e.g. open editor after commitGrab). Cleared on
+	// error or modal close.
+	pendingAction func() tea.Cmd
+
 	// Active tasks panel: tasks that carry the "active" tag, shown in a
 	// persistent panel above the tab bar.
 	activeTasks []model.Task
@@ -378,6 +383,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 			m.statusMsg = ""
+			m.pendingAction = nil
 			return m, nil
 		}
 		m.err = nil
@@ -388,6 +394,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recomputeLayout()
 		if msg.focusID != "" {
 			m.focusTaskByID(msg.focusID)
+		}
+		if action := m.pendingAction; action != nil {
+			m.pendingAction = nil
+			return m, action()
 		}
 		return m, nil
 
@@ -480,6 +490,7 @@ func (m *Model) closeModal() {
 	m.mode = modeNormal
 	m.modalTask = nil
 	m.rescheduleSub = 0
+	m.pendingAction = nil
 	m.input.Blur()
 	m.input.SetValue("")
 	m.tagInput.Blur()
@@ -1086,7 +1097,7 @@ func (m *Model) commitGrab() tea.Cmd {
 		if err := git.AutoCommit(repoPath, fmt.Sprintf("move: %s", t.Title), taskRelPath(t.ID)); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Moved: %s", t.Title)}
+		return taskSavedMsg{status: fmt.Sprintf("Moved: %s", t.Title), focusID: t.ID}
 	}
 }
 

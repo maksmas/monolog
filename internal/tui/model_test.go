@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1840,6 +1841,73 @@ func TestAdd_ColonNoAutoPopulateDuplicate(t *testing.T) {
 	// Should still be just "jean", not "jean, jean" or "jean,jean".
 	if got != "jean" {
 		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean")
+	}
+}
+
+// --- pendingAction tests ----------------------------------------------------
+
+func TestPendingAction_NilByDefault(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+	if m.pendingAction != nil {
+		t.Errorf("pendingAction should be nil by default in grab mode")
+	}
+}
+
+func TestPendingAction_DispatchedOnSuccessfulSave(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Set a pendingAction that records it was called.
+	dispatched := false
+	m.pendingAction = func() tea.Cmd {
+		dispatched = true
+		return nil
+	}
+
+	// Simulate a successful taskSavedMsg.
+	next, _ := m.Update(taskSavedMsg{status: "Moved: grab me", focusID: "01A"})
+	m = next.(*Model)
+
+	if !dispatched {
+		t.Error("pendingAction should have been dispatched on successful taskSavedMsg")
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+}
+
+func TestPendingAction_ClearedOnErrorNotDispatched(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Set a pendingAction that records it was called.
+	dispatched := false
+	m.pendingAction = func() tea.Cmd {
+		dispatched = true
+		return nil
+	}
+
+	// Simulate an error taskSavedMsg.
+	next, _ := m.Update(taskSavedMsg{err: fmt.Errorf("boom")})
+	m = next.(*Model)
+
+	if dispatched {
+		t.Error("pendingAction should NOT be dispatched on error taskSavedMsg")
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be cleared even on error")
 	}
 }
 
