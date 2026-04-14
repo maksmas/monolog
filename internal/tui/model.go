@@ -962,6 +962,35 @@ func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(items) > 0 {
 			m.moveGrabTo(len(items) - 1)
 		}
+
+	// Action keys: commit grab first, then dispatch the action after reload.
+	case "e":
+		m.pendingAction = func() tea.Cmd { return m.openEdit() }
+		return m, m.commitGrab()
+	case "r":
+		m.pendingAction = func() tea.Cmd { return m.openReschedule() }
+		return m, m.commitGrab()
+	case "t":
+		m.pendingAction = func() tea.Cmd { return m.openRetag() }
+		return m, m.commitGrab()
+	case "d":
+		m.pendingAction = func() tea.Cmd { return m.doneSelected() }
+		return m, m.commitGrab()
+	case "a":
+		m.pendingAction = func() tea.Cmd { return m.toggleActive() }
+		return m, m.commitGrab()
+	case "c":
+		m.pendingAction = func() tea.Cmd { return m.openAdd() }
+		return m, m.commitGrab()
+	case "x":
+		m.pendingAction = func() tea.Cmd { return m.openConfirmDelete() }
+		return m, m.commitGrab()
+	case "s":
+		m.pendingAction = func() tea.Cmd {
+			m.statusMsg = "Syncing..."
+			return m.syncCmd()
+		}
+		return m, m.commitGrab()
 	}
 	return m, nil
 }

@@ -64,15 +64,15 @@
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] In `updateGrab`, add a switch branch after the existing `g`/`G` handling for keys: `e`, `r`, `t`, `d`, `a`, `c`, `x`, `s`
-- [ ] For each key, set `m.pendingAction` to the corresponding action function and return `m, m.commitGrab()`
-- [ ] Verify that `commitGrab()` resets `m.mode` and `m.grabTask` before the async cmd runs (already does — no change needed)
-- [ ] Write test: in grab mode, press `e` — verify mode returns to normal, `pendingAction` is set, and commitGrab cmd is returned
-- [ ] Write test: in grab mode, press `r` — verify mode returns to normal and after taskSavedMsg the reschedule modal opens
-- [ ] Write test: in grab mode, press `t` — verify retag modal opens after commit
-- [ ] Write test: in grab mode, press `d` — verify task is marked done after commit
-- [ ] Write test: in grab mode, press `a` — verify active toggle fires after commit
-- [ ] Run tests — must pass before task 3
+- [x] In `updateGrab`, add a switch branch after the existing `g`/`G` handling for keys: `e`, `r`, `t`, `d`, `a`, `c`, `x`, `s`
+- [x] For each key, set `m.pendingAction` to the corresponding action function and return `m, m.commitGrab()`
+- [x] Verify that `commitGrab()` resets `m.mode` and `m.grabTask` before the async cmd runs (already does — no change needed)
+- [x] Write test: in grab mode, press `e` — verify mode returns to normal, `pendingAction` is set, and commitGrab cmd is returned
+- [x] Write test: in grab mode, press `r` — verify mode returns to normal and after taskSavedMsg the reschedule modal opens
+- [x] Write test: in grab mode, press `t` — verify retag modal opens after commit
+- [x] Write test: in grab mode, press `d` — verify task is marked done after commit
+- [x] Write test: in grab mode, press `a` — verify active toggle fires after commit
+- [x] Run tests — must pass before task 3
 
 ### Task 3: Update help line
 

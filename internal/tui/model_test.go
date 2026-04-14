@@ -1911,3 +1911,176 @@ func TestPendingAction_ClearedOnErrorNotDispatched(t *testing.T) {
 	}
 }
 
+// --- grab mode action key tests (Task 2) ---
+
+func TestGrab_EditKey_SetsPendingAndCommits(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	// Press 'e' — should set pendingAction and return commitGrab cmd.
+	m, cmd := key(t, m, "e")
+	if m.mode != modeNormal {
+		t.Errorf("mode after 'e' = %v, want modeNormal (commitGrab resets mode)", m.mode)
+	}
+	if m.pendingAction == nil {
+		t.Error("pendingAction should be set after pressing 'e' in grab mode")
+	}
+	if cmd == nil {
+		t.Error("cmd should be non-nil (commitGrab)")
+	}
+}
+
+func TestGrab_RescheduleKey_OpensModalAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+
+	// Press 'r' — should set pendingAction and return commitGrab cmd.
+	m, cmd := key(t, m, "r")
+	if m.mode != modeNormal {
+		t.Errorf("mode after 'r' = %v, want modeNormal", m.mode)
+	}
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Run the commitGrab cmd — simulates async save completing.
+	m = runCmd(t, m, cmd)
+
+	// After taskSavedMsg, pendingAction should have dispatched openReschedule.
+	if m.mode != modeReschedule {
+		t.Errorf("mode after commit+dispatch = %v, want modeReschedule", m.mode)
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+}
+
+func TestGrab_RetagKey_OpensModalAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "t")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+	m = runCmd(t, m, cmd)
+
+	if m.mode != modeRetag {
+		t.Errorf("mode after commit+dispatch = %v, want modeRetag", m.mode)
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+}
+
+func TestGrab_DoneKey_MarksTaskDoneAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+	// Run commitGrab — this triggers taskSavedMsg which dispatches pendingAction.
+	m = runCmd(t, m, cmd)
+
+	// pendingAction was doneSelected(), which returns a saveCmd. We need to
+	// check if a further cmd was returned. Since runCmd feeds the msg back,
+	// the pendingAction's returned cmd gets lost in the Update return. Let's
+	// check the pending action dispatched by verifying model state after
+	// running the full chain. The doneSelected() returns a cmd that we need
+	// to execute.
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+
+	// After commitGrab completes, taskSavedMsg arrives and pendingAction
+	// (doneSelected) fires. doneSelected returns a saveCmd. We need to capture
+	// and run that too. Let's re-do with more careful cmd chaining.
+	// Actually, looking at the Update handler: when pendingAction fires,
+	// Update returns (m, action()). The runCmd helper only feeds one msg
+	// back. So the doneSelected cmd is returned from Update but not executed.
+	// We need to capture it.
+
+	// Let's re-test more carefully.
+	m2 := newTestModel(t,
+		model.Task{ID: "02A", Title: "done me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m2, _ = key(t, m2, "m")
+	m2, cmd = key(t, m2, "d")
+
+	// Execute commitGrab cmd and capture the msg.
+	msg := cmd()
+	// Feed msg through Update — this triggers pendingAction dispatch.
+	next, actionCmd := m2.Update(msg)
+	m2 = next.(*Model)
+
+	if m2.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	// actionCmd is the return from doneSelected(). Execute it.
+	if actionCmd == nil {
+		t.Fatal("expected doneSelected cmd to be returned from pendingAction dispatch")
+	}
+	m2 = runCmd(t, m2, actionCmd)
+
+	// The task should now be done.
+	task, err := m2.store.GetByPrefix("02A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("task status = %q, want %q", task.Status, "done")
+	}
+}
+
+func TestGrab_ActiveKey_TogglesActiveAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "activate me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab and capture pending action cmd.
+	msg := cmd()
+	next, actionCmd := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	if actionCmd == nil {
+		t.Fatal("expected toggleActive cmd to be returned from pendingAction dispatch")
+	}
+	m = runCmd(t, m, actionCmd)
+
+	// The task should now be active.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Error("task should be active after toggle")
+	}
+}
+
