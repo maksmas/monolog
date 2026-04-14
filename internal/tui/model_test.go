@@ -1381,3 +1381,170 @@ func TestTUI_RetagPrefillOmitsActive(t *testing.T) {
 	}
 }
 
+// --- add modal with tags tests -----------------------------------------------
+
+func TestAdd_TabThenTypeSetsTagsOnCreatedTask(t *testing.T) {
+	m := newTestModel(t)
+	// Open add modal, type a title, Tab to switch to tags, type tags, Enter.
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "tagged task")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "foo, bar")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// The created task should have the tags.
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Fatalf("Today tab items = %d, want 1", got)
+	}
+	task := m.lists[0].Items()[0].(item).task
+	if task.Title != "tagged task" {
+		t.Errorf("Title = %q, want %q", task.Title, "tagged task")
+	}
+	if len(task.Tags) != 2 || task.Tags[0] != "foo" || task.Tags[1] != "bar" {
+		t.Errorf("Tags = %v, want [foo bar]", task.Tags)
+	}
+}
+
+func TestAdd_EnterWithTitleAndTagsCreatesBoth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "buy milk")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "shopping, errands")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should save")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Verify in store.
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	stored, err := m.store.GetByPrefix(task.ID[:4])
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.Title != "buy milk" {
+		t.Errorf("Title = %q, want %q", stored.Title, "buy milk")
+	}
+	if len(stored.Tags) != 2 || stored.Tags[0] != "shopping" || stored.Tags[1] != "errands" {
+		t.Errorf("Tags = %v, want [shopping errands]", stored.Tags)
+	}
+}
+
+func TestAdd_EmptyTagsCreatesTaskWithNoTags(t *testing.T) {
+	// Backward compat: enter with only a title and no tags should work.
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "plain task")
+	// Do not press Tab or type tags — enter directly.
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if len(task.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty", task.Tags)
+	}
+}
+
+func TestAdd_TagsSanitized(t *testing.T) {
+	// Extra whitespace and empty segments should be stripped.
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "sanitize test")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, " a , , b ")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	task := m.lists[0].Items()[0].(item).task
+	if len(task.Tags) != 2 || task.Tags[0] != "a" || task.Tags[1] != "b" {
+		t.Errorf("Tags = %v, want [a b]", task.Tags)
+	}
+}
+
+func TestAdd_EscCancelsFromTagsField(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "will cancel")
+	m, _ = key(t, m, "tab") // move to tags
+	m = typeString(t, m, "some, tags")
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc from tags = %v, want modeNormal", m.mode)
+	}
+	// No task should have been created.
+	if got := len(m.lists[0].Items()); got != 0 {
+		t.Errorf("Today tab should be empty after esc, got %d items", got)
+	}
+}
+
+func TestAdd_FromDoneTabWithTags(t *testing.T) {
+	// Adding from the Done tab falls back to Today bucket; tags should persist.
+	m := newTestModel(t)
+	m, _ = key(t, m, "6") // Done tab
+	if m.activeTab != 5 {
+		t.Fatalf("activeTab = %d, want 5", m.activeTab)
+	}
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "done-tab task")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "urgent")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Task should land in Today tab.
+	if m.activeTab != 0 {
+		t.Errorf("activeTab = %d, want 0 (Today)", m.activeTab)
+	}
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Title != "done-tab task" {
+		t.Errorf("Title = %q, want %q", task.Title, "done-tab task")
+	}
+	if len(task.Tags) != 1 || task.Tags[0] != "urgent" {
+		t.Errorf("Tags = %v, want [urgent]", task.Tags)
+	}
+}
+
+func TestAdd_ModalViewShowsBothLabels(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	view := m.modalView()
+	if !strings.Contains(view, "Title:") {
+		t.Errorf("modalView should contain 'Title:', got %q", view)
+	}
+	if !strings.Contains(view, "Tags:") {
+		t.Errorf("modalView should contain 'Tags:', got %q", view)
+	}
+}
+

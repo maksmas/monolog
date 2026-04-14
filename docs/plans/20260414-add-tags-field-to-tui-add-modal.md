@@ -68,14 +68,14 @@
 **Files:**
 - Modify: `internal/tui/model_test.go`
 
-- [ ] Write test: Tab in add modal routes subsequent typing to the tags field (verify created task has tags, not internal state)
-- [ ] Write test: Enter with title and tags creates task with both values (type title, Tab, type "foo, bar", Enter → task.Tags == ["foo", "bar"])
-- [ ] Write test: Enter with title and empty tags creates task with no tags (backward compat)
-- [ ] Write test: Tags with extra whitespace/commas are sanitized (e.g. " a , , b " → ["a", "b"])
-- [ ] Write test: Esc cancels from tags field (same as title field)
-- [ ] Write test: Add from Done tab with tags — task lands in Today with correct tags
-- [ ] Write test: `modalView` in modeAdd contains both "Title:" and "Tags:" labels
-- [ ] Run tests — expected to fail (TDD red phase)
+- [x] Write test: Tab in add modal routes subsequent typing to the tags field (verify created task has tags, not internal state)
+- [x] Write test: Enter with title and tags creates task with both values (type title, Tab, type "foo, bar", Enter → task.Tags == ["foo", "bar"])
+- [x] Write test: Enter with title and empty tags creates task with no tags (backward compat)
+- [x] Write test: Tags with extra whitespace/commas are sanitized (e.g. " a , , b " → ["a", "b"])
+- [x] Write test: Esc cancels from tags field (same as title field)
+- [x] Write test: Add from Done tab with tags — task lands in Today with correct tags
+- [x] Write test: `modalView` in modeAdd contains both "Title:" and "Tags:" labels
+- [x] Run tests — expected to fail (TDD red phase)
 
 ### Task 2: Add `tagInput` and `addFocus` fields to Model
 
