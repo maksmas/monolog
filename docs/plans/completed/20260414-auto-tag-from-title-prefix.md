@@ -61,11 +61,11 @@
 - Modify: `internal/store/store.go`
 - Modify: `internal/store/store_test.go`
 
-- [ ] Write TDD tests for `model.CollectTags(tasks)`: returns empty for empty slice, returns sorted unique tags, excludes tasks with no tags, deduplicates across tasks
-- [ ] Implement `CollectTags(tasks []model.Task) []string` in `model` package
-- [ ] Write TDD tests for `Store.Tags()`: returns empty for no tasks, returns sorted unique tags across all stored tasks
-- [ ] Implement `Tags() ([]string, error)` on `Store` — calls `List` then `CollectTags`
-- [ ] Run tests — must pass before task 2
+- [x] Write TDD tests for `model.CollectTags(tasks)`: returns empty for empty slice, returns sorted unique tags, excludes tasks with no tags, deduplicates across tasks
+- [x] Implement `CollectTags(tasks []model.Task) []string` in `model` package
+- [x] Write TDD tests for `Store.Tags()`: returns empty for no tasks, returns sorted unique tags across all stored tasks
+- [x] Implement `Tags() ([]string, error)` on `Store` — calls `List` then `CollectTags`
+- [x] Run tests — must pass before task 2
 
 ### Task 2: Add `ParseTitleTag()` function
 
@@ -73,10 +73,10 @@
 - Modify: `internal/model/task.go`
 - Modify: `internal/model/task_test.go`
 
-- [ ] Write TDD tests for `ParseTitleTag(title, knownTags)`: returns matching tag for `"jean: create integration"` when `"jean"` is known, returns empty string when tag is unknown, returns empty for titles without colon, handles edge cases (empty title, colon at start, no space after colon, tag with spaces, tag with colon)
-- [ ] Write TDD test: returns empty string when prefix matches reserved `active` tag
-- [ ] Implement `ParseTitleTag(title string, knownTags []string) string` — split on first `:`, take left side as candidate, verify at least one space follows the colon, look up candidate in knownTags, reject `ActiveTag`
-- [ ] Run tests — must pass before task 3
+- [x] Write TDD tests for `ParseTitleTag(title, knownTags)`: returns matching tag for `"jean: create integration"` when `"jean"` is known, returns empty string when tag is unknown, returns empty for titles without colon, handles edge cases (empty title, colon at start, no space after colon, tag with spaces, tag with colon)
+- [x] Write TDD test: returns empty string when prefix matches reserved `active` tag
+- [x] Implement `ParseTitleTag(title string, knownTags []string) string` — split on first `:`, take left side as candidate, verify at least one space follows the colon, look up candidate in knownTags, reject `ActiveTag`
+- [x] Run tests — must pass before task 3
 
 ### Task 3: Wire auto-tag into CLI `add` command
 
@@ -84,11 +84,11 @@
 - Modify: `cmd/add.go`
 - Modify: `cmd/add_test.go`
 
-- [ ] Write TDD test: creating task with title `"jean: do thing"` when a task with tag `"jean"` exists → new task gets `"jean"` tag automatically
-- [ ] Write TDD test: creating task with title `"jean: do thing"` when no task has `"jean"` tag → no auto-tag added
-- [ ] Write TDD test: creating task with title `"jean: do thing"` and explicit `--tags jean` → no duplicate tag
-- [ ] Wire into `newAddCmd` RunE: use `model.CollectTags(existing)` (tasks already loaded for position calc), then `model.ParseTitleTag()`, merge result into `task.Tags`
-- [ ] Run tests — must pass before task 4
+- [x] Write TDD test: creating task with title `"jean: do thing"` when a task with tag `"jean"` exists → new task gets `"jean"` tag automatically
+- [x] Write TDD test: creating task with title `"jean: do thing"` when no task has `"jean"` tag → no auto-tag added
+- [x] Write TDD test: creating task with title `"jean: do thing"` and explicit `--tags jean` → no duplicate tag
+- [x] Wire into `newAddCmd` RunE: use `model.CollectTags(existing)` (tasks already loaded for position calc), then `model.ParseTitleTag()`, merge result into `task.Tags`
+- [x] Run tests — must pass before task 4
 
 ### Task 4: Wire auto-tag into TUI `createCmd`
 
@@ -96,24 +96,24 @@
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] Write TDD test: TUI task creation with title prefix matching a known tag → auto-tag applied
-- [ ] Write TDD test: TUI task creation with unknown prefix → no auto-tag
-- [ ] Wire into `createCmd`: call `m.store.Tags()`, then `model.ParseTitleTag()`, merge into tags slice before creating task
-- [ ] Run tests — must pass before task 5
+- [x] Write TDD test: TUI task creation with title prefix matching a known tag → auto-tag applied
+- [x] Write TDD test: TUI task creation with unknown prefix → no auto-tag
+- [x] Wire into `createCmd`: call `m.store.Tags()`, then `model.ParseTitleTag()`, merge into tags slice before creating task
+- [x] Run tests — must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] Verify: CLI `monolog add "jean: create integration"` auto-tags when `jean` tag exists on another task
-- [ ] Verify: no auto-tag when tag is unknown
-- [ ] Verify: TUI add modal behaves the same way
-- [ ] Verify: no duplicate tags when prefix matches explicit tag
-- [ ] Run full test suite: `go test ./...`
-- [ ] Run lint: `go vet ./...`
+- [x] Verify: CLI `monolog add "jean: create integration"` auto-tags when `jean` tag exists on another task
+- [x] Verify: no auto-tag when tag is unknown
+- [x] Verify: TUI add modal behaves the same way
+- [x] Verify: no duplicate tags when prefix matches explicit tag
+- [x] Run full test suite: `go test ./...`
+- [x] Run lint: `go vet ./...`
 
 ### Task 6: [Final] Update documentation
 
-- [ ] Update CLAUDE.md if new patterns discovered
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Update CLAUDE.md if new patterns discovered
+- [x] Move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 **Manual verification:**

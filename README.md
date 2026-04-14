@@ -36,6 +36,8 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 | `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date |
 | `-t, --tags` | Comma-separated tags |
 
+If the title starts with `tag: ...` and that tag already exists on another task, it is automatically added as a tag. For example, if a task already has the tag `jean`, running `monolog add "jean: create integration"` will auto-tag the new task with `jean`. The title is kept as-is. Duplicate tags are not created if the same tag is also passed via `--tags`.
+
 ### `monolog ls`
 
 Lists today's open tasks by default. Each row includes a compact dates column: relative for recent tasks (`5m`, `3h`, `2d`), `MM-DD` for older same-year tasks, and `YY-MM-DD` for cross-year. Done tasks show `created→done` (e.g. `5d→1h`). Active tasks are marked with a leading `*`.

@@ -415,3 +415,31 @@ func TestFormatTasks_ActiveMarker(t *testing.T) {
 		t.Errorf("non-active task should not have '* ' prefix, got: %q", lines[1])
 	}
 }
+
+func TestVisibleTags(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil input", nil, nil},
+		{"empty input", []string{}, nil},
+		{"no active tag", []string{"work", "urgent"}, []string{"work", "urgent"}},
+		{"only active tag", []string{"active"}, nil},
+		{"active with others", []string{"active", "work", "personal"}, []string{"work", "personal"}},
+		{"active in middle", []string{"work", "active", "personal"}, []string{"work", "personal"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := VisibleTags(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("VisibleTags(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("VisibleTags(%v)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

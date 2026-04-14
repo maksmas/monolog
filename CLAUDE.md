@@ -37,6 +37,7 @@ Commands in `cmd/` handle CLI parsing and delegate to `internal/` packages. Ever
 - **Fractional positions**: inserting between positions 1000 and 2000 gives 1500. Rebalance all positions in a schedule group when any gap drops below 1.0. Default spacing is 1000.
 - **Schedule values**: `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date (`2026-04-15`). `monolog bump` promotes `tomorrow` and past dates to `today`.
 - **Runtime data directory**: `~/.monolog/` by default, override with `MONOLOG_DIR` env var.
+- **Auto-tag from title prefix**: when creating a task, if the title starts with `"tagname: ..."` and `tagname` is a tag that already exists on another task, it is automatically added as a tag. Title is kept as-is. The reserved `active` tag is excluded. Implemented via `model.ParseTitleTag()` and `model.CollectTags()`.
 
 ## Dependencies
 
