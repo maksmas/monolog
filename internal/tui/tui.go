@@ -55,4 +55,14 @@ var (
 			Foreground(lipgloss.Color("240")).
 			Bold(true).
 			PaddingLeft(2)
+
+	// helpKeyStyle highlights hotkeys in the help modal and status bar: bold, light red.
+	helpKeyStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("9"))
+
+	// helpTextStyle is the foreground-only component used for descriptions and
+	// separators in the status bar (no padding — padding applied by renderHelpBar).
+	helpTextStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
 )
