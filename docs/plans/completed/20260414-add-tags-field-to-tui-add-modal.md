@@ -105,22 +105,22 @@
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Update `modalView()` `modeAdd` case to render both fields with labels ("Title:" and "Tags:")
-- [ ] Update `helpLine()` for `modeAdd` to show `tab switch field  enter save  esc cancel`
-- [ ] Run tests — Task 1 modalView test should now pass
+- [x] Update `modalView()` `modeAdd` case to render both fields with labels ("Title:" and "Tags:")
+- [x] Update `helpLine()` for `modeAdd` to show `tab switch field  enter save  esc cancel`
+- [x] Run tests — Task 1 modalView test should now pass
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] Verify: creating task with tags in TUI populates `Tags` field in JSON
-- [ ] Verify: creating task without tags preserves existing behavior (no tags in JSON)
-- [ ] Verify: Tab switches between fields
-- [ ] Verify: Esc cancels from either field
-- [ ] Run full test suite: `go test ./...`
-- [ ] Run vet: `go vet ./...`
+- [x] Verify: creating task with tags in TUI populates `Tags` field in JSON
+- [x] Verify: creating task without tags preserves existing behavior (no tags in JSON)
+- [x] Verify: Tab switches between fields
+- [x] Verify: Esc cancels from either field
+- [x] Run full test suite: `go test ./...`
+- [x] Run vet: `go vet ./...`
 
 ### Task 6: [Final] Update documentation
-- [ ] Update CLAUDE.md if new patterns discovered
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Update CLAUDE.md if new patterns discovered (no new patterns — tags field follows existing modal/sanitize patterns)
+- [x] Move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

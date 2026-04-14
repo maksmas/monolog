@@ -423,3 +423,86 @@ func TestLs_ActiveFlag_RespectsExplicitSchedule(t *testing.T) {
 		t.Errorf("should NOT show 'Week active' when --schedule today is explicit, got:\n%s", output)
 	}
 }
+
+func TestLs_ActiveWithDoneFlag(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Create two tasks, mark both as done, then re-activate one on disk.
+	// (The done command auto-deactivates, so we re-add the active tag after.)
+	id1 := addTestTask(t, dir, "Done active")
+	id2 := addTestTask(t, dir, "Done not active")
+
+	// Mark both as done using full IDs to avoid prefix collisions.
+	for _, id := range []string{id1, id2} {
+		rc := NewRootCmd()
+		rc.SetOut(new(bytes.Buffer))
+		rc.SetErr(new(bytes.Buffer))
+		rc.SetArgs([]string{"done", id})
+		if err := rc.Execute(); err != nil {
+			t.Fatalf("done %s: %v", id, err)
+		}
+	}
+
+	// Re-activate the first done task on disk to simulate a done+active state.
+	setTaskActive(t, dir, id1)
+
+	// Run: ls --active --done
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--active", "--done"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --active --done error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Done active") {
+		t.Errorf("--active --done should show 'Done active', got:\n%s", output)
+	}
+	if strings.Contains(output, "Done not active") {
+		t.Errorf("--active --done should NOT show 'Done not active', got:\n%s", output)
+	}
+}
+
+func TestFilterActive(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []model.Task
+		want int
+	}{
+		{"nil slice", nil, 0},
+		{"empty slice", []model.Task{}, 0},
+		{"no active tasks", []model.Task{
+			{ID: "01A", Title: "a"},
+			{ID: "01B", Title: "b"},
+		}, 0},
+		{"all active", []model.Task{
+			{ID: "01A", Title: "a", Tags: []string{"active"}},
+			{ID: "01B", Title: "b", Tags: []string{"active"}},
+		}, 2},
+		{"mixed", []model.Task{
+			{ID: "01A", Title: "a", Tags: []string{"active"}},
+			{ID: "01B", Title: "b"},
+			{ID: "01C", Title: "c", Tags: []string{"active", "work"}},
+		}, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Make a copy to avoid mutation issues from the [:0] trick.
+			input := make([]model.Task, len(tc.in))
+			copy(input, tc.in)
+			got := filterActive(input)
+			if len(got) != tc.want {
+				t.Errorf("filterActive() returned %d tasks, want %d", len(got), tc.want)
+			}
+			for _, task := range got {
+				if !task.IsActive() {
+					t.Errorf("filterActive() returned non-active task: %v", task)
+				}
+			}
+		})
+	}
+}

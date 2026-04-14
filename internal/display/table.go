@@ -51,6 +51,18 @@ func ShortID(id string) string {
 	return id[:8]
 }
 
+// VisibleTags returns a copy of tags with the reserved ActiveTag filtered out,
+// so the internal active marker is not shown to the user.
+func VisibleTags(tags []string) []string {
+	var out []string
+	for _, tag := range tags {
+		if tag != model.ActiveTag {
+			out = append(out, tag)
+		}
+	}
+	return out
+}
+
 // FormatTasks writes tasks as a clean terminal table to w.
 // Each line shows: position indicator, short ID, title, schedule, dates, tags.
 // The now parameter is used to compute compact relative dates.
@@ -72,8 +84,8 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 		}
 
 		tags := ""
-		if len(task.Tags) > 0 {
-			tags = "[" + strings.Join(task.Tags, ", ") + "]"
+		if vt := VisibleTags(task.Tags); len(vt) > 0 {
+			tags = "[" + strings.Join(vt, ", ") + "]"
 		}
 
 		dates := FormatTaskDates(now, task)

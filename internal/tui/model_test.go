@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -786,9 +787,9 @@ func TestSanitizeTags(t *testing.T) {
 		{" a , , b ", []string{"a", "b"}},
 	}
 	for _, tc := range tests {
-		got := sanitizeTags(tc.in)
+		got := model.SanitizeTags(tc.in)
 		if !sliceEq(got, tc.want) {
-			t.Errorf("sanitizeTags(%q) = %v, want %v", tc.in, got, tc.want)
+			t.Errorf("SanitizeTags(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }
@@ -803,6 +804,54 @@ func sliceEq(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestVisibleTags(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil input", nil, nil},
+		{"empty input", []string{}, nil},
+		{"no active tag", []string{"work", "urgent"}, []string{"work", "urgent"}},
+		{"only active tag", []string{"active"}, nil},
+		{"active with others", []string{"active", "work", "personal"}, []string{"work", "personal"}},
+		{"active in middle", []string{"work", "active", "personal"}, []string{"work", "personal"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := display.VisibleTags(tc.in)
+			if !sliceEq(got, tc.want) {
+				t.Errorf("VisibleTags(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTruncateTitle(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		width int
+		want  string
+	}{
+		{"short string unchanged", "abc", 10, "abc"},
+		{"exact width unchanged", "abcde", 5, "abcde"},
+		{"truncated with ellipsis", "abcdefgh", 5, "abcd\u2026"},
+		{"width zero returns unchanged", "abc", 0, "abc"},
+		{"negative width returns unchanged", "abc", -1, "abc"},
+		{"width 1 truncates to ellipsis", "abc", 1, "\u2026"},
+		{"empty string unchanged", "", 5, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateTitle(tc.in, tc.width)
+			if got != tc.want {
+				t.Errorf("truncateTitle(%q, %d) = %q, want %q", tc.in, tc.width, got, tc.want)
+			}
+		})
+	}
 }
 
 // --- item.Description compact date tests ------------------------------------
@@ -928,8 +977,8 @@ func TestTUI_RetagPreservesActive(t *testing.T) {
 	if m.mode != modeRetag {
 		t.Fatalf("mode = %v, want modeRetag", m.mode)
 	}
-	// Clear input and type new tags (without "active").
-	// The input is pre-filled with "active, old"; we need to clear it.
+	// Clear input and type new tags.
+	// The input is pre-filled with "old" (visibleTags filters out "active").
 	m.input.SetValue("work, personal")
 	m, cmd := key(t, m, "enter")
 	if cmd == nil {
@@ -1227,7 +1276,9 @@ func TestActivePanel_ShrinksListHeight(t *testing.T) {
 func TestActivePanel_HeightMatchesRendered(t *testing.T) {
 	// Verify the fast activePanelHeight() matches lipgloss.Height(activePanelView())
 	// so the two never drift apart.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "first active", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -1245,7 +1296,9 @@ func TestActivePanel_HeightMatchesRendered(t *testing.T) {
 }
 
 func TestActivePanel_TruncatesLongTitles(t *testing.T) {
+	prev := lipgloss.DefaultRenderer().ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 	longTitle := strings.Repeat("x", 200)
 	m := newTestModel(t,
 		model.Task{ID: "01AAAAAA", Title: longTitle, Status: "open", Schedule: "today",
@@ -1262,6 +1315,13 @@ func TestActivePanel_TruncatesLongTitles(t *testing.T) {
 		if lineLen > width {
 			t.Errorf("panel line exceeds terminal width (%d): got %d runes: %q", width, lineLen, line)
 		}
+	}
+	// The panel must contain the ellipsis character and must NOT contain the full title.
+	if !strings.Contains(panel, "\u2026") {
+		t.Error("panel should contain ellipsis character '\u2026' for truncated title")
+	}
+	if strings.Contains(panel, longTitle) {
+		t.Error("panel should NOT contain the full 200-char title")
 	}
 }
 

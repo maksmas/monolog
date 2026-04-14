@@ -110,3 +110,33 @@ func TestTask_SetActive(t *testing.T) {
 		}
 	})
 }
+
+func TestSanitizeTags(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty string", "", nil},
+		{"whitespace only", "   ", nil},
+		{"single tag", "one", []string{"one"}},
+		{"comma separated", "one, two", []string{"one", "two"}},
+		{"extra whitespace and empty parts", " a , , b ", []string{"a", "b"}},
+		{"strips reserved active tag", "active, work", []string{"work"}},
+		{"only active tag", "active", nil},
+		{"active tag among many", "foo, active, bar", []string{"foo", "bar"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeTags(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("SanitizeTags(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("SanitizeTags(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

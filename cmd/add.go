@@ -61,7 +61,7 @@ func newAddCmd() *cobra.Command {
 			}
 
 			// Parse and sanitize tags
-			task.Tags = sanitizeTags(tags)
+			task.Tags = model.SanitizeTags(tags)
 
 			if err := s.Create(task); err != nil {
 				return fmt.Errorf("create task: %w", err)

@@ -45,6 +45,10 @@ const (
 	addFocusTags
 )
 
+// activePanelChromeWidth is the number of non-title characters per line in the
+// active panel: border (2) + padding (2) + ShortID (8) + separator (2) = 14.
+const activePanelChromeWidth = 14
+
 // reschedulePresets are the quick-pick bucket names shown in the reschedule
 // modal. The index + 1 is the numeric shortcut key. They are resolved into
 // concrete ISO dates via schedule.Parse before being written.
@@ -119,8 +123,8 @@ func (i item) Description() string {
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
 		parts = append(parts, i.task.Schedule)
 	}
-	if len(i.task.Tags) > 0 {
-		parts = append(parts, "["+strings.Join(i.task.Tags, ", ")+"]")
+	if vt := display.VisibleTags(i.task.Tags); len(vt) > 0 {
+		parts = append(parts, "["+strings.Join(vt, ", ")+"]")
 	}
 	if dates := display.FormatTaskDates(i.now, i.task); dates != "" {
 		parts = append(parts, dates)
@@ -571,7 +575,7 @@ func (m *Model) openRetag() tea.Cmd {
 	m.input.Placeholder = "tag1, tag2"
 	// Filter out the reserved active tag so the user only sees their own tags.
 	// Active state is preserved separately via wasActive/SetActive in updateRetag.
-	m.input.SetValue(strings.Join(visibleTags(t.Tags), ", "))
+	m.input.SetValue(strings.Join(display.VisibleTags(t.Tags), ", "))
 	m.input.CursorEnd()
 	m.input.Focus()
 	return textinput.Blink
@@ -585,7 +589,7 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		t := *m.modalTask
 		wasActive := t.IsActive()
-		t.Tags = sanitizeTags(m.input.Value())
+		t.Tags = model.SanitizeTags(m.input.Value())
 		t.SetActive(wasActive)
 		t.UpdatedAt = now()
 		m.closeModal()
@@ -633,7 +637,7 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeModal()
 			return m, nil
 		}
-		tags := sanitizeTags(m.tagInput.Value())
+		tags := model.SanitizeTags(m.tagInput.Value())
 		m.closeModal()
 		return m, m.createCmd(title, tags)
 	}
@@ -696,7 +700,7 @@ func marshalTaskForEdit(t model.Task) ([]byte, error) {
 		Title:    t.Title,
 		Body:     t.Body,
 		Schedule: t.Schedule,
-		Tags:     visibleTags(t.Tags),
+		Tags:     display.VisibleTags(t.Tags),
 	})
 }
 
@@ -1169,8 +1173,7 @@ func (m *Model) activePanelView() string {
 	if len(m.activeTasks) == 0 {
 		return ""
 	}
-	// Border (2) + padding (2) + ShortID (8) + separator (2) = 14 chars of chrome.
-	titleWidth := m.width - 14
+	titleWidth := m.width - activePanelChromeWidth
 	var lines []string
 	for _, t := range m.activeTasks {
 		title := truncateTitle(t.Title, titleWidth)
@@ -1259,8 +1262,10 @@ func (m *Model) helpLine() string {
 			return helpStyle.Render("1 today  2 tomorrow  3 week  4 month  5 someday  6 custom  esc cancel")
 		}
 		return helpStyle.Render("enter save  esc cancel")
-	case modeRetag, modeAdd:
+	case modeRetag:
 		return helpStyle.Render("enter save  esc cancel")
+	case modeAdd:
+		return helpStyle.Render("tab switch field  enter save  esc cancel")
 	case modeConfirmDelete:
 		return helpStyle.Render("y confirm  anything else cancels")
 	}
@@ -1284,7 +1289,7 @@ func (m *Model) modalView() string {
 		return modalBox("Tags (comma-separated):\n\n" + m.input.View())
 	case modeAdd:
 		t := m.tabs[m.activeTab]
-		return modalBox(fmt.Sprintf("Add task to %s:\n\n%s", t.label, m.input.View()))
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s", t.label, m.input.View(), m.tagInput.View()))
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""
@@ -1313,21 +1318,6 @@ func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// sanitizeTags splits a comma-separated string into tags, trimming and
-// dropping empties. Duplicates preserved in input order (caller's choice).
-// visibleTags returns a copy of tags with the reserved ActiveTag filtered out.
-// Used when displaying tags to the user (retag modal, edit YAML) so the
-// internal active marker is hidden; active state is preserved separately.
-func visibleTags(tags []string) []string {
-	var out []string
-	for _, tag := range tags {
-		if tag != model.ActiveTag {
-			out = append(out, tag)
-		}
-	}
-	return out
-}
-
 // truncateTitle shortens s to width runes, appending "…" if truncated.
 // If width <= 0 (e.g., terminal size not yet known), returns s unchanged.
 func truncateTitle(s string, width int) string {
@@ -1342,18 +1332,4 @@ func truncateTitle(s string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func sanitizeTags(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	var tags []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			tags = append(tags, p)
-		}
-	}
-	return tags
-}
 

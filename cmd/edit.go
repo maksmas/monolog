@@ -7,6 +7,7 @@ import (
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
+	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/spf13/cobra"
 )
@@ -68,7 +69,7 @@ func newEditCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("tags") {
 				wasActive := task.IsActive()
-				task.Tags = sanitizeTags(tags)
+				task.Tags = model.SanitizeTags(tags)
 				task.SetActive(wasActive)
 			}
 			if cmd.Flags().Changed("active") {
@@ -95,7 +96,7 @@ func newEditCmd() *cobra.Command {
 	cmd.Flags().StringVar(&body, "body", "", "New body text")
 	cmd.Flags().StringVar(&scheduleArg, "schedule", "", "New schedule (today, tomorrow, week, month, someday, or ISO date)")
 	cmd.Flags().StringVar(&tags, "tags", "", "New comma-separated tags")
-	cmd.Flags().BoolVar(&active, "active", false, "Set task active state (true or false)")
+	cmd.Flags().BoolVar(&active, "active", false, "Mark as active (use --active=false to deactivate)")
 
 	return cmd
 }

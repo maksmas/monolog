@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -52,6 +53,24 @@ func (t *Task) SetActive(on bool) {
 		}
 	}
 	t.Tags = out
+}
+
+// SanitizeTags splits a comma-separated string into tags, trimming whitespace,
+// filtering out empty strings, and stripping the reserved "active" tag so
+// users cannot bypass the dedicated active toggle.
+func SanitizeTags(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	var tags []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" && p != ActiveTag {
+			tags = append(tags, p)
+		}
+	}
+	return tags
 }
 
 // NewID generates a new ULID string.

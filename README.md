@@ -112,7 +112,7 @@ Marking a task done automatically deactivates it. Editing tags with `--tags` pre
 
 | Key | Action |
 |-----|--------|
-| `c` | Open the add-task modal |
+| `c` | Open the add-task modal (title + tags fields, Tab to switch) |
 | `a` | Toggle active on the focused task |
 | `d` | Mark focused task as done |
 | `t` | Retag focused task |
