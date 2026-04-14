@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"testing"
+
+	"github.com/mmaksmas/monolog/internal/tui"
 )
 
 func TestRootCommandHelp(t *testing.T) {
@@ -51,7 +53,7 @@ func TestRootCommandNoArgs_InvokesTUI(t *testing.T) {
 	// Stub the TUI hook so the test doesn't try to open a real terminal.
 	called := false
 	orig := runTUI
-	runTUI = func() error { called = true; return nil }
+	runTUI = func(opts tui.Options) error { called = true; return nil }
 	defer func() { runTUI = orig }()
 
 	rootCmd := NewRootCmd()
@@ -67,12 +69,66 @@ func TestRootCommandNoArgs_InvokesTUI(t *testing.T) {
 	}
 }
 
+func TestRootCommand_TagsFlagPassesOption(t *testing.T) {
+	var gotOpts tui.Options
+	orig := runTUI
+	runTUI = func(opts tui.Options) error { gotOpts = opts; return nil }
+	defer func() { runTUI = orig }()
+
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"--tags"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("--tags should succeed, got %v", err)
+	}
+	if !gotOpts.StartInTagView {
+		t.Error("--tags flag should set StartInTagView=true")
+	}
+}
+
+func TestRootCommand_TagsShortFlagPassesOption(t *testing.T) {
+	var gotOpts tui.Options
+	orig := runTUI
+	runTUI = func(opts tui.Options) error { gotOpts = opts; return nil }
+	defer func() { runTUI = orig }()
+
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"-T"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("-T should succeed, got %v", err)
+	}
+	if !gotOpts.StartInTagView {
+		t.Error("-T flag should set StartInTagView=true")
+	}
+}
+
+func TestRootCommand_NoTagsFlagDefaultsFalse(t *testing.T) {
+	var gotOpts tui.Options
+	orig := runTUI
+	runTUI = func(opts tui.Options) error { gotOpts = opts; return nil }
+	defer func() { runTUI = orig }()
+
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("no-args should succeed, got %v", err)
+	}
+	if gotOpts.StartInTagView {
+		t.Error("without --tags flag, StartInTagView should be false")
+	}
+}
+
 func TestRootCommandSubcommandsStillWork(t *testing.T) {
 	// With Args: NoArgs + RunE on root, subcommands should still dispatch
 	// without invoking the TUI.
 	called := false
 	orig := runTUI
-	runTUI = func() error { called = true; return nil }
+	runTUI = func(opts tui.Options) error { called = true; return nil }
 	defer func() { runTUI = orig }()
 
 	rootCmd := NewRootCmd()

@@ -41,6 +41,7 @@ Commands in `cmd/` handle CLI parsing and delegate to `internal/` packages. Runn
 - **Runtime data directory**: `~/.monolog/` by default, override with `MONOLOG_DIR` env var.
 - **Active tasks**: the reserved `active` tag marks tasks in the current working set. Active tasks render in green in the TUI and appear in a dedicated panel above the tab bar. `done` auto-deactivates; `edit --tags` preserves active state.
 - **Auto-tag from title prefix**: when creating a task, if the title starts with `"tagname: ..."` and `tagname` is a tag that already exists on another task, it is automatically added as a tag. Title is kept as-is. The reserved `active` tag is excluded. Implemented via `model.ParseTitleTag()` and `model.CollectTags()`.
+- **Tag view mode**: the TUI has two view modes (`viewSchedule` / `viewTag`), toggled with `v`. In tag view, tabs become tags (active first, alphabetical middle, untagged last), each showing tasks grouped by schedule bucket with separator items. Grab mode in tag view restricts movement to within a single tag tab (no left/right). Launch directly into tag view with `monolog --tags` / `-T`.
 
 ## Dependencies
 

@@ -12,15 +12,17 @@ var Version = "dev"
 // runTUI is the hook invoked when `monolog` is called with no subcommand. It
 // opens the store and launches the interactive TUI. Exposed as a var so tests
 // can stub it and avoid spinning up a terminal.
-var runTUI = func() error {
+var runTUI = func(opts tui.Options) error {
 	s, repoPath, err := openStore()
 	if err != nil {
 		return err
 	}
-	return tui.Run(s, repoPath)
+	return tui.Run(s, repoPath, opts)
 }
 
 func NewRootCmd() *cobra.Command {
+	var tagsFlag bool
+
 	rootCmd := &cobra.Command{
 		Use:     "monolog",
 		Short:   "A CLI personal backlog tool",
@@ -28,9 +30,11 @@ func NewRootCmd() *cobra.Command {
 		Version: Version,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTUI()
+			return runTUI(tui.Options{StartInTagView: tagsFlag})
 		},
 	}
+
+	rootCmd.Flags().BoolVarP(&tagsFlag, "tags", "T", false, "start the TUI in tag view mode")
 
 	rootCmd.AddCommand(newInitCmd())
 	rootCmd.AddCommand(newAddCmd())

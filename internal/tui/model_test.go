@@ -2,11 +2,13 @@ package tui
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -31,31 +33,7 @@ func expectSchedule(t *testing.T, bucket string) string {
 // monolog repo, pre-populated with the given tasks in their declared buckets.
 func newTestModel(t *testing.T, tasks ...model.Task) *Model {
 	t.Helper()
-	repoPath := filepath.Join(t.TempDir(), "repo")
-	if err := git.Init(repoPath, ""); err != nil {
-		t.Fatalf("git.Init: %v", err)
-	}
-	s, err := store.New(filepath.Join(repoPath, ".monolog", "tasks"))
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	for _, task := range tasks {
-		if err := s.Create(task); err != nil {
-			t.Fatalf("store.Create: %v", err)
-		}
-	}
-	// Commit pre-populated tasks so the working tree is clean for later
-	// AutoCommit calls (which commit only specific files).
-	if len(tasks) > 0 {
-		if err := git.AutoCommit(repoPath, "seed", "."); err != nil {
-			t.Fatalf("seed commit: %v", err)
-		}
-	}
-	m, err := newModel(s, repoPath)
-	if err != nil {
-		t.Fatalf("newModel: %v", err)
-	}
-	return m
+	return newTestModelWithOpts(t, Options{}, tasks...)
 }
 
 // key sends a key event to the model and returns the updated model plus any
@@ -112,6 +90,19 @@ func runCmd(t *testing.T, m *Model, cmd tea.Cmd) *Model {
 	msg := cmd()
 	next, _ := m.Update(msg)
 	return next.(*Model)
+}
+
+// findTabByLabel returns the index of the tab with the given label,
+// or calls t.Fatal if not found.
+func findTabByLabel(t *testing.T, m *Model, label string) int {
+	t.Helper()
+	for i, tab := range m.tabs {
+		if tab.label == label {
+			return i
+		}
+	}
+	t.Fatalf("tab with label %q not found", label)
+	return -1
 }
 
 func TestSkeleton_TabsPopulatedByBucket(t *testing.T) {
@@ -1840,6 +1831,2528 @@ func TestAdd_ColonNoAutoPopulateDuplicate(t *testing.T) {
 	// Should still be just "jean", not "jean, jean" or "jean,jean".
 	if got != "jean" {
 		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean")
+	}
+}
+
+// --- pendingAction tests ----------------------------------------------------
+
+func TestPendingAction_NilByDefault(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+	if m.pendingAction != nil {
+		t.Errorf("pendingAction should be nil by default in grab mode")
+	}
+}
+
+func TestPendingAction_DispatchedOnSuccessfulSave(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Set a pendingAction that records it was called and returns a sentinel cmd.
+	type sentinelMsg struct{}
+	dispatched := false
+	m.pendingAction = func() tea.Cmd {
+		dispatched = true
+		return func() tea.Msg { return sentinelMsg{} }
+	}
+
+	// Simulate a successful taskSavedMsg.
+	next, actionCmd := m.Update(taskSavedMsg{status: "Moved: grab me", focusID: "01A"})
+	m = next.(*Model)
+
+	if !dispatched {
+		t.Error("pendingAction should have been dispatched on successful taskSavedMsg")
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	// Verify the cmd returned by pendingAction is propagated through Update.
+	if actionCmd == nil {
+		t.Fatal("Update should return the cmd from pendingAction")
+	}
+	msg := actionCmd()
+	if _, ok := msg.(sentinelMsg); !ok {
+		t.Errorf("returned cmd should produce sentinelMsg, got %T", msg)
+	}
+}
+
+func TestPendingAction_ClearedOnErrorNotDispatched(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Set a pendingAction that records it was called.
+	dispatched := false
+	m.pendingAction = func() tea.Cmd {
+		dispatched = true
+		return nil
+	}
+
+	// Simulate an error taskSavedMsg.
+	next, _ := m.Update(taskSavedMsg{err: fmt.Errorf("boom")})
+	m = next.(*Model)
+
+	if dispatched {
+		t.Error("pendingAction should NOT be dispatched on error taskSavedMsg")
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be cleared even on error")
+	}
+}
+
+// --- grab mode action key tests (Task 2) ---
+
+func TestGrab_EditKey_SetsPendingAndCommits(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	// Press 'e' — should set pendingAction and return commitGrab cmd.
+	m, cmd := key(t, m, "e")
+	if m.mode != modeNormal {
+		t.Errorf("mode after 'e' = %v, want modeNormal (commitGrab resets mode)", m.mode)
+	}
+	if m.pendingAction == nil {
+		t.Error("pendingAction should be set after pressing 'e' in grab mode")
+	}
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab — pendingAction should dispatch and return openEdit cmd.
+	// openEdit uses tea.ExecProcess so we can't fully execute it, but we can
+	// verify the dispatch chain works: pendingAction fires and returns non-nil.
+	msg := cmd()
+	next, actionCmd := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	// openEdit returns a tea.ExecProcess cmd — verify it's non-nil.
+	if actionCmd == nil {
+		t.Error("expected openEdit cmd to be returned from pendingAction dispatch")
+	}
+}
+
+func TestGrab_RescheduleKey_OpensModalAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+
+	// Press 'r' — should set pendingAction and return commitGrab cmd.
+	m, cmd := key(t, m, "r")
+	if m.mode != modeNormal {
+		t.Errorf("mode after 'r' = %v, want modeNormal", m.mode)
+	}
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Run the commitGrab cmd — simulates async save completing.
+	m = runCmd(t, m, cmd)
+
+	// After taskSavedMsg, pendingAction should have dispatched openReschedule.
+	if m.mode != modeReschedule {
+		t.Errorf("mode after commit+dispatch = %v, want modeReschedule", m.mode)
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+}
+
+func TestGrab_RetagKey_OpensModalAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "t")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+	m = runCmd(t, m, cmd)
+
+	if m.mode != modeRetag {
+		t.Errorf("mode after commit+dispatch = %v, want modeRetag", m.mode)
+	}
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+}
+
+func TestGrab_DoneKey_MarksTaskDoneAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "done me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab cmd and capture the msg.
+	msg := cmd()
+	// Feed msg through Update — this triggers pendingAction dispatch.
+	next, actionCmd := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	// actionCmd is the return from doneSelected(). Execute it.
+	if actionCmd == nil {
+		t.Fatal("expected doneSelected cmd to be returned from pendingAction dispatch")
+	}
+	m = runCmd(t, m, actionCmd)
+
+	// The task should now be done.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("task status = %q, want %q", task.Status, "done")
+	}
+}
+
+func TestGrab_ActiveKey_TogglesActiveAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "activate me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab and capture pending action cmd.
+	msg := cmd()
+	next, actionCmd := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	if actionCmd == nil {
+		t.Fatal("expected toggleActive cmd to be returned from pendingAction dispatch")
+	}
+	m = runCmd(t, m, actionCmd)
+
+	// The task should now be active.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Error("task should be active after toggle")
+	}
+}
+
+func TestHelpLine_GrabMode_ContainsActionKeys(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	help := m.helpLine()
+
+	// Verify core grab controls are present.
+	for _, want := range []string{"GRAB", "reorder", "bucket", "drop", "cancel"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("helpLine() missing %q in grab mode: %s", want, help)
+		}
+	}
+
+	// Verify action key hints are present.
+	if !strings.Contains(help, "+d/e/r/t/a/c/x/s") {
+		t.Errorf("helpLine() missing action key hints in grab mode: %s", help)
+	}
+}
+
+func TestGrab_AddKey_OpensAddAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "c")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab and capture pending action cmd.
+	msg := cmd()
+	next, _ := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode after commit+dispatch = %v, want modeAdd", m.mode)
+	}
+}
+
+func TestGrab_DeleteKey_OpensConfirmDeleteAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "x")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab and capture pending action cmd.
+	msg := cmd()
+	next, actionCmd := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	// openConfirmDelete sets mode and returns nil.
+	if actionCmd != nil {
+		t.Error("openConfirmDelete returns nil cmd, expected nil from dispatch")
+	}
+	if m.mode != modeConfirmDelete {
+		t.Errorf("mode after commit+dispatch = %v, want modeConfirmDelete", m.mode)
+	}
+}
+
+func TestGrab_SyncKey_ReturnsSyncCmdAfterCommit(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "grab me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "m")
+	m, cmd := key(t, m, "s")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab and capture pending action cmd.
+	msg := cmd()
+	next, actionCmd := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	if m.statusMsg != "Syncing..." {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "Syncing...")
+	}
+	// syncCmd returns a non-nil cmd (the async sync operation).
+	if actionCmd == nil {
+		t.Fatal("expected syncCmd to be returned from pendingAction dispatch")
+	}
+}
+
+func TestGrab_CrossTabMoveAndDone(t *testing.T) {
+	// Grab a task in Today, move it to Tomorrow with right-arrow, then press 'd'.
+	// Verify the task ends up done in the Tomorrow schedule.
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "cross tab done", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Enter grab mode.
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	// Move to next tab (Tomorrow).
+	m, _ = key(t, m, "right")
+
+	// Press 'd' to mark done — should commit grab (saving to Tomorrow) then done.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("cmd should be non-nil (commitGrab)")
+	}
+
+	// Execute commitGrab — the task should be saved in the Tomorrow bucket.
+	msg := cmd()
+	next, actionCmd := m.Update(msg)
+	m = next.(*Model)
+
+	if m.pendingAction != nil {
+		t.Error("pendingAction should be nil after dispatch")
+	}
+	if actionCmd == nil {
+		t.Fatal("expected doneSelected cmd from pendingAction dispatch")
+	}
+
+	// Execute the doneSelected cmd.
+	m = runCmd(t, m, actionCmd)
+
+	// Verify the task is done and was scheduled for tomorrow.
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("task status = %q, want %q", task.Status, "done")
+	}
+	wantSched := expectSchedule(t, "tomorrow")
+	if task.Schedule != wantSched {
+		t.Errorf("task schedule = %q, want %q (tomorrow)", task.Schedule, wantSched)
+	}
+}
+
+// --- viewMode and tagTab tests ----------------------------------------------
+
+func TestViewMode_DefaultIsSchedule(t *testing.T) {
+	m := newTestModel(t)
+	if m.viewMode != viewSchedule {
+		t.Errorf("default viewMode = %d, want viewSchedule (%d)", m.viewMode, viewSchedule)
+	}
+}
+
+func TestViewMode_TagTabsNilByDefault(t *testing.T) {
+	m := newTestModel(t)
+	if m.tagTabs != nil {
+		t.Errorf("tagTabs should be nil by default, got %v", m.tagTabs)
+	}
+}
+
+// --- buildTagTabs tests ------------------------------------------------------
+
+func TestBuildTagTabs_Ordering(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01A", Title: "task a", Tags: []string{"beta", "active"}},
+		{ID: "01B", Title: "task b", Tags: []string{"alpha"}},
+		{ID: "01C", Title: "task c", Tags: []string{"gamma"}},
+	}
+	tabs := buildTagTabs(tasks)
+
+	// Expect: Active, alpha, beta, gamma, Untagged (5 total).
+	if len(tabs) != 5 {
+		t.Fatalf("len(tabs) = %d, want 5", len(tabs))
+	}
+
+	// First tab must be Active.
+	if tabs[0].label != "Active" || !tabs[0].isActive {
+		t.Errorf("tabs[0] = %+v, want Active tab", tabs[0])
+	}
+	if tabs[0].tag != model.ActiveTag {
+		t.Errorf("Active tab tag = %q, want %q", tabs[0].tag, model.ActiveTag)
+	}
+
+	// Middle tabs in alphabetical order.
+	if tabs[1].label != "alpha" || tabs[1].tag != "alpha" {
+		t.Errorf("tabs[1] = %+v, want alpha tab", tabs[1])
+	}
+	if tabs[2].label != "beta" || tabs[2].tag != "beta" {
+		t.Errorf("tabs[2] = %+v, want beta tab", tabs[2])
+	}
+	if tabs[3].label != "gamma" || tabs[3].tag != "gamma" {
+		t.Errorf("tabs[3] = %+v, want gamma tab", tabs[3])
+	}
+
+	// Last tab must be Untagged.
+	if tabs[len(tabs)-1].label != "Untagged" || !tabs[len(tabs)-1].isUntagged {
+		t.Errorf("last tab = %+v, want Untagged tab", tabs[len(tabs)-1])
+	}
+	if tabs[len(tabs)-1].tag != "" {
+		t.Errorf("Untagged tab tag = %q, want empty string", tabs[len(tabs)-1].tag)
+	}
+}
+
+func TestBuildTagTabs_CaseInsensitiveSort(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01A", Title: "task a", Tags: []string{"mlog"}},
+		{ID: "01B", Title: "task b", Tags: []string{"Warsaw"}},
+		{ID: "01C", Title: "task c", Tags: []string{"jean"}},
+	}
+	tabs := buildTagTabs(tasks)
+
+	// Expect: Active, jean, mlog, Warsaw, Untagged (case-insensitive alpha).
+	if len(tabs) != 5 {
+		t.Fatalf("len(tabs) = %d, want 5", len(tabs))
+	}
+	if tabs[1].label != "jean" {
+		t.Errorf("tabs[1].label = %q, want %q", tabs[1].label, "jean")
+	}
+	if tabs[2].label != "mlog" {
+		t.Errorf("tabs[2].label = %q, want %q", tabs[2].label, "mlog")
+	}
+	if tabs[3].label != "Warsaw" {
+		t.Errorf("tabs[3].label = %q, want %q", tabs[3].label, "Warsaw")
+	}
+}
+
+func TestBuildTagTabs_NoTags(t *testing.T) {
+	// Tasks with no tags at all (or only active tag which is excluded by CollectTags).
+	tasks := []model.Task{
+		{ID: "01A", Title: "task a", Tags: nil},
+		{ID: "01B", Title: "task b", Tags: []string{"active"}},
+	}
+	tabs := buildTagTabs(tasks)
+
+	// Should still have Active + Untagged = 2 tabs.
+	if len(tabs) != 2 {
+		t.Fatalf("len(tabs) = %d, want 2", len(tabs))
+	}
+	if !tabs[0].isActive {
+		t.Error("tabs[0] should be Active")
+	}
+	if !tabs[1].isUntagged {
+		t.Error("tabs[1] should be Untagged")
+	}
+}
+
+func TestBuildTagTabs_AllTasksUntagged(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01A", Title: "task a"},
+		{ID: "01B", Title: "task b"},
+	}
+	tabs := buildTagTabs(tasks)
+
+	// Active + Untagged only.
+	if len(tabs) != 2 {
+		t.Fatalf("len(tabs) = %d, want 2", len(tabs))
+	}
+	if tabs[0].label != "Active" {
+		t.Errorf("tabs[0].label = %q, want Active", tabs[0].label)
+	}
+	if tabs[1].label != "Untagged" {
+		t.Errorf("tabs[1].label = %q, want Untagged", tabs[1].label)
+	}
+}
+
+func TestBuildTagTabs_EmptyTaskList(t *testing.T) {
+	tabs := buildTagTabs(nil)
+
+	// Even with zero tasks, Active + Untagged are present.
+	if len(tabs) != 2 {
+		t.Fatalf("len(tabs) = %d, want 2", len(tabs))
+	}
+	if !tabs[0].isActive {
+		t.Error("tabs[0] should be Active")
+	}
+	if !tabs[1].isUntagged {
+		t.Error("tabs[1] should be Untagged")
+	}
+}
+
+func TestBuildTagTabs_TasksWithMultipleTags(t *testing.T) {
+	// A task with multiple tags should cause both tags to appear as tabs.
+	tasks := []model.Task{
+		{ID: "01A", Title: "multi-tag task", Tags: []string{"work", "urgent", "active"}},
+		{ID: "01B", Title: "single-tag task", Tags: []string{"work"}},
+	}
+	tabs := buildTagTabs(tasks)
+
+	// Active + urgent + work + Untagged = 4
+	if len(tabs) != 4 {
+		t.Fatalf("len(tabs) = %d, want 4", len(tabs))
+	}
+	// Verify alpha order: urgent before work.
+	if tabs[1].label != "urgent" {
+		t.Errorf("tabs[1].label = %q, want urgent", tabs[1].label)
+	}
+	if tabs[2].label != "work" {
+		t.Errorf("tabs[2].label = %q, want work", tabs[2].label)
+	}
+}
+
+func TestBuildTagTabs_NoActiveTasksStillHasActiveTab(t *testing.T) {
+	// No task has the active tag, but the Active tab should still be present.
+	tasks := []model.Task{
+		{ID: "01A", Title: "task a", Tags: []string{"docs"}},
+	}
+	tabs := buildTagTabs(tasks)
+
+	// Active + docs + Untagged = 3
+	if len(tabs) != 3 {
+		t.Fatalf("len(tabs) = %d, want 3", len(tabs))
+	}
+	if !tabs[0].isActive {
+		t.Error("tabs[0] should be Active even when no tasks have the active tag")
+	}
+}
+
+func TestBuildTagTabs_MiddleTabsNotSpecial(t *testing.T) {
+	// Verify middle tabs have isActive=false and isUntagged=false.
+	tasks := []model.Task{
+		{ID: "01A", Title: "task a", Tags: []string{"foo"}},
+	}
+	tabs := buildTagTabs(tasks)
+
+	if len(tabs) < 3 {
+		t.Fatalf("expected at least 3 tabs, got %d", len(tabs))
+	}
+	mid := tabs[1]
+	if mid.isActive {
+		t.Error("middle tab should not be isActive")
+	}
+	if mid.isUntagged {
+		t.Error("middle tab should not be isUntagged")
+	}
+	if mid.tag != "foo" {
+		t.Errorf("middle tab tag = %q, want foo", mid.tag)
+	}
+}
+
+// --- separator item tests ----------------------------------------------------
+
+func TestNewSeparatorItem_IsSeparator(t *testing.T) {
+	sep := newSeparatorItem("Today")
+	if !sep.isSeparator {
+		t.Error("newSeparatorItem should set isSeparator = true")
+	}
+	if sep.task.Title != "Today" {
+		t.Errorf("separator title = %q, want %q", sep.task.Title, "Today")
+	}
+	if sep.task.ID != "" {
+		t.Errorf("separator task ID should be empty, got %q", sep.task.ID)
+	}
+}
+
+func TestSeparatorItem_TitleAndFilterValue(t *testing.T) {
+	sep := newSeparatorItem("Week")
+	if sep.Title() != "Week" {
+		t.Errorf("Title() = %q, want %q", sep.Title(), "Week")
+	}
+	if sep.FilterValue() != "Week" {
+		t.Errorf("FilterValue() = %q, want %q", sep.FilterValue(), "Week")
+	}
+}
+
+func TestSeparatorItem_DescriptionIsMinimal(t *testing.T) {
+	sep := newSeparatorItem("Month")
+	// Separator tasks have zero-value fields; Description returns an empty
+	// string since there is no ID, schedule, tags, or dates to display.
+	desc := sep.Description()
+	if desc != "" {
+		t.Errorf("separator Description() = %q, want empty string (no task data)", desc)
+	}
+}
+
+func TestRegularItem_IsNotSeparator(t *testing.T) {
+	regular := item{task: model.Task{ID: "01A", Title: "test"}}
+	if regular.isSeparator {
+		t.Error("regular item should not be a separator")
+	}
+}
+
+func TestSelectedTask_ReturnsNilOnSeparator(t *testing.T) {
+	m := newTestModel(t)
+	// Inject a separator as the only item in the Today tab.
+	sep := newSeparatorItem("Today")
+	m.lists[0].SetItems([]list.Item{sep})
+	m.lists[0].Select(0)
+	m.activeTab = 0
+
+	got := m.selectedTask()
+	if got != nil {
+		t.Errorf("selectedTask() should return nil for separator, got task %q", got.Title)
+	}
+}
+
+func TestSelectedTask_ReturnsTaskForRegularItem(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "real task", Status: "open", Schedule: "today", Position: 1000},
+	)
+	m.activeTab = 0
+	m.lists[0].Select(0)
+
+	got := m.selectedTask()
+	if got == nil {
+		t.Fatal("selectedTask() should not be nil for a regular item")
+	}
+	if got.ID != "01A" {
+		t.Errorf("selectedTask().ID = %q, want %q", got.ID, "01A")
+	}
+}
+
+func TestSelectedTask_ReturnsNilOnEmptyList(t *testing.T) {
+	m := newTestModel(t) // no tasks
+	m.activeTab = 0
+
+	got := m.selectedTask()
+	if got != nil {
+		t.Errorf("selectedTask() should return nil on empty list, got %+v", got)
+	}
+}
+
+func TestSeparatorItem_MixedList_SkipsSeparators(t *testing.T) {
+	// Verify selectedTask returns nil when cursor is on separator in a mixed list.
+	m := newTestModel(t)
+	sep := newSeparatorItem("Today")
+	regular := item{
+		task: model.Task{ID: "01X", Title: "real one"},
+		now:  time.Now(),
+	}
+	m.lists[0].SetItems([]list.Item{sep, regular})
+
+	// Select the separator (index 0).
+	m.lists[0].Select(0)
+	m.activeTab = 0
+	if got := m.selectedTask(); got != nil {
+		t.Errorf("selectedTask on separator should be nil, got %q", got.Title)
+	}
+
+	// Select the regular item (index 1).
+	m.lists[0].Select(1)
+	if got := m.selectedTask(); got == nil {
+		t.Fatal("selectedTask on regular item should not be nil")
+	} else if got.ID != "01X" {
+		t.Errorf("selectedTask().ID = %q, want %q", got.ID, "01X")
+	}
+}
+
+func TestSeparatorRender_ContainsLabel(t *testing.T) {
+	// Verify that the separator renderer produces output containing the label.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := newTestModel(t)
+	delegate := newItemDelegate(m)
+
+	sep := newSeparatorItem("Week")
+	lm := m.lists[0]
+	lm.SetItems([]list.Item{sep})
+	lm.SetSize(60, 10)
+
+	var buf bytes.Buffer
+	delegate.Render(&buf, lm, 0, sep)
+	out := buf.String()
+	if !strings.Contains(out, "Week") {
+		t.Errorf("separator render should contain label %q, got %q", "Week", out)
+	}
+	if !strings.Contains(out, "──") {
+		t.Errorf("separator render should contain dash decoration, got %q", out)
+	}
+}
+
+// --- Task 4: tag view reload tests ------------------------------------------
+
+// helper: create a task with specific schedule bucket and tags.
+func makeTask(t *testing.T, id, title, bucket string, tags []string) model.Task {
+	t.Helper()
+	sched, err := schedule.Parse(bucket, time.Now())
+	if err != nil {
+		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
+	}
+	return model.Task{
+		ID:       id,
+		Title:    title,
+		Status:   "open",
+		Schedule: sched,
+		Position: 1000,
+		Tags:     tags,
+	}
+}
+
+func TestRebuildForTagView_SwitchesViewMode(t *testing.T) {
+	task1 := makeTask(t, "01TAG1", "task with work tag", schedule.Today, []string{"work"})
+	task2 := makeTask(t, "01TAG2", "task with home tag", schedule.Today, []string{"home"})
+	m := newTestModel(t, task1, task2)
+
+	if m.viewMode != viewSchedule {
+		t.Fatalf("expected viewSchedule, got %d", m.viewMode)
+	}
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	if m.viewMode != viewTag {
+		t.Errorf("expected viewTag after rebuild, got %d", m.viewMode)
+	}
+	if m.tagTabs == nil {
+		t.Fatal("tagTabs should be populated after rebuild")
+	}
+}
+
+func TestRebuildForTagView_CreatesCorrectTabs(t *testing.T) {
+	task1 := makeTask(t, "01TAG1", "work task", schedule.Today, []string{"work"})
+	task2 := makeTask(t, "01TAG2", "home task", schedule.Week, []string{"home"})
+	task3 := makeTask(t, "01TAG3", "untagged task", schedule.Tomorrow, nil)
+	m := newTestModel(t, task1, task2, task3)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// Expect: Active, home, work, Untagged (alphabetical for middle tags)
+	if len(m.tabs) != 4 {
+		t.Fatalf("expected 4 tabs, got %d", len(m.tabs))
+	}
+	wantLabels := []string{"Active", "home", "work", "Untagged"}
+	for i, want := range wantLabels {
+		if m.tabs[i].label != want {
+			t.Errorf("tab %d: want label %q, got %q", i, want, m.tabs[i].label)
+		}
+	}
+	// Lists should match tab count.
+	if len(m.lists) != len(m.tabs) {
+		t.Errorf("lists count %d != tabs count %d", len(m.lists), len(m.tabs))
+	}
+}
+
+func TestRebuildForScheduleView_RestoresDefaults(t *testing.T) {
+	task1 := makeTask(t, "01TAG1", "work task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task1)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	if m.viewMode != viewTag {
+		t.Fatalf("expected viewTag")
+	}
+
+	if err := m.rebuildForScheduleView(); err != nil {
+		t.Fatalf("rebuildForScheduleView: %v", err)
+	}
+
+	if m.viewMode != viewSchedule {
+		t.Errorf("expected viewSchedule after restore, got %d", m.viewMode)
+	}
+	if m.tagTabs != nil {
+		t.Errorf("tagTabs should be nil after restore")
+	}
+	if len(m.tabs) != len(defaultTabs) {
+		t.Errorf("tabs count %d != defaultTabs count %d", len(m.tabs), len(defaultTabs))
+	}
+}
+
+func TestTagViewReload_TasksAppearUnderCorrectTag(t *testing.T) {
+	task1 := makeTask(t, "01TAG1", "work task", schedule.Today, []string{"work"})
+	task2 := makeTask(t, "01TAG2", "home task", schedule.Today, []string{"home"})
+	m := newTestModel(t, task1, task2)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// Find home tab (should be index 1: Active, home, work, Untagged).
+	homeIdx := -1
+	workIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "home" {
+			homeIdx = i
+		}
+		if tt.tag == "work" {
+			workIdx = i
+		}
+	}
+	if homeIdx == -1 || workIdx == -1 {
+		t.Fatalf("could not find home/work tabs; tagTabs: %v", m.tagTabs)
+	}
+
+	// Home tab should have home task (plus separator).
+	homeItems := m.lists[homeIdx].Items()
+	foundHome := false
+	for _, it := range homeItems {
+		if i, ok := it.(item); ok && !i.isSeparator && i.task.ID == "01TAG2" {
+			foundHome = true
+		}
+	}
+	if !foundHome {
+		t.Errorf("home tab should contain task 01TAG2")
+	}
+
+	// Work tab should have work task.
+	workItems := m.lists[workIdx].Items()
+	foundWork := false
+	for _, it := range workItems {
+		if i, ok := it.(item); ok && !i.isSeparator && i.task.ID == "01TAG1" {
+			foundWork = true
+		}
+	}
+	if !foundWork {
+		t.Errorf("work tab should contain task 01TAG1")
+	}
+}
+
+func TestTagViewReload_BucketGroupingAndSeparators(t *testing.T) {
+	// Two tasks in same tag, different buckets.
+	task1 := makeTask(t, "01BKT1", "today task", schedule.Today, []string{"proj"})
+	task1.Position = 1000
+	task2 := makeTask(t, "01BKT2", "week task", schedule.Week, []string{"proj"})
+	task2.Position = 2000
+	m := newTestModel(t, task1, task2)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// Find proj tab.
+	projIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "proj" {
+			projIdx = i
+		}
+	}
+	if projIdx == -1 {
+		t.Fatal("could not find proj tab")
+	}
+
+	items := m.lists[projIdx].Items()
+	// Expect: separator("Today"), task1, separator("Week"), task2
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items (2 separators + 2 tasks), got %d", len(items))
+	}
+
+	// First item: Today separator.
+	sep0 := items[0].(item)
+	if !sep0.isSeparator || sep0.task.Title != "Today" {
+		t.Errorf("item 0: expected Today separator, got separator=%v title=%q", sep0.isSeparator, sep0.task.Title)
+	}
+
+	// Second item: today task.
+	it1 := items[1].(item)
+	if it1.isSeparator || it1.task.ID != "01BKT1" {
+		t.Errorf("item 1: expected task 01BKT1, got separator=%v id=%q", it1.isSeparator, it1.task.ID)
+	}
+
+	// Third item: Week separator.
+	sep2 := items[2].(item)
+	if !sep2.isSeparator || sep2.task.Title != "Week" {
+		t.Errorf("item 2: expected Week separator, got separator=%v title=%q", sep2.isSeparator, sep2.task.Title)
+	}
+
+	// Fourth item: week task.
+	it3 := items[3].(item)
+	if it3.isSeparator || it3.task.ID != "01BKT2" {
+		t.Errorf("item 3: expected task 01BKT2, got separator=%v id=%q", it3.isSeparator, it3.task.ID)
+	}
+}
+
+func TestTagViewReload_DoneTasksAppearUnderDoneSeparator(t *testing.T) {
+	openTask := makeTask(t, "01OPEN", "open task", schedule.Today, []string{"proj"})
+	openTask.Position = 1000
+
+	doneTask := makeTask(t, "01DONE", "done task", schedule.Today, []string{"proj"})
+	doneTask.Status = "done"
+	doneTask.UpdatedAt = "2026-04-14T10:00:00Z"
+
+	m := newTestModel(t, openTask, doneTask)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	projIdx := findTabByLabel(t, m, "proj")
+	items := m.lists[projIdx].Items()
+
+	// Expect: separator("Today"), openTask, separator("Done"), doneTask
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+
+	sep0 := items[0].(item)
+	if !sep0.isSeparator || sep0.task.Title != "Today" {
+		t.Errorf("item 0: expected Today separator, got separator=%v title=%q", sep0.isSeparator, sep0.task.Title)
+	}
+
+	it1 := items[1].(item)
+	if it1.task.ID != "01OPEN" {
+		t.Errorf("item 1: expected 01OPEN, got %q", it1.task.ID)
+	}
+
+	sep2 := items[2].(item)
+	if !sep2.isSeparator || sep2.task.Title != "Done" {
+		t.Errorf("item 2: expected Done separator, got separator=%v title=%q", sep2.isSeparator, sep2.task.Title)
+	}
+
+	it3 := items[3].(item)
+	if it3.task.ID != "01DONE" {
+		t.Errorf("item 3: expected 01DONE, got %q", it3.task.ID)
+	}
+}
+
+func TestTagViewReload_DoneOnlyTagHidden(t *testing.T) {
+	// A tag with only done tasks should NOT create a tab.
+	doneTask := makeTask(t, "01DTAG", "done tagged", schedule.Today, []string{"archived"})
+	doneTask.Status = "done"
+
+	m := newTestModel(t, doneTask)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// The "archived" tab should NOT exist — only Active and Untagged.
+	for _, tt := range m.tagTabs {
+		if tt.label == "archived" {
+			t.Error("done-only tag 'archived' should not create a tab")
+		}
+	}
+}
+
+func TestTagViewReload_DoneTasksVisibleWhenOpenTaskExists(t *testing.T) {
+	// A tag with open + done tasks: tab exists and shows both.
+	openTask := makeTask(t, "01OPEN", "open task", schedule.Today, []string{"proj"})
+	openTask.Position = 1000
+	doneTask := makeTask(t, "01DONE", "done task", schedule.Today, []string{"proj"})
+	doneTask.Status = "done"
+
+	m := newTestModel(t, openTask, doneTask)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	idx := findTabByLabel(t, m, "proj")
+	items := m.lists[idx].Items()
+
+	// Should have: separator("Today"), openTask, separator("Done"), doneTask
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+	if items[2].(item).task.Title != "Done" {
+		t.Errorf("item 2: expected Done separator, got %q", items[2].(item).task.Title)
+	}
+	if items[3].(item).task.ID != "01DONE" {
+		t.Errorf("item 3: expected 01DONE, got %q", items[3].(item).task.ID)
+	}
+}
+
+func TestTagViewReload_SortsByPositionWithinBucket(t *testing.T) {
+	task1 := makeTask(t, "01POS1", "second", schedule.Today, []string{"proj"})
+	task1.Position = 2000
+	task2 := makeTask(t, "01POS2", "first", schedule.Today, []string{"proj"})
+	task2.Position = 1000
+	m := newTestModel(t, task1, task2)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	projIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "proj" {
+			projIdx = i
+		}
+	}
+	if projIdx == -1 {
+		t.Fatal("could not find proj tab")
+	}
+
+	items := m.lists[projIdx].Items()
+	// Expect: separator, first (pos 1000), second (pos 2000)
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	it1 := items[1].(item)
+	it2 := items[2].(item)
+	if it1.task.ID != "01POS2" || it2.task.ID != "01POS1" {
+		t.Errorf("expected tasks sorted by position: got %q then %q", it1.task.ID, it2.task.ID)
+	}
+}
+
+func TestTagViewReload_UntaggedTabFiltering(t *testing.T) {
+	task1 := makeTask(t, "01UNT1", "untagged task", schedule.Today, nil)
+	task2 := makeTask(t, "01UNT2", "tagged task", schedule.Today, []string{"work"})
+	// A task with only the active tag should appear as "untagged" in terms of
+	// VisibleTags, but it is active and appears in the Active tab.
+	task3 := makeTask(t, "01UNT3", "active only", schedule.Today, []string{model.ActiveTag})
+	m := newTestModel(t, task1, task2, task3)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// Find untagged tab (last one).
+	untaggedIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.isUntagged {
+			untaggedIdx = i
+		}
+	}
+	if untaggedIdx == -1 {
+		t.Fatal("could not find untagged tab")
+	}
+
+	// Collect task IDs from the untagged tab.
+	var taskIDs []string
+	for _, it := range m.lists[untaggedIdx].Items() {
+		i := it.(item)
+		if !i.isSeparator {
+			taskIDs = append(taskIDs, i.task.ID)
+		}
+	}
+
+	// task1 (nil tags) should be there, task3 (only active tag) should also
+	// be there since VisibleTags filters out ActiveTag.
+	found1, found3 := false, false
+	for _, id := range taskIDs {
+		if id == "01UNT1" {
+			found1 = true
+		}
+		if id == "01UNT3" {
+			found3 = true
+		}
+	}
+	if !found1 {
+		t.Errorf("untagged tab should contain task 01UNT1 (nil tags)")
+	}
+	if !found3 {
+		t.Errorf("untagged tab should contain task 01UNT3 (only active tag)")
+	}
+
+	// task2 (tagged with "work") should NOT be in untagged.
+	for _, id := range taskIDs {
+		if id == "01UNT2" {
+			t.Errorf("untagged tab should NOT contain task 01UNT2 (has work tag)")
+		}
+	}
+}
+
+func TestTagViewReload_ActiveTabFiltering(t *testing.T) {
+	task1 := makeTask(t, "01ACT1", "active work", schedule.Today, []string{"work", model.ActiveTag})
+	task2 := makeTask(t, "01ACT2", "not active", schedule.Today, []string{"work"})
+	m := newTestModel(t, task1, task2)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// Active tab is first (index 0).
+	activeIdx := 0
+	if !m.tagTabs[activeIdx].isActive {
+		t.Fatalf("expected first tab to be Active")
+	}
+
+	var taskIDs []string
+	for _, it := range m.lists[activeIdx].Items() {
+		i := it.(item)
+		if !i.isSeparator {
+			taskIDs = append(taskIDs, i.task.ID)
+		}
+	}
+
+	if len(taskIDs) != 1 || taskIDs[0] != "01ACT1" {
+		t.Errorf("active tab should only contain 01ACT1; got %v", taskIDs)
+	}
+}
+
+func TestTagViewReload_MultipleTagsTaskAppearsInEachTab(t *testing.T) {
+	task := makeTask(t, "01MTG1", "multi-tag task", schedule.Today, []string{"home", "work"})
+	m := newTestModel(t, task)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	homeIdx, workIdx := -1, -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "home" {
+			homeIdx = i
+		}
+		if tt.tag == "work" {
+			workIdx = i
+		}
+	}
+	if homeIdx == -1 || workIdx == -1 {
+		t.Fatalf("could not find home/work tabs")
+	}
+
+	// Task should appear in both tabs.
+	for _, idx := range []int{homeIdx, workIdx} {
+		found := false
+		for _, it := range m.lists[idx].Items() {
+			if i, ok := it.(item); ok && !i.isSeparator && i.task.ID == "01MTG1" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("task 01MTG1 should appear in tab %d (%s)", idx, m.tabs[idx].label)
+		}
+	}
+}
+
+func TestTagViewReload_EmptyBucketsOmitted(t *testing.T) {
+	// A single task in today bucket should only produce one separator.
+	task := makeTask(t, "01EMP1", "today only", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	workIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "work" {
+			workIdx = i
+		}
+	}
+	if workIdx == -1 {
+		t.Fatal("could not find work tab")
+	}
+
+	items := m.lists[workIdx].Items()
+	// Should have exactly: Today separator + 1 task = 2 items.
+	if len(items) != 2 {
+		t.Errorf("expected 2 items (1 separator + 1 task), got %d", len(items))
+	}
+	if sep := items[0].(item); !sep.isSeparator || sep.task.Title != "Today" {
+		t.Errorf("first item should be Today separator, got separator=%v title=%q", sep.isSeparator, sep.task.Title)
+	}
+}
+
+func TestActivePanel_HiddenInTagView(t *testing.T) {
+	task := makeTask(t, "01APH1", "active task", schedule.Today, []string{model.ActiveTag})
+	m := newTestModel(t, task)
+	m.width = 80
+	m.height = 40
+
+	// In schedule view, active panel should be visible.
+	if m.activePanelView() == "" {
+		t.Error("active panel should be visible in schedule view with active tasks")
+	}
+	if m.activePanelHeight() == 0 {
+		t.Error("activePanelHeight should be > 0 in schedule view with active tasks")
+	}
+
+	// Switch to tag view.
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	if m.activePanelView() != "" {
+		t.Error("active panel should be hidden in tag view")
+	}
+	if m.activePanelHeight() != 0 {
+		t.Errorf("activePanelHeight should be 0 in tag view, got %d", m.activePanelHeight())
+	}
+}
+
+func TestActivePanel_VisibleAgainAfterScheduleView(t *testing.T) {
+	task := makeTask(t, "01APR1", "active task", schedule.Today, []string{model.ActiveTag})
+	m := newTestModel(t, task)
+	m.width = 80
+	m.height = 40
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	if m.activePanelView() != "" {
+		t.Error("should be hidden in tag view")
+	}
+
+	if err := m.rebuildForScheduleView(); err != nil {
+		t.Fatalf("rebuildForScheduleView: %v", err)
+	}
+	if m.activePanelView() == "" {
+		t.Error("active panel should be visible again in schedule view")
+	}
+}
+
+func TestBucketDisplayName(t *testing.T) {
+	cases := []struct {
+		bucket, want string
+	}{
+		{schedule.Today, "Today"},
+		{schedule.Tomorrow, "Tomorrow"},
+		{schedule.Week, "Week"},
+		{schedule.Month, "Month"},
+		{schedule.Someday, "Someday"},
+		{"unknown", "unknown"},
+	}
+	for _, tc := range cases {
+		got := bucketDisplayName(tc.bucket)
+		if got != tc.want {
+			t.Errorf("bucketDisplayName(%q) = %q, want %q", tc.bucket, got, tc.want)
+		}
+	}
+}
+
+func TestTaskHasTag(t *testing.T) {
+	task := model.Task{Tags: []string{"work", "home"}}
+	if !taskHasTag(task, "work") {
+		t.Error("should have work tag")
+	}
+	if !taskHasTag(task, "home") {
+		t.Error("should have home tag")
+	}
+	if taskHasTag(task, "other") {
+		t.Error("should not have other tag")
+	}
+	if taskHasTag(model.Task{}, "work") {
+		t.Error("empty task should not have work tag")
+	}
+}
+
+func TestRebuildForTagView_ClampsActiveTab(t *testing.T) {
+	// Start in schedule view with 6 tabs, set activeTab to 5 (Done tab).
+	m := newTestModel(t)
+	m.activeTab = 5
+
+	// Tag view may have fewer tabs (Active + Untagged = 2 if no tags).
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	if m.activeTab >= len(m.tabs) {
+		t.Errorf("activeTab %d out of range for %d tabs", m.activeTab, len(m.tabs))
+	}
+}
+
+func TestTagViewReload_BucketOrderCorrect(t *testing.T) {
+	// Create tasks in reverse bucket order to verify ordering is correct.
+	task1 := makeTask(t, "01ORD1", "someday task", schedule.Someday, []string{"proj"})
+	task1.Position = 1000
+	task2 := makeTask(t, "01ORD2", "today task", schedule.Today, []string{"proj"})
+	task2.Position = 1000
+	task3 := makeTask(t, "01ORD3", "month task", schedule.Month, []string{"proj"})
+	task3.Position = 1000
+	task4 := makeTask(t, "01ORD4", "tomorrow task", schedule.Tomorrow, []string{"proj"})
+	task4.Position = 1000
+	task5 := makeTask(t, "01ORD5", "week task", schedule.Week, []string{"proj"})
+	task5.Position = 1000
+	m := newTestModel(t, task1, task2, task3, task4, task5)
+
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	projIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "proj" {
+			projIdx = i
+		}
+	}
+	if projIdx == -1 {
+		t.Fatal("could not find proj tab")
+	}
+
+	// Extract separator labels in order.
+	var sepLabels []string
+	for _, it := range m.lists[projIdx].Items() {
+		i := it.(item)
+		if i.isSeparator {
+			sepLabels = append(sepLabels, i.task.Title)
+		}
+	}
+	wantOrder := []string{"Today", "Tomorrow", "Week", "Month", "Someday"}
+	if len(sepLabels) != len(wantOrder) {
+		t.Fatalf("expected %d separators, got %d: %v", len(wantOrder), len(sepLabels), sepLabels)
+	}
+	for i, want := range wantOrder {
+		if sepLabels[i] != want {
+			t.Errorf("separator %d: want %q, got %q", i, want, sepLabels[i])
+		}
+	}
+}
+
+// --- Task 5: view mode toggle (v key) tests ---------------------------------
+
+func TestToggleViewMode_ScheduleToTag(t *testing.T) {
+	task1 := makeTask(t, "01TV01", "work task", schedule.Today, []string{"work"})
+	task2 := makeTask(t, "01TV02", "home task", schedule.Tomorrow, []string{"home"})
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Start in schedule view.
+	if m.viewMode != viewSchedule {
+		t.Fatalf("initial viewMode = %d, want viewSchedule", m.viewMode)
+	}
+
+	// Press v to toggle to tag view.
+	m, _ = key(t, m, "v")
+
+	if m.viewMode != viewTag {
+		t.Errorf("viewMode after v = %d, want viewTag", m.viewMode)
+	}
+	// Should have tag tabs now: Active, home, work, Untagged.
+	if len(m.tabs) < 3 {
+		t.Errorf("expected at least 3 tabs in tag view, got %d", len(m.tabs))
+	}
+	if m.tagTabs[0].label != "Active" {
+		t.Errorf("first tab label = %q, want Active", m.tagTabs[0].label)
+	}
+}
+
+func TestToggleViewMode_TagToSchedule(t *testing.T) {
+	task1 := makeTask(t, "01TV03", "work task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task1)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view first.
+	m, _ = key(t, m, "v")
+	if m.viewMode != viewTag {
+		t.Fatalf("viewMode after first v = %d, want viewTag", m.viewMode)
+	}
+
+	// Switch back to schedule view.
+	m, _ = key(t, m, "v")
+	if m.viewMode != viewSchedule {
+		t.Errorf("viewMode after second v = %d, want viewSchedule", m.viewMode)
+	}
+	// Default tabs should be restored.
+	if len(m.tabs) != len(defaultTabs) {
+		t.Errorf("tab count = %d, want %d", len(m.tabs), len(defaultTabs))
+	}
+	if m.tagTabs != nil {
+		t.Errorf("tagTabs should be nil in schedule view, got %v", m.tagTabs)
+	}
+}
+
+func TestToggleViewMode_RoundTrip(t *testing.T) {
+	task1 := makeTask(t, "01TV04", "alpha task", schedule.Today, []string{"proj"})
+	task2 := makeTask(t, "01TV05", "beta task", schedule.Week, []string{"proj"})
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Schedule -> Tag -> Schedule.
+	m, _ = key(t, m, "v")
+	if m.viewMode != viewTag {
+		t.Fatalf("after first toggle: viewMode = %d, want viewTag", m.viewMode)
+	}
+	m, _ = key(t, m, "v")
+	if m.viewMode != viewSchedule {
+		t.Fatalf("after second toggle: viewMode = %d, want viewSchedule", m.viewMode)
+	}
+
+	// Verify schedule view is functional: Today tab should have task1.
+	todayItems := m.lists[0].Items()
+	found := false
+	for _, it := range todayItems {
+		if it.(item).task.ID == "01TV04" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("task 01TV04 not found in Today tab after round-trip toggle")
+	}
+}
+
+func TestToggleViewMode_CursorPreservation(t *testing.T) {
+	// Create two tasks in Today. Select the second one, toggle, and verify
+	// the cursor lands on the same task in the new view.
+	task1 := makeTask(t, "01TV06", "first task", schedule.Today, []string{"work"})
+	task1.Position = 1000
+	task2 := makeTask(t, "01TV07", "second task", schedule.Today, []string{"work"})
+	task2.Position = 2000
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Select the second task in the Today tab.
+	m, _ = key(t, m, "down")
+	sel := m.selectedTask()
+	if sel == nil || sel.ID != "01TV07" {
+		t.Fatalf("expected selected task 01TV07, got %v", sel)
+	}
+
+	// Toggle to tag view.
+	m, _ = key(t, m, "v")
+
+	// Find which tab we're on and verify the selected task ID.
+	sel = m.selectedTask()
+	if sel == nil {
+		t.Fatal("no task selected after toggle to tag view")
+	}
+	if sel.ID != "01TV07" {
+		t.Errorf("cursor after toggle: selected task = %q, want 01TV07", sel.ID)
+	}
+}
+
+func TestToggleViewMode_CursorPreservation_TagToSchedule(t *testing.T) {
+	task1 := makeTask(t, "01TV08", "first task", schedule.Today, []string{"proj"})
+	task1.Position = 1000
+	task2 := makeTask(t, "01TV09", "second task", schedule.Today, []string{"proj"})
+	task2.Position = 2000
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Toggle to tag view.
+	m, _ = key(t, m, "v")
+
+	// Find the proj tab and navigate to second task.
+	projIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "proj" {
+			projIdx = i
+			break
+		}
+	}
+	if projIdx == -1 {
+		t.Fatal("could not find proj tab")
+	}
+	m.activeTab = projIdx
+	m.recomputeLayout()
+
+	// The proj tab has: separator("Today"), task1, task2. Navigate down.
+	// Items: [sep, task1, task2] — cursor starts at 0 (sep).
+	// Move down to task1, then down to task2.
+	m, _ = key(t, m, "down") // task1
+	m, _ = key(t, m, "down") // task2
+	sel := m.selectedTask()
+	if sel == nil || sel.ID != "01TV09" {
+		selID := ""
+		if sel != nil {
+			selID = sel.ID
+		}
+		t.Fatalf("expected 01TV09 selected, got %q", selID)
+	}
+
+	// Toggle back to schedule view.
+	m, _ = key(t, m, "v")
+
+	sel = m.selectedTask()
+	if sel == nil {
+		t.Fatal("no task selected after toggle back to schedule view")
+	}
+	if sel.ID != "01TV09" {
+		t.Errorf("cursor after toggle back: selected task = %q, want 01TV09", sel.ID)
+	}
+}
+
+func TestToggleViewMode_RecomputeLayout(t *testing.T) {
+	// Create active tasks so the panel would be visible in schedule view.
+	task := makeTask(t, "01TV10", "active task", schedule.Today, []string{model.ActiveTag})
+	m := newTestModel(t, task)
+	m.width = 80
+	m.height = 40
+	m.recomputeLayout()
+
+	// In schedule view, active panel height is > 0.
+	schedHeight := m.activePanelHeight()
+	if schedHeight == 0 {
+		t.Fatal("activePanelHeight should be > 0 in schedule view with active tasks")
+	}
+
+	// Get list height in schedule view.
+	schedListH := m.lists[0].Height()
+
+	// Toggle to tag view.
+	m, _ = key(t, m, "v")
+
+	// Active panel hidden in tag view.
+	if m.activePanelHeight() != 0 {
+		t.Error("activePanelHeight should be 0 in tag view")
+	}
+
+	// List should be taller in tag view (recovered the panel space).
+	tagListH := m.lists[0].Height()
+	if tagListH <= schedListH {
+		t.Errorf("tag view list height (%d) should be > schedule view list height (%d)", tagListH, schedListH)
+	}
+}
+
+func TestToggleViewMode_HelpLine_ScheduleView(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+	m.viewMode = viewSchedule
+
+	help := m.helpLine()
+	if !strings.Contains(help, "v tags") {
+		t.Errorf("schedule view help line should contain 'v tags', got: %s", help)
+	}
+}
+
+func TestToggleViewMode_HelpLine_TagView(t *testing.T) {
+	task := makeTask(t, "01TV11", "task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	m.mode = modeNormal
+
+	help := m.helpLine()
+	if !strings.Contains(help, "v schedule") {
+		t.Errorf("tag view help line should contain 'v schedule', got: %s", help)
+	}
+	// Tag view normal help should not include "1-6 jump" since tabs are dynamic.
+	if strings.Contains(help, "1-6 jump") {
+		t.Errorf("tag view help line should not contain '1-6 jump', got: %s", help)
+	}
+}
+
+func TestToggleViewMode_GrabHelpLine_TagView(t *testing.T) {
+	task := makeTask(t, "01TV12", "task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	m.mode = modeGrab
+
+	help := m.helpLine()
+	// Tag view grab help should not contain ←/→ bucket hint.
+	if strings.Contains(help, "←/→ bucket") {
+		t.Errorf("tag view grab help should not contain '←/→ bucket', got: %s", help)
+	}
+	if !strings.Contains(help, "GRAB") {
+		t.Errorf("tag view grab help should contain 'GRAB', got: %s", help)
+	}
+}
+
+func TestToggleViewMode_GrabHelpLine_ScheduleView(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeGrab
+
+	help := m.helpLine()
+	if !strings.Contains(help, "←/→ bucket") {
+		t.Errorf("schedule view grab help should contain '←/→ bucket', got: %s", help)
+	}
+}
+
+func TestToggleViewMode_TabBarWorksWithDynamicTabs(t *testing.T) {
+	task1 := makeTask(t, "01TV13", "work task", schedule.Today, []string{"work"})
+	task2 := makeTask(t, "01TV14", "home task", schedule.Today, []string{"home"})
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Toggle to tag view.
+	m, _ = key(t, m, "v")
+
+	// View should render without panicking.
+	view := m.View()
+	if view == "" {
+		t.Error("View() returned empty string in tag view")
+	}
+	// Tag tabs should be visible in the rendered output.
+	if !strings.Contains(view, "Active") {
+		t.Error("tag view should show Active tab")
+	}
+	if !strings.Contains(view, "Untagged") {
+		t.Error("tag view should show Untagged tab")
+	}
+}
+
+// --- Task 6: Grab mode in tag view ------------------------------------------
+
+func TestGrabTagView_LeftRightNoOp(t *testing.T) {
+	// In tag view, left/right keys should be no-ops during grab mode.
+	task1 := makeTask(t, "01GTL1", "task one", schedule.Today, []string{"work"})
+	m := newTestModel(t, task1)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view. The cursor focuses on the "work" tab because
+	// task1 was selected in schedule view and focusTaskByID finds it there.
+	m, _ = key(t, m, "v")
+	if m.tabs[m.activeTab].label != "work" {
+		t.Fatalf("expected work tab after toggle, got %q", m.tabs[m.activeTab].label)
+	}
+
+	// Select the task (skip separator) and grab it.
+	m.lists[m.activeTab].Select(1) // index 0 is separator, 1 is the task
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+
+	origTab := m.activeTab
+	origIndex := m.grabIndex
+
+	// Press right — should be no-op.
+	m, _ = key(t, m, "right")
+	if m.activeTab != origTab {
+		t.Errorf("right changed activeTab from %d to %d", origTab, m.activeTab)
+	}
+	if m.grabIndex != origIndex {
+		t.Errorf("right changed grabIndex from %d to %d", origIndex, m.grabIndex)
+	}
+
+	// Press left — should be no-op.
+	m, _ = key(t, m, "left")
+	if m.activeTab != origTab {
+		t.Errorf("left changed activeTab from %d to %d", origTab, m.activeTab)
+	}
+	if m.grabIndex != origIndex {
+		t.Errorf("left changed grabIndex from %d to %d", origIndex, m.grabIndex)
+	}
+
+	// Cancel grab to leave clean state.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc = %v, want modeNormal", m.mode)
+	}
+}
+
+func TestGrabTagView_SkipsSeparatorOnMoveDown(t *testing.T) {
+	// Create two tasks in different buckets under the same tag so the tag
+	// tab has: [sep:Today, task1, sep:Week, task2].
+	task1 := model.Task{
+		ID: "01GTS1", Title: "today task", Status: "open",
+		Position: 1000, Tags: []string{"work"},
+	}
+	task1.Schedule = expectSchedule(t, schedule.Today)
+	task2 := model.Task{
+		ID: "01GTS2", Title: "week task", Status: "open",
+		Position: 1000, Tags: []string{"work"},
+	}
+	task2.Schedule = expectSchedule(t, schedule.Week)
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view. Cursor auto-focuses on "work" tab since task1 was
+	// selected and has the "work" tag.
+	m, _ = key(t, m, "v")
+	if m.tabs[m.activeTab].label != "work" {
+		// Navigate manually if needed.
+		m.activeTab = findTabByLabel(t, m, "work")
+	}
+
+	// Items should be: [sep:Today, task1, sep:Week, task2]
+	items := m.lists[m.activeTab].Items()
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+	if !items[0].(item).isSeparator {
+		t.Fatal("item 0 should be separator")
+	}
+	if items[1].(item).task.ID != "01GTS1" {
+		t.Fatal("item 1 should be task1")
+	}
+	if !items[2].(item).isSeparator {
+		t.Fatal("item 2 should be separator")
+	}
+	if items[3].(item).task.ID != "01GTS2" {
+		t.Fatal("item 3 should be task2")
+	}
+
+	// Select task1 (index 1) and grab it.
+	m.lists[m.activeTab].Select(1)
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("mode = %v, want modeGrab", m.mode)
+	}
+	if m.grabIndex != 1 {
+		t.Fatalf("grabIndex = %d, want 1", m.grabIndex)
+	}
+
+	// Move down — should skip the separator at index 2 and land at index 3
+	// (well, the task that was at index 3).
+	m, _ = key(t, m, "down")
+
+	// After the move, task1 should be in the Week group (below the Week separator).
+	items = m.lists[m.activeTab].Items()
+	// Find where task1 ended up and verify a Week separator is above it.
+	found := false
+	for i, it := range items {
+		if it.(item).task.ID == "01GTS1" {
+			found = true
+			// There must be a separator above this task.
+			foundSep := false
+			for j := i - 1; j >= 0; j-- {
+				if items[j].(item).isSeparator {
+					label := items[j].(item).task.Title
+					if label != "Week" {
+						t.Errorf("nearest separator above task1 = %q, want Week", label)
+					}
+					foundSep = true
+					break
+				}
+			}
+			if !foundSep {
+				t.Error("no separator found above task1")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("task1 not found in items after move down")
+	}
+
+	// Cancel.
+	m, _ = key(t, m, "esc")
+}
+
+func TestGrabTagView_SkipsSeparatorOnMoveUp(t *testing.T) {
+	// [sep:Today, task1, sep:Week, task2] — grab task2, move up should
+	// skip the Week separator and land at the task1 position area.
+	task1 := model.Task{
+		ID: "01GTU1", Title: "today task", Status: "open",
+		Position: 1000, Tags: []string{"dev"},
+	}
+	task1.Schedule = expectSchedule(t, schedule.Today)
+	task2 := model.Task{
+		ID: "01GTU2", Title: "week task", Status: "open",
+		Position: 1000, Tags: []string{"dev"},
+	}
+	task2.Schedule = expectSchedule(t, schedule.Week)
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to the "dev" tab.
+	m.activeTab = findTabByLabel(t, m, "dev")
+
+	// Select task2 (index 3: [sep, t1, sep, t2]).
+	m.lists[m.activeTab].Select(3)
+	m, _ = key(t, m, "m")
+	if m.grabIndex != 3 {
+		t.Fatalf("grabIndex = %d, want 3", m.grabIndex)
+	}
+
+	// Move up — should skip the separator at index 2.
+	m, _ = key(t, m, "up")
+
+	// task2 should now be near task1 (above or below it, but not on a separator).
+	items := m.lists[m.activeTab].Items()
+	for i, it := range items {
+		if it.(item).task.ID == "01GTU2" {
+			if items[i].(item).isSeparator {
+				t.Error("task2 should not be on a separator index")
+			}
+			// Should be before the Week separator (i.e., in the Today group).
+			if i > 2 {
+				t.Errorf("task2 at index %d, expected to be in Today group (<= 2)", i)
+			}
+			break
+		}
+	}
+
+	m, _ = key(t, m, "esc")
+}
+
+func TestGrabTagView_CommitDerivesBucketFromSeparator(t *testing.T) {
+	// Task starts in Today bucket. After moving it past the Week separator
+	// and committing, its schedule should be updated to Week.
+	task1 := model.Task{
+		ID: "01GTC1", Title: "move me", Status: "open",
+		Position: 1000, Tags: []string{"proj"},
+	}
+	task1.Schedule = expectSchedule(t, schedule.Today)
+	task2 := model.Task{
+		ID: "01GTC2", Title: "anchor", Status: "open",
+		Position: 1000, Tags: []string{"proj"},
+	}
+	task2.Schedule = expectSchedule(t, schedule.Week)
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to "proj" tab.
+	m.activeTab = findTabByLabel(t, m, "proj")
+
+	// Items: [sep:Today, task1, sep:Week, task2]
+	items := m.lists[m.activeTab].Items()
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+
+	m.lists[m.activeTab].Select(1) // task1
+	m, _ = key(t, m, "m")
+	if m.grabIndex != 1 {
+		t.Fatalf("grabIndex = %d, want 1", m.grabIndex)
+	}
+
+	// Move down — skips separator, lands in Week group.
+	m, _ = key(t, m, "down")
+
+	// Drop (commit).
+	_, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should dispatch save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Verify the task's schedule is now in the Week bucket.
+	task, err := m.store.GetByPrefix("01GTC1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	bucket := schedule.Bucket(task.Schedule, time.Now())
+	if bucket != schedule.Week {
+		t.Errorf("schedule bucket = %q, want %q (schedule=%q)", bucket, schedule.Week, task.Schedule)
+	}
+}
+
+func TestGrabTagView_CommitPreservesBucketWhenNoChange(t *testing.T) {
+	// Two tasks in the same bucket under the same tag. Reordering within
+	// the bucket should not change their schedule.
+	task1 := model.Task{
+		ID: "01GTP1", Title: "first", Status: "open",
+		Position: 1000, Tags: []string{"misc"},
+	}
+	task1.Schedule = expectSchedule(t, schedule.Today)
+	task2 := model.Task{
+		ID: "01GTP2", Title: "second", Status: "open",
+		Position: 2000, Tags: []string{"misc"},
+	}
+	task2.Schedule = expectSchedule(t, schedule.Today)
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to "misc" tab.
+	m.activeTab = findTabByLabel(t, m, "misc")
+
+	// Items: [sep:Today, first, second]
+	m.lists[m.activeTab].Select(1) // first
+	m, _ = key(t, m, "m")
+
+	// Move down within the same bucket (no separator skip needed).
+	m, _ = key(t, m, "down")
+
+	// Drop.
+	_, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should dispatch save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	// Verify the schedule is still in the Today bucket.
+	task, err := m.store.GetByPrefix("01GTP1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	bucket := schedule.Bucket(task.Schedule, time.Now())
+	if bucket != schedule.Today {
+		t.Errorf("schedule bucket = %q, want %q", bucket, schedule.Today)
+	}
+}
+
+func TestFindBucketAbove(t *testing.T) {
+	// Set up a model in tag view with known separator + task items.
+	task1 := model.Task{
+		ID: "01FBA1", Title: "today task", Status: "open",
+		Position: 1000, Tags: []string{"test"},
+	}
+	task1.Schedule = expectSchedule(t, schedule.Today)
+	task2 := model.Task{
+		ID: "01FBA2", Title: "week task", Status: "open",
+		Position: 1000, Tags: []string{"test"},
+	}
+	task2.Schedule = expectSchedule(t, schedule.Week)
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to "test" tab.
+	m.activeTab = findTabByLabel(t, m, "test")
+
+	// Items: [sep:Today(0), task1(1), sep:Week(2), task2(3)]
+	items := m.lists[m.activeTab].Items()
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+
+	// Test: findBucketAbove with grabIndex at task1 (1) → Today
+	m.grabIndex = 1
+	bucket := m.findBucketAbove()
+	if bucket != schedule.Today {
+		t.Errorf("findBucketAbove at index 1 = %q, want %q", bucket, schedule.Today)
+	}
+
+	// Test: findBucketAbove with grabIndex at task2 (3) → Week
+	m.grabIndex = 3
+	bucket = m.findBucketAbove()
+	if bucket != schedule.Week {
+		t.Errorf("findBucketAbove at index 3 = %q, want %q", bucket, schedule.Week)
+	}
+}
+
+func TestBucketNameFromLabel(t *testing.T) {
+	tests := []struct {
+		label string
+		want  string
+	}{
+		{"Today", schedule.Today},
+		{"Tomorrow", schedule.Tomorrow},
+		{"Week", schedule.Week},
+		{"Month", schedule.Month},
+		{"Someday", schedule.Someday},
+		{"custom", "custom"}, // fallback
+	}
+	for _, tc := range tests {
+		got := bucketNameFromLabel(tc.label)
+		if got != tc.want {
+			t.Errorf("bucketNameFromLabel(%q) = %q, want %q", tc.label, got, tc.want)
+		}
+	}
+}
+
+func TestGrabTagView_GKeySkipsSeparator(t *testing.T) {
+	// In tag view, pressing 'g' (go to top) should skip the first separator.
+	task1 := model.Task{
+		ID: "01GTG1", Title: "task one", Status: "open",
+		Position: 1000, Tags: []string{"alpha"},
+	}
+	task1.Schedule = expectSchedule(t, schedule.Today)
+	task2 := model.Task{
+		ID: "01GTG2", Title: "task two", Status: "open",
+		Position: 2000, Tags: []string{"alpha"},
+	}
+	task2.Schedule = expectSchedule(t, schedule.Today)
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to "alpha" tab.
+	m.activeTab = findTabByLabel(t, m, "alpha")
+
+	// Items: [sep:Today(0), task1(1), task2(2)]
+	items := m.lists[m.activeTab].Items()
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+
+	m.lists[m.activeTab].Select(2) // task2
+	m, _ = key(t, m, "m")
+	if m.grabIndex != 2 {
+		t.Fatalf("grabIndex = %d, want 2", m.grabIndex)
+	}
+
+	// Press 'g' — should go to index 1 (skipping separator at 0).
+	m, _ = key(t, m, "g")
+	if m.grabIndex == 0 {
+		t.Error("g should not land on separator at index 0")
+	}
+	if m.grabIndex != 1 {
+		t.Errorf("grabIndex after g = %d, want 1", m.grabIndex)
+	}
+
+	m, _ = key(t, m, "esc")
+}
+
+func TestGrabTagView_ComputeGrabPositionSkipsSeparators(t *testing.T) {
+	// Verify that computeGrabPosition ignores separator items when
+	// finding neighbors. After moving t1 past the Week separator, it lands
+	// before t2 (between the separator and t2). The position should be
+	// derived from t2 alone (no real task above, separator is skipped).
+	task1 := model.Task{
+		ID: "01GCP1", Title: "t1", Status: "open",
+		Position: 1000, Tags: []string{"pos"},
+	}
+	task1.Schedule = expectSchedule(t, schedule.Today)
+	task2 := model.Task{
+		ID: "01GCP2", Title: "t2", Status: "open",
+		Position: 5000, Tags: []string{"pos"},
+	}
+	task2.Schedule = expectSchedule(t, schedule.Week)
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to "pos" tab.
+	m.activeTab = findTabByLabel(t, m, "pos")
+
+	// Items: [sep:Today(0), t1(1), sep:Week(2), t2(3)]
+	items := m.lists[m.activeTab].Items()
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+
+	// Move t1 down past Week separator.
+	// After move: [sep:Today(0), sep:Week(1), t1(2), t2(3)]
+	m.lists[m.activeTab].Select(1) // t1
+	m, _ = key(t, m, "m")
+	m, _ = key(t, m, "down") // skip separator
+
+	// t1 is now between the Week separator and t2. computeGrabPosition
+	// should skip both separators (prev=nil, next=t2) and return t2.Position/2.
+	pos := m.computeGrabPosition("01GCP1")
+	if pos <= 0 || pos >= 5000 {
+		t.Errorf("position = %.1f, want between 0 and 5000 (before t2, separators skipped)", pos)
+	}
+	// Specifically, with prev=nil and next=5000, it should be 5000/2 = 2500.
+	if pos != 2500 {
+		t.Errorf("position = %.1f, want 2500.0", pos)
+	}
+
+	m, _ = key(t, m, "esc")
+}
+
+// --- newModel with Options tests ---
+
+// newTestModelWithOpts is like newTestModel but accepts Options to configure
+// the model at creation time.
+func newTestModelWithOpts(t *testing.T, opts Options, tasks ...model.Task) *Model {
+	t.Helper()
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	if err := git.Init(repoPath, ""); err != nil {
+		t.Fatalf("git.Init: %v", err)
+	}
+	s, err := store.New(filepath.Join(repoPath, ".monolog", "tasks"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	for _, task := range tasks {
+		if err := s.Create(task); err != nil {
+			t.Fatalf("store.Create: %v", err)
+		}
+	}
+	if len(tasks) > 0 {
+		if err := git.AutoCommit(repoPath, "seed", "."); err != nil {
+			t.Fatalf("seed commit: %v", err)
+		}
+	}
+	m, err := newModel(s, repoPath, opts)
+	if err != nil {
+		t.Fatalf("newModel: %v", err)
+	}
+	return m
+}
+
+func TestNewModel_DefaultStartsInScheduleView(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{})
+	if m.viewMode != viewSchedule {
+		t.Errorf("default viewMode = %d, want viewSchedule (0)", m.viewMode)
+	}
+	if len(m.tabs) != len(defaultTabs) {
+		t.Errorf("tab count = %d, want %d (default schedule tabs)", len(m.tabs), len(defaultTabs))
+	}
+}
+
+func TestNewModel_StartInTagView(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{StartInTagView: true},
+		model.Task{ID: "01TAG1", Title: "task with tag", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Tags: []string{"work"},
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01TAG2", Title: "untagged task", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Tags: nil,
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	if m.viewMode != viewTag {
+		t.Errorf("viewMode = %d, want viewTag (1)", m.viewMode)
+	}
+	// Should have tag tabs: Active, work, Untagged
+	if len(m.tabs) != 3 {
+		t.Errorf("tab count = %d, want 3 (Active, work, Untagged)", len(m.tabs))
+	}
+	if m.tabs[0].label != "Active" {
+		t.Errorf("tabs[0].label = %q, want %q", m.tabs[0].label, "Active")
+	}
+	if m.tabs[1].label != "work" {
+		t.Errorf("tabs[1].label = %q, want %q", m.tabs[1].label, "work")
+	}
+	if m.tabs[2].label != "Untagged" {
+		t.Errorf("tabs[2].label = %q, want %q", m.tabs[2].label, "Untagged")
+	}
+}
+
+func TestNewModel_StartInTagViewNoTasks(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{StartInTagView: true})
+
+	if m.viewMode != viewTag {
+		t.Errorf("viewMode = %d, want viewTag (1)", m.viewMode)
+	}
+	// Even with no tasks, should have at least Active + Untagged tabs.
+	if len(m.tabs) < 2 {
+		t.Errorf("tab count = %d, want at least 2 (Active, Untagged)", len(m.tabs))
+	}
+}
+
+// --- finding 1: moveGrabTo G key regression fix ---
+
+func TestMoveGrabTo_GKeyPlacesLast(t *testing.T) {
+	// Create 5 tasks in the same bucket so they appear in order.
+	var tasks []model.Task
+	for i, title := range []string{"A", "B", "C", "D", "E"} {
+		tasks = append(tasks, model.Task{
+			ID: fmt.Sprintf("01GK%d", i+1), Title: title, Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: float64((i + 1) * 1000),
+			UpdatedAt: "2026-04-13T00:00:00Z",
+		})
+	}
+	m := newTestModel(t, tasks...)
+	m.width = 80
+	m.height = 40
+
+	// Enter grab mode on the second item (B, index 1).
+	m.activeTab = 0
+	m.lists[m.activeTab].Select(1)
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatal("expected grab mode")
+	}
+	if m.grabIndex != 1 {
+		t.Fatalf("grabIndex = %d, want 1", m.grabIndex)
+	}
+
+	// Press G (go to bottom).
+	m.moveGrabTo(len(m.lists[m.activeTab].Items()) - 1)
+
+	items := m.lists[m.activeTab].Items()
+	last := items[len(items)-1].(item)
+	if last.task.Title != "B" {
+		t.Errorf("last item title = %q, want %q (B should be at the bottom)", last.task.Title, "B")
+	}
+}
+
+// --- finding 11a: findBucketAbove edge cases ---
+
+func TestFindBucketAbove_GrabAtZero(t *testing.T) {
+	task1 := model.Task{
+		ID: "01FBZ1", Title: "task1", Status: "open",
+		Position: 1000, Tags: []string{"test"},
+		Schedule: expectSchedule(t, schedule.Today),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task1)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to "test" tab.
+	m.activeTab = findTabByLabel(t, m, "test")
+
+	// Items: [sep:Today(0), task1(1)]
+	// Set grabIndex to 0 (separator position — edge case).
+	m.grabIndex = 0
+	bucket := m.findBucketAbove()
+	// No separator above index 0, should return empty.
+	if bucket != "" {
+		t.Errorf("findBucketAbove at index 0 = %q, want empty string", bucket)
+	}
+}
+
+func TestFindBucketAbove_NoSeparators(t *testing.T) {
+	// Build a model in schedule view (no separators in schedule view lists).
+	task1 := model.Task{
+		ID: "01FBN1", Title: "task1", Status: "open",
+		Position: 1000,
+		Schedule: expectSchedule(t, schedule.Today),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task1)
+	m.width = 80
+	m.height = 40
+
+	// Stay in schedule view. grabIndex = 0.
+	m.grabIndex = 0
+	bucket := m.findBucketAbove()
+	if bucket != "" {
+		t.Errorf("findBucketAbove with no separators = %q, want empty", bucket)
+	}
+}
+
+// --- finding 11b: reloadTagTab out-of-bounds ---
+
+func TestReloadTagTab_OutOfBounds(t *testing.T) {
+	task := model.Task{
+		ID: "01RTB1", Title: "task", Status: "open",
+		Position: 1000, Tags: []string{"test"},
+		Schedule: expectSchedule(t, schedule.Today),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task)
+	m.width = 80
+	m.height = 40
+	m, _ = key(t, m, "v")
+
+	// Attempt reload with an out-of-bounds index.
+	err := m.reloadTagTab(999)
+	if err == nil {
+		t.Error("expected error for out-of-bounds tag tab index, got nil")
+	}
+	err = m.reloadTagTab(-1)
+	if err == nil {
+		t.Error("expected error for negative tag tab index, got nil")
+	}
+}
+
+// --- finding 11c: commitGrab in tag view when no separator found ---
+
+func TestGrabTagView_CommitNoSeparator(t *testing.T) {
+	// A tag tab with a single task and no separators would be unusual,
+	// but test that commitGrab does not crash and preserves the schedule.
+	task := model.Task{
+		ID: "01CNS1", Title: "task", Status: "open",
+		Position: 1000, Tags: []string{"test"},
+		Schedule: expectSchedule(t, schedule.Today),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task)
+	m.width = 80
+	m.height = 40
+	m, _ = key(t, m, "v")
+
+	// Navigate to "test" tab.
+	m.activeTab = findTabByLabel(t, m, "test")
+
+	// Enter grab mode.
+	items := m.lists[m.activeTab].Items()
+	// Find the first non-separator item.
+	for i, it := range items {
+		if !it.(item).isSeparator {
+			m.lists[m.activeTab].Select(i)
+			break
+		}
+	}
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatal("expected grab mode")
+	}
+
+	// Commit grab — should produce a cmd without panicking.
+	cmd := m.commitGrab()
+	if cmd == nil {
+		t.Error("commitGrab returned nil cmd")
+	}
+}
+
+// --- finding 2: refreshTagTabs rebuilds tabs after mutation ---
+
+func TestReloadAll_RebuildTagTabs(t *testing.T) {
+	task1 := model.Task{
+		ID: "01RTA1", Title: "task1", Status: "open",
+		Position: 1000, Tags: []string{"alpha"},
+		Schedule: expectSchedule(t, schedule.Today),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task1)
+	m.width = 80
+	m.height = 40
+	m, _ = key(t, m, "v")
+
+	// Should have Active, alpha, Untagged = 3 tabs.
+	if len(m.tabs) != 3 {
+		t.Fatalf("initial tab count = %d, want 3", len(m.tabs))
+	}
+
+	// Create a task with a new tag directly in the store.
+	task2 := model.Task{
+		ID: "01RTA2", Title: "task2", Status: "open",
+		Position: 2000, Tags: []string{"beta"},
+		Schedule: expectSchedule(t, schedule.Today),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	if err := m.store.Create(task2); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	// reloadAll should detect the new tag and add a tab.
+	if err := m.reloadAll(); err != nil {
+		t.Fatalf("reloadAll: %v", err)
+	}
+
+	// Should now have Active, alpha, beta, Untagged = 4 tabs.
+	if len(m.tabs) != 4 {
+		t.Errorf("tab count after new tag = %d, want 4", len(m.tabs))
+	}
+	findTabByLabel(t, m, "beta") // verifies "beta" tab exists
+}
+
+// --- finding 13: skipSeparator ---
+
+func TestSkipSeparator_CursorSkipsPastSeparator(t *testing.T) {
+	task1 := model.Task{
+		ID: "01SKP1", Title: "today task", Status: "open",
+		Position: 1000, Tags: []string{"test"},
+		Schedule: expectSchedule(t, schedule.Today),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	task2 := model.Task{
+		ID: "01SKP2", Title: "week task", Status: "open",
+		Position: 1000, Tags: []string{"test"},
+		Schedule: expectSchedule(t, schedule.Week),
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+	m.recomputeLayout()
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+
+	// Navigate to "test" tab.
+	m.activeTab = findTabByLabel(t, m, "test")
+
+	// Items: [sep:Today(0), task1(1), sep:Week(2), task2(3)]
+	items := m.lists[m.activeTab].Items()
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+
+	// Select the today task (index 1), then skip should be a no-op.
+	m.lists[m.activeTab].Select(1)
+	m.skipSeparator(0)
+	if m.lists[m.activeTab].Index() != 1 {
+		t.Errorf("cursor after skipSeparator on non-separator = %d, want 1", m.lists[m.activeTab].Index())
+	}
+
+	// Manually place cursor on separator at index 2 (simulating a down move from 1).
+	m.lists[m.activeTab].Select(2)
+	m.skipSeparator(1) // previous was 1, so direction is down
+	if m.lists[m.activeTab].Index() != 3 {
+		t.Errorf("cursor after skipping separator downward = %d, want 3", m.lists[m.activeTab].Index())
+	}
+
+	// Place cursor on separator at index 2 (simulating an up move from 3).
+	m.lists[m.activeTab].Select(2)
+	m.skipSeparator(3) // previous was 3, so direction is up
+	if m.lists[m.activeTab].Index() != 1 {
+		t.Errorf("cursor after skipping separator upward = %d, want 1", m.lists[m.activeTab].Index())
+	}
+}
+
+// --- finding 3: separator avoidance on tab switch ---
+
+func TestTagView_TabSwitchSkipsSeparator(t *testing.T) {
+	// Create tasks with two different tags so we get multiple tabs, each
+	// starting with a separator at index 0.
+	task1 := model.Task{
+		ID: "01TSS1", Title: "work task", Status: "open",
+		Schedule: expectSchedule(t, schedule.Today),
+		Tags: []string{"work"}, Position: 1000,
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	task2 := model.Task{
+		ID: "01TSS2", Title: "hobby task", Status: "open",
+		Schedule: expectSchedule(t, schedule.Today),
+		Tags: []string{"hobby"}, Position: 1000,
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task1, task2)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+	if m.viewMode != viewTag {
+		t.Fatal("expected tag view mode")
+	}
+
+	// Find the "hobby" and "work" tabs.
+	hobbyIdx := findTabByLabel(t, m, "hobby")
+	workIdx := findTabByLabel(t, m, "work")
+
+	// Navigate to the hobby tab first.
+	m.activeTab = hobbyIdx
+	m.recomputeLayout()
+
+	// Items in each tag tab start with a separator. Use left/right to switch.
+	// Right key:
+	m, _ = key(t, m, "right")
+	items := m.lists[m.activeTab].Items()
+	if len(items) > 0 {
+		cur := m.lists[m.activeTab].Index()
+		if it, ok := items[cur].(item); ok && it.isSeparator {
+			t.Errorf("right-key tab switch: cursor at index %d is a separator", cur)
+		}
+	}
+
+	// Left key:
+	m, _ = key(t, m, "left")
+	items = m.lists[m.activeTab].Items()
+	if len(items) > 0 {
+		cur := m.lists[m.activeTab].Index()
+		if it, ok := items[cur].(item); ok && it.isSeparator {
+			t.Errorf("left-key tab switch: cursor at index %d is a separator", cur)
+		}
+	}
+
+	// Number key (jump to work tab):
+	if workIdx < 6 { // number keys only work for 1-6
+		m, _ = key(t, m, fmt.Sprintf("%d", workIdx+1))
+		items = m.lists[m.activeTab].Items()
+		if len(items) > 0 {
+			cur := m.lists[m.activeTab].Index()
+			if it, ok := items[cur].(item); ok && it.isSeparator {
+				t.Errorf("number-key tab switch: cursor at index %d is a separator", cur)
+			}
+		}
+	}
+}
+
+// --- finding 4: createCmd defaults to today in tag view ---
+
+func TestCreateCmd_TagViewDefaultsToToday(t *testing.T) {
+	task1 := model.Task{
+		ID: "01CTV1", Title: "existing task", Status: "open",
+		Schedule: expectSchedule(t, schedule.Today),
+		Tags: []string{"work"}, Position: 1000,
+		UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	m := newTestModel(t, task1)
+	m.width = 80
+	m.height = 40
+
+	// Switch to tag view.
+	m, _ = key(t, m, "v")
+	if m.viewMode != viewTag {
+		t.Fatal("expected tag view mode")
+	}
+
+	// In tag view, all tabs have bucket="" which should default to "today".
+	// Navigate to the "work" tab.
+	m.activeTab = findTabByLabel(t, m, "work")
+
+	// Verify the tab bucket is empty (tag view tabs have no bucket).
+	if m.tabs[m.activeTab].bucket != "" {
+		t.Fatalf("expected empty bucket in tag view tab, got %q", m.tabs[m.activeTab].bucket)
+	}
+
+	// Create a task from the tag view tab.
+	cmd := m.createCmd("new task from tag view", nil)
+	if cmd == nil {
+		t.Fatal("createCmd returned nil")
+	}
+
+	// Execute the command to get the message.
+	msg := cmd()
+	saved, ok := msg.(taskSavedMsg)
+	if !ok {
+		t.Fatalf("expected taskSavedMsg, got %T", msg)
+	}
+	if saved.err != nil {
+		t.Fatalf("createCmd error: %v", saved.err)
+	}
+
+	// Verify the created task has today's schedule.
+	if saved.focusID == "" {
+		t.Fatal("expected focusID to be set")
+	}
+
+	// Read back the created task from the store.
+	task, err := m.store.Get(saved.focusID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	todayDate := expectSchedule(t, schedule.Today)
+	if task.Schedule != todayDate {
+		t.Errorf("created task schedule = %q, want %q (today)", task.Schedule, todayDate)
 	}
 }
 
