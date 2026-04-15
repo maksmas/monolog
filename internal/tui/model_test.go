@@ -4518,6 +4518,10 @@ func TestStatsBarView_ScheduleView(t *testing.T) {
 	if !strings.Contains(bar, "in tab") {
 		t.Errorf("statsBarView missing 'in tab': %q", bar)
 	}
+	// separator between overall and tab-specific sections
+	if !strings.Contains(bar, "|") {
+		t.Errorf("statsBarView missing '|' separator: %q", bar)
+	}
 	// avg fields present (have data; CreatedAt is set for both open tasks)
 	if !strings.Contains(bar, "~") {
 		t.Errorf("statsBarView should show avg (~) when CreatedAt and CompletedAt are set: %q", bar)
@@ -4528,7 +4532,7 @@ func TestStatsBarView_ScheduleView(t *testing.T) {
 	}
 }
 
-func TestStatsBarView_TagView(t *testing.T) {
+func TestStatsBarView_TagView_WorkTab(t *testing.T) {
 	m := newTestModelWithOpts(t, Options{StartInTagView: true},
 		model.Task{ID: "01A", Title: "work open", Status: "open",
 			Schedule: expectSchedule(t, schedule.Today), Tags: []string{"work"},
@@ -4547,7 +4551,28 @@ func TestStatsBarView_TagView(t *testing.T) {
 		t.Errorf("statsBarView missing '2 tasks': %q", bar)
 	}
 	if !strings.Contains(bar, "tag-done") {
-		t.Errorf("statsBarView missing 'tag-done' in tag view: %q", bar)
+		t.Errorf("statsBarView missing 'tag-done' on work tab: %q", bar)
+	}
+	if !strings.Contains(bar, "|") {
+		t.Errorf("statsBarView missing '|' separator: %q", bar)
+	}
+}
+
+func TestStatsBarView_TagView_ActiveTabNoTagDone(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{StartInTagView: true},
+		model.Task{ID: "01A", Title: "work open", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Tags: []string{"work"},
+			Position: 1000, CreatedAt: "2026-04-10T00:00:00Z", UpdatedAt: "2026-04-10T00:00:00Z"},
+	)
+	// Active tab is always index 0.
+	m.activeTab = 0
+
+	bar := m.statsBarView()
+	if strings.Contains(bar, "tag-done") {
+		t.Errorf("statsBarView should not show 'tag-done' on Active tab: %q", bar)
+	}
+	if !strings.Contains(bar, "in tab") {
+		t.Errorf("statsBarView missing 'in tab' on Active tab: %q", bar)
 	}
 }
 

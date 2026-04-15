@@ -1954,10 +1954,53 @@ func (m *Model) activePanelHeight() int {
 func (m *Model) statsBarHeight() int { return 1 }
 
 // statsBarView renders a compact single-line summary of task statistics.
-// In schedule view: "45 tasks  32 open  13 done  8 in tab  ~4d open  ~12d done"
-// In tag view: the tag-done count for the current tag is inserted before "in tab".
+// Overall stats and tab-specific stats are separated by a "|" divider.
+// Schedule view: "45 tasks  32 open  13 done  ~4d open  ~12d done  |  8 in tab"
+// Tag view (non-Active tab): "…  |  5 tag-done  8 in tab"
+// Tag view (Active tab): "…  |  8 in tab"
 func (m *Model) statsBarView() string {
 	s := m.stats
+
+	// Overall stats: totals and averages.
+	overall := []string{
+		fmt.Sprintf("%d tasks", s.Total),
+		fmt.Sprintf("%d open", s.Open),
+		fmt.Sprintf("%d done", s.Done),
+	}
+	if s.AvgDaysOpen > 0 {
+		overall = append(overall, "~"+model.FormatDuration(s.AvgDaysOpen)+" open")
+	}
+	if s.AvgDaysToComplete > 0 {
+		overall = append(overall, "~"+model.FormatDuration(s.AvgDaysToComplete)+" done")
+	}
+
+	// Tab-specific stats: tag-done (tag view, non-Active tabs) and in-tab count.
+	var tabParts []string
+	if m.viewMode == viewTag && m.activeTab < len(m.tagTabs) {
+		tt := m.tagTabs[m.activeTab]
+		if !tt.isActive {
+			tagDone := 0
+			for _, t := range m.allTasks {
+				if t.Status != "done" {
+					continue
+				}
+				switch {
+				case tt.isUntagged:
+					if len(display.VisibleTags(t.Tags)) == 0 {
+						tagDone++
+					}
+				default:
+					for _, tag := range t.Tags {
+						if tag == tt.tag {
+							tagDone++
+							break
+						}
+					}
+				}
+			}
+			tabParts = append(tabParts, fmt.Sprintf("%d tag-done", tagDone))
+		}
+	}
 
 	// Count non-separator items in the current tab list.
 	tabCount := 0
@@ -1968,51 +2011,9 @@ func (m *Model) statsBarView() string {
 			}
 		}
 	}
+	tabParts = append(tabParts, fmt.Sprintf("%d in tab", tabCount))
 
-	parts := []string{
-		fmt.Sprintf("%d tasks", s.Total),
-		fmt.Sprintf("%d open", s.Open),
-		fmt.Sprintf("%d done", s.Done),
-	}
-
-	// In tag view, count done tasks that belong to the current tag.
-	if m.viewMode == viewTag && m.activeTab < len(m.tagTabs) {
-		tt := m.tagTabs[m.activeTab]
-		tagDone := 0
-		for _, t := range m.allTasks {
-			if t.Status != "done" {
-				continue
-			}
-			switch {
-			case tt.isActive:
-				if t.IsActive() {
-					tagDone++
-				}
-			case tt.isUntagged:
-				if len(display.VisibleTags(t.Tags)) == 0 {
-					tagDone++
-				}
-			default:
-				for _, tag := range t.Tags {
-					if tag == tt.tag {
-						tagDone++
-						break
-					}
-				}
-			}
-		}
-		parts = append(parts, fmt.Sprintf("%d tag-done", tagDone))
-	}
-
-	parts = append(parts, fmt.Sprintf("%d in tab", tabCount))
-	if s.AvgDaysOpen > 0 {
-		parts = append(parts, "~"+model.FormatDuration(s.AvgDaysOpen)+" open")
-	}
-	if s.AvgDaysToComplete > 0 {
-		parts = append(parts, "~"+model.FormatDuration(s.AvgDaysToComplete)+" done")
-	}
-
-	line := strings.Join(parts, "  ")
+	line := strings.Join(overall, "  ") + "  |  " + strings.Join(tabParts, "  ")
 	return helpTextStyle.Padding(0, 1).Render(line)
 }
 
