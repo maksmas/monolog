@@ -327,10 +327,15 @@ type taskSavedMsg struct {
 func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	ti := textinput.New()
 	ti.CharLimit = 512
+	// Drop the default "> " prompt — our modals use explicit "Title:" / "Tags:"
+	// labels, and the default prompt throws off width math for the fixed-size
+	// modal box.
+	ti.Prompt = ""
 
 	tagTi := textinput.New()
 	tagTi.Placeholder = "tag1, tag2"
 	tagTi.CharLimit = 512
+	tagTi.Prompt = ""
 
 	m := &Model{
 		store:    s,
@@ -1033,6 +1038,7 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.applyReschedule(reschedulePresets[n])
 		case "6":
 			m.rescheduleSub = 1
+			m.input.Width = m.modalInnerWidth() - 1
 			m.input.Placeholder = "YYYY-MM-DD"
 			m.input.SetValue("")
 			m.input.Focus()
@@ -1111,6 +1117,8 @@ func (m *Model) openRetag() tea.Cmd {
 	t := *task
 	m.modalTask = &t
 	m.mode = modeRetag
+	// Subtract 1 for the trailing cursor space that textinput appends.
+	m.input.Width = m.modalInnerWidth() - 1
 	m.input.Placeholder = "tag1, tag2"
 	// Filter out the reserved active tag so the user only sees their own tags.
 	// Active state is preserved separately via wasActive/SetActive in updateRetag.
@@ -1145,6 +1153,12 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) openAdd() tea.Cmd {
 	m.mode = modeAdd
+	// "Title: " and "Tags:  " labels are each 7 chars; the textinput also
+	// renders a trailing cursor space (1 char beyond its configured Width), so
+	// subtract 8 total.
+	inputW := m.modalInnerWidth() - 8
+	m.input.Width = inputW
+	m.tagInput.Width = inputW
 	m.input.Placeholder = "task title"
 	m.input.SetValue("")
 	m.input.Focus()
@@ -2032,6 +2046,17 @@ func (m *Model) recomputeLayout() {
 	for i := range m.lists {
 		m.lists[i].SetSize(m.width, listH)
 	}
+	// Keep textinput widths in sync when the terminal is resized while a modal
+	// is open, so the fixed-width border doesn't reflow on the next render.
+	// See openAdd / openRetag for the -8 / -1 explanations (label + cursor).
+	switch m.mode {
+	case modeAdd:
+		inputW := m.modalInnerWidth() - 8
+		m.input.Width = inputW
+		m.tagInput.Width = inputW
+	case modeRetag, modeReschedule:
+		m.input.Width = m.modalInnerWidth() - 1
+	}
 }
 
 // computeItemHeight returns 3 if any title in the active tab exceeds the
@@ -2229,40 +2254,66 @@ func helpModalContent() string {
 }
 
 func (m *Model) modalView() string {
+	iw := m.modalInnerWidth()
 	switch m.mode {
 	case modeHelp:
-		return modalBox(helpModalContent())
+		return modalBox(helpModalContent(), iw)
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
-			return modalBox("Reschedule:\n\n" +
-				"  1  Today\n" +
-				"  2  Tomorrow\n" +
-				"  3  Week\n" +
-				"  4  Month\n" +
-				"  5  Someday\n" +
-				"  6  Custom date...")
+			return modalBox("Reschedule:\n\n"+
+				"  1  Today\n"+
+				"  2  Tomorrow\n"+
+				"  3  Week\n"+
+				"  4  Month\n"+
+				"  5  Someday\n"+
+				"  6  Custom date...", iw)
 		}
-		return modalBox("Custom date:\n\n" + m.input.View())
+		return modalBox("Custom date:\n\n"+m.input.View(), iw)
 	case modeRetag:
-		return modalBox("Tags (comma-separated):\n\n" + m.input.View())
+		return modalBox("Tags (comma-separated):\n\n"+m.input.View(), iw)
 	case modeAdd:
 		t := m.tabs[m.activeTab]
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s", t.label, m.input.View(), m.tagInput.View()))
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s", t.label, m.input.View(), m.tagInput.View()), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""
 		}
-		return modalBox(fmt.Sprintf("Delete %q?\n\n(y = confirm, anything else cancels)", m.modalTask.Title))
+		return modalBox(fmt.Sprintf("Delete %q?\n\n(y = confirm, anything else cancels)", m.modalTask.Title), iw)
 	}
 	return ""
 }
 
-// modalBox wraps content in a subtle bordered box.
-func modalBox(content string) string {
+// modalBoxWidth returns the total outer width of the modal box (borders
+// included), capped at 60 columns and adapted to the terminal width.
+func (m *Model) modalBoxWidth() int {
+	w := m.width - 4
+	if w > 60 {
+		w = 60
+	}
+	if w < 42 {
+		w = 42
+	}
+	return w
+}
+
+// modalInnerWidth returns the content-area width inside the modal box
+// (total width minus 2 border columns and 4 padding columns).
+func (m *Model) modalInnerWidth() int {
+	return m.modalBoxWidth() - 6
+}
+
+// modalBox wraps content in a subtle bordered box of fixed width so the
+// border never shifts as the user types.
+//
+// innerWidth is the usable content-area width (where text wraps). lipgloss's
+// .Width() actually wraps at `Width - leftPadding - rightPadding`, so we pass
+// innerWidth+4 to get an effective wrap point of innerWidth.
+func modalBox(content string, innerWidth int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Padding(1, 2).
+		Width(innerWidth + 4).
 		Render(content)
 }
 
