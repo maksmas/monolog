@@ -1031,14 +1031,19 @@ func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
 	activeOut := activeBuf.String()
 	normalOut := normalBuf.String()
 
-	// The active (green) delegate uses AdaptiveColor Dark="#22C55E" = RGB(34,197,94).
-	// In TrueColor mode this produces the ANSI sequence "38;2;34;197;94".
-	greenSeq := "38;2;34;197;94"
-	if !strings.Contains(activeOut, greenSeq) {
-		t.Errorf("active item should contain green ANSI sequence %q;\n rendered=%q", greenSeq, activeOut)
+	// When the active item is selected it uses the brighter AdaptiveColor Dark="#4ADE80" = RGB(73,222,128).
+	// In TrueColor mode this produces the ANSI sequence "38;2;73;222;128".
+	brightGreenSeq := "38;2;73;222;128"
+	if !strings.Contains(activeOut, brightGreenSeq) {
+		t.Errorf("selected active item should contain bright green ANSI sequence %q;\n rendered=%q", brightGreenSeq, activeOut)
 	}
-	if strings.Contains(normalOut, greenSeq) {
-		t.Errorf("normal item should NOT contain green ANSI sequence %q;\n rendered=%q", greenSeq, normalOut)
+	// The normal (non-active, unselected) item should contain neither green shade.
+	normalGreenSeq := "38;2;34;197;94"
+	if strings.Contains(normalOut, brightGreenSeq) {
+		t.Errorf("normal item should NOT contain bright green ANSI sequence %q;\n rendered=%q", brightGreenSeq, normalOut)
+	}
+	if strings.Contains(normalOut, normalGreenSeq) {
+		t.Errorf("normal item should NOT contain green ANSI sequence %q;\n rendered=%q", normalGreenSeq, normalOut)
 	}
 }
 
@@ -4436,3 +4441,149 @@ func TestHelpMode_ModalViewNonEmpty(t *testing.T) {
 	}
 }
 
+func TestDone_SetsCompletedAt(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "complete me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.CompletedAt == "" {
+		t.Error("CompletedAt should be set after marking done")
+	}
+	// CompletedAt should be a valid RFC3339 timestamp.
+	if _, err := time.Parse(time.RFC3339, task.CompletedAt); err != nil {
+		t.Errorf("CompletedAt %q is not valid RFC3339: %v", task.CompletedAt, err)
+	}
+}
+
+func TestStats_PopulatedAfterNewModel(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "open one", Status: "open", Schedule: "today",
+			Position: 1000, CreatedAt: "2026-04-10T00:00:00Z", UpdatedAt: "2026-04-10T00:00:00Z"},
+		model.Task{ID: "01B", Title: "open two", Status: "open", Schedule: "today",
+			Position: 2000, CreatedAt: "2026-04-12T00:00:00Z", UpdatedAt: "2026-04-12T00:00:00Z"},
+		model.Task{ID: "01C", Title: "done one", Status: "done", Schedule: "today",
+			Position: 3000, CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-11T00:00:00Z",
+			CompletedAt: "2026-04-11T00:00:00Z"},
+	)
+	if m.stats.Total != 3 {
+		t.Errorf("stats.Total = %d, want 3", m.stats.Total)
+	}
+	if m.stats.Open != 2 {
+		t.Errorf("stats.Open = %d, want 2", m.stats.Open)
+	}
+	if m.stats.Done != 1 {
+		t.Errorf("stats.Done = %d, want 1", m.stats.Done)
+	}
+	if m.stats.AvgDaysToComplete == 0 {
+		t.Error("stats.AvgDaysToComplete should be non-zero (one done task has CompletedAt)")
+	}
+	if len(m.allTasks) != 3 {
+		t.Errorf("allTasks len = %d, want 3", len(m.allTasks))
+	}
+}
+
+func TestStatsBarView_ScheduleView(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "open today", Status: "open", Schedule: "today",
+			Position: 1000, CreatedAt: "2026-04-10T00:00:00Z", UpdatedAt: "2026-04-10T00:00:00Z"},
+		model.Task{ID: "01B", Title: "open tomorrow", Status: "open", Schedule: "tomorrow",
+			Position: 1000, CreatedAt: "2026-04-12T00:00:00Z", UpdatedAt: "2026-04-12T00:00:00Z"},
+		model.Task{ID: "01C", Title: "done one", Status: "done", Schedule: "today",
+			Position: 2000, CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-11T00:00:00Z",
+			CompletedAt: "2026-04-11T00:00:00Z"},
+	)
+
+	bar := m.statsBarView()
+	if !strings.Contains(bar, "3 tasks") {
+		t.Errorf("statsBarView missing '3 tasks': %q", bar)
+	}
+	if !strings.Contains(bar, "2 open") {
+		t.Errorf("statsBarView missing '2 open': %q", bar)
+	}
+	if !strings.Contains(bar, "1 done") {
+		t.Errorf("statsBarView missing '1 done': %q", bar)
+	}
+	if !strings.Contains(bar, "in tab") {
+		t.Errorf("statsBarView missing 'in tab': %q", bar)
+	}
+	// avg fields present (have data; CreatedAt is set for both open tasks)
+	if !strings.Contains(bar, "~") {
+		t.Errorf("statsBarView should show avg (~) when CreatedAt and CompletedAt are set: %q", bar)
+	}
+	// tag-done should NOT appear in schedule view
+	if strings.Contains(bar, "tag-done") {
+		t.Errorf("statsBarView should not contain 'tag-done' in schedule view: %q", bar)
+	}
+}
+
+func TestStatsBarView_TagView(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{StartInTagView: true},
+		model.Task{ID: "01A", Title: "work open", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Tags: []string{"work"},
+			Position: 1000, CreatedAt: "2026-04-10T00:00:00Z", UpdatedAt: "2026-04-10T00:00:00Z"},
+		model.Task{ID: "01B", Title: "work done", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Tags: []string{"work"},
+			Position: 2000, CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-08T00:00:00Z",
+			CompletedAt: "2026-04-08T00:00:00Z"},
+	)
+	// Navigate to the "work" tab (index 1 after Active).
+	workIdx := findTabByLabel(t, m, "work")
+	m.activeTab = workIdx
+
+	bar := m.statsBarView()
+	if !strings.Contains(bar, "2 tasks") {
+		t.Errorf("statsBarView missing '2 tasks': %q", bar)
+	}
+	if !strings.Contains(bar, "tag-done") {
+		t.Errorf("statsBarView missing 'tag-done' in tag view: %q", bar)
+	}
+}
+
+func TestStatsBarView_NoAvgWhenNoData(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "open", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-10T00:00:00Z"}, // no CreatedAt
+	)
+	bar := m.statsBarView()
+	// AvgDaysOpen should be absent when CreatedAt is empty (can't compute).
+	// AvgDaysToComplete should be absent when no done tasks with CompletedAt.
+	if strings.Contains(bar, "~") {
+		t.Errorf("statsBarView should not show avg (~) when no data: %q", bar)
+	}
+}
+
+func TestStats_UpdateAfterDone(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task", Status: "open", Schedule: "today",
+			Position: 1000, CreatedAt: "2026-04-10T00:00:00Z", UpdatedAt: "2026-04-10T00:00:00Z"},
+	)
+	if m.stats.Open != 1 || m.stats.Done != 0 {
+		t.Fatalf("initial stats wrong: open=%d done=%d", m.stats.Open, m.stats.Done)
+	}
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+	if m.stats.Open != 0 {
+		t.Errorf("after done: stats.Open = %d, want 0", m.stats.Open)
+	}
+	if m.stats.Done != 1 {
+		t.Errorf("after done: stats.Done = %d, want 1", m.stats.Done)
+	}
+}

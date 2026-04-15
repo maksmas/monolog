@@ -105,10 +105,10 @@ listH := m.height - 4 - m.activePanelHeight() - m.statsBarHeight()
 - Modify: `internal/tui/model.go` (doneSelected function)
 - Modify: `internal/model/task_test.go` (if it exists) or create tests
 
-- [ ] Add `CompletedAt string \`json:"completed_at,omitempty"\`` field to `model.Task` after `UpdatedAt`
-- [ ] In `doneSelected()` (`model.go:~968`), add `t.CompletedAt = now()` alongside `t.UpdatedAt = now()`
-- [ ] Write tests verifying `CompletedAt` is set when a task is marked done and empty otherwise
-- [ ] Run tests: `go test ./...` — must pass before Task 2
+- [x] Add `CompletedAt string \`json:"completed_at,omitempty"\`` field to `model.Task` after `UpdatedAt`
+- [x] In `doneSelected()` (`model.go:~968`), add `t.CompletedAt = now()` alongside `t.UpdatedAt = now()`
+- [x] Write tests verifying `CompletedAt` is set when a task is marked done and empty otherwise
+- [x] Run tests: `go test ./...` — must pass before Task 2
 
 ### Task 2: Add Stats struct and ComputeStats function
 
@@ -116,15 +116,12 @@ listH := m.height - 4 - m.activePanelHeight() - m.statsBarHeight()
 - Create: `internal/model/stats.go`
 - Create: `internal/model/stats_test.go`
 
-- [ ] Create `Stats` struct with fields: `Total, Open, Done int`, `AvgDaysOpen, AvgDaysToComplete float64`
-- [ ] Implement `ComputeStats(tasks []Task, now time.Time) Stats`:
-  - Count total, open (status != "done"), done (status == "done")
-  - AvgDaysOpen: mean of `now - CreatedAt` for all open tasks (parse CreatedAt as RFC3339)
-  - AvgDaysToComplete: mean of `CompletedAt - CreatedAt` for done tasks that have CompletedAt set
-- [ ] Implement `FormatDuration(days float64) string`: `"Xh"` (< 1d) | `"Xd"` | `"Xw"` (≥14d rounds to weeks)
-- [ ] Write table-driven tests for `ComputeStats`: empty list, only open, only done, mixed, avg calculations
-- [ ] Write tests for `FormatDuration` edge cases (0h, 6h, 23h, 1d, 13d, 14d, 100d)
-- [ ] Run tests: `go test ./internal/model/...` — must pass before Task 3
+- [x] Create `Stats` struct with fields: `Total, Open, Done int`, `AvgDaysOpen, AvgDaysToComplete float64`
+- [x] Implement `ComputeStats(tasks []Task, now time.Time) Stats`
+- [x] Implement `FormatDuration(days float64) string`: `"Xh"` (< 1d) | `"Xd"` | `"Xw"` (≥14d rounds to weeks)
+- [x] Write table-driven tests for `ComputeStats`: empty list, only open, only done, mixed, avg calculations
+- [x] Write tests for `FormatDuration` edge cases (0h, 6h, 23h, 1d, 13d, 14d, 100d)
+- [x] Run tests: `go test ./internal/model/...` — must pass before Task 3
 
 ### Task 3: Cache allTasks in TUI Model and compute stats on every rebuild
 
@@ -132,13 +129,11 @@ listH := m.height - 4 - m.activePanelHeight() - m.statsBarHeight()
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] Add fields `allTasks []model.Task` and `stats model.Stats` to `Model` struct (after `activeTasks`)
-- [ ] Add `reloadAllTasks() error` helper: calls `m.store.List(store.ListOptions{})`, stores result in `m.allTasks`, calls `m.stats = model.ComputeStats(m.allTasks, time.Now())`
-- [ ] In `rebuildForTagView()`: capture the existing `allTasks` local var into `m.allTasks` then call `m.stats = model.ComputeStats(m.allTasks, time.Now())` (avoids a second store call)
-- [ ] In `rebuildForScheduleView()`: call `m.reloadAllTasks()` after rebuilding lists
-- [ ] In `taskSavedMsg` handler (where `reloadActive()` is called): also call `m.reloadAllTasks()`
-- [ ] Write tests verifying stats are populated after a rebuild
-- [ ] Run tests: `go test ./internal/tui/...` — must pass before Task 4
+- [x] Add fields `allTasks []model.Task` and `stats model.Stats` to `Model` struct (after `activeTasks`)
+- [x] Add `reloadAllTasks() error` helper: calls `m.store.List(store.ListOptions{})`, stores result in `m.allTasks`, calls `m.stats = model.ComputeStats(m.allTasks, time.Now())`
+- [x] Call `m.reloadAllTasks()` at end of `reloadAll()` (covers all view modes and mutations)
+- [x] Write tests verifying stats are populated after a rebuild
+- [x] Run tests: `go test ./internal/tui/...` — must pass before Task 4
 
 ### Task 4: Add statsBarView and wire into layout
 
@@ -146,31 +141,27 @@ listH := m.height - 4 - m.activePanelHeight() - m.statsBarHeight()
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] Add `statsBarHeight() int` — always returns 1
-- [ ] Add `statsBarView() string`:
-  - Schedule view: `"  45 tasks  32 open  13 done  8 in tab  ~4d open  ~12d done"`
-  - Tag view: prepend `"N tag-done  "` before tab count; derive tag-done from `m.allTasks` filtered by current tag and `status == "done"`
-  - Omit avg fields when `AvgDaysOpen == 0` / `AvgDaysToComplete == 0`
-  - Style with `lipgloss` dim color consistent with existing help bar
-- [ ] Update `recomputeLayout()`: change `m.height - 4 - m.activePanelHeight()` to subtract `m.statsBarHeight()` as well
-- [ ] Update `View()`: insert `m.statsBarView()` between active panel (if any) and tab bar header
-- [ ] Write tests for `statsBarView()` output in schedule view and tag view (check key substrings present)
-- [ ] Run tests: `go test ./...` — must pass
+- [x] Add `statsBarHeight() int` — always returns 1
+- [x] Add `statsBarView() string` (schedule view + tag view with tag-done count)
+- [x] Update `recomputeLayout()`: subtract `m.statsBarHeight()` from list height
+- [x] Update `View()`: insert `m.statsBarView()` between active panel (if any) and tab bar header
+- [x] Write tests for `statsBarView()` in schedule view, tag view, and no-data case
+- [x] Run tests: `go test ./...` — must pass
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] All stats appear correctly in schedule view (with and without active tasks)
-- [ ] All stats appear correctly in tag view (including tag-done count)
-- [ ] Stats update after marking a task done, adding, or deleting a task
-- [ ] `CompletedAt` is persisted in the JSON file when a task is marked done
-- [ ] AvgDaysToComplete omitted until at least one done task has `CompletedAt` set
-- [ ] Layout does not overflow: list height reduced by 1 for the stats bar
-- [ ] Run full test suite: `go test ./...`
+- [x] All stats appear correctly in schedule view (with and without active tasks)
+- [x] All stats appear correctly in tag view (including tag-done count)
+- [x] Stats update after marking a task done, adding, or deleting a task
+- [x] `CompletedAt` is persisted in the JSON file when a task is marked done
+- [x] AvgDaysToComplete omitted until at least one done task has `CompletedAt` set
+- [x] Layout does not overflow: list height reduced by 1 for the stats bar
+- [x] Run full test suite: `go test ./...`
 
 ### Task 6: [Final] Update documentation
 
-- [ ] Update `CLAUDE.md` if new patterns were introduced (stats caching, `CompletedAt` lifecycle)
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Update `CLAUDE.md` if new patterns were introduced (stats caching, `CompletedAt` lifecycle)
+- [x] Move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

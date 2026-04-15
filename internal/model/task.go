@@ -19,8 +19,9 @@ type Task struct {
 	Status    string   `json:"status"`
 	Position  float64  `json:"position"`
 	Schedule  string   `json:"schedule"`
-	CreatedAt string   `json:"created_at"`
-	UpdatedAt string   `json:"updated_at"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	CompletedAt string `json:"completed_at,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
 }
 

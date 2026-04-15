@@ -130,6 +130,11 @@ type Model struct {
 	// persistent panel above the tab bar.
 	activeTasks []model.Task
 
+	// allTasks is the full unfiltered task list, refreshed after every mutation.
+	// Used for computing global stats.
+	allTasks []model.Task
+	stats    model.Stats
+
 	// itemHeight is the delegate height for list items: 2 when all titles
 	// in the active tab fit in one line, 3 when any title requires wrapping.
 	itemHeight int
@@ -208,14 +213,17 @@ func newItemDelegate(m *Model) *itemDelegate {
 	// Green styling for active tasks (persistent "currently working on" state).
 	active := list.NewDefaultItemStyles()
 	activeColor := lipgloss.AdaptiveColor{Light: "#16A34A", Dark: "#22C55E"}
+	// Brighter green when an active task is selected so selection is unmissable.
+	activeSelectedColor := lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#4ADE80"}
 	active.NormalTitle = active.NormalTitle.Foreground(activeColor)
 	active.NormalDesc = active.NormalDesc.Foreground(activeColor)
 	active.SelectedTitle = active.SelectedTitle.
-		Foreground(activeColor).
-		BorderForeground(activeColor)
+		Foreground(activeSelectedColor).
+		BorderForeground(activeSelectedColor).
+		Bold(true)
 	active.SelectedDesc = active.SelectedDesc.
-		Foreground(activeColor).
-		BorderForeground(activeColor)
+		Foreground(activeSelectedColor).
+		BorderForeground(activeSelectedColor)
 
 	return &itemDelegate{base: base, grabStyles: grab, activeStyles: active, m: m}
 }
@@ -379,6 +387,9 @@ func (m *Model) reloadAll() error {
 		}
 	}
 	if err := m.reloadActive(); err != nil {
+		return err
+	}
+	if err := m.reloadAllTasks(); err != nil {
 		return err
 	}
 	return nil
@@ -661,6 +672,18 @@ func buildTagTabs(tasks []model.Task) []tagTab {
 	})
 
 	return tabs
+}
+
+// reloadAllTasks fetches every task from the store and recomputes global stats.
+// Called from reloadAll so stats stay in sync after every mutation.
+func (m *Model) reloadAllTasks() error {
+	tasks, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list all tasks: %w", err)
+	}
+	m.allTasks = tasks
+	m.stats = model.ComputeStats(tasks, time.Now())
+	return nil
 }
 
 // rebuildForTagView switches the model to tag view mode. It scans all tasks,
@@ -965,6 +988,7 @@ func (m *Model) doneSelected() tea.Cmd {
 	t.Status = "done"
 	t.SetActive(false)
 	t.UpdatedAt = now()
+	t.CompletedAt = now()
 	return m.saveCmd(t, fmt.Sprintf("done: %s", t.Title), fmt.Sprintf("Completed: %s", t.Title))
 }
 
@@ -1926,6 +1950,72 @@ func (m *Model) activePanelHeight() int {
 	return contentLines + 2
 }
 
+// statsBarHeight always returns 1. The stats bar is always shown.
+func (m *Model) statsBarHeight() int { return 1 }
+
+// statsBarView renders a compact single-line summary of task statistics.
+// In schedule view: "45 tasks  32 open  13 done  8 in tab  ~4d open  ~12d done"
+// In tag view: the tag-done count for the current tag is inserted before "in tab".
+func (m *Model) statsBarView() string {
+	s := m.stats
+
+	// Count non-separator items in the current tab list.
+	tabCount := 0
+	if m.activeTab < len(m.lists) {
+		for _, it := range m.lists[m.activeTab].Items() {
+			if i, ok := it.(item); ok && !i.isSeparator {
+				tabCount++
+			}
+		}
+	}
+
+	parts := []string{
+		fmt.Sprintf("%d tasks", s.Total),
+		fmt.Sprintf("%d open", s.Open),
+		fmt.Sprintf("%d done", s.Done),
+	}
+
+	// In tag view, count done tasks that belong to the current tag.
+	if m.viewMode == viewTag && m.activeTab < len(m.tagTabs) {
+		tt := m.tagTabs[m.activeTab]
+		tagDone := 0
+		for _, t := range m.allTasks {
+			if t.Status != "done" {
+				continue
+			}
+			switch {
+			case tt.isActive:
+				if t.IsActive() {
+					tagDone++
+				}
+			case tt.isUntagged:
+				if len(display.VisibleTags(t.Tags)) == 0 {
+					tagDone++
+				}
+			default:
+				for _, tag := range t.Tags {
+					if tag == tt.tag {
+						tagDone++
+						break
+					}
+				}
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%d tag-done", tagDone))
+	}
+
+	parts = append(parts, fmt.Sprintf("%d in tab", tabCount))
+	if s.AvgDaysOpen > 0 {
+		parts = append(parts, "~"+model.FormatDuration(s.AvgDaysOpen)+" open")
+	}
+	if s.AvgDaysToComplete > 0 {
+		parts = append(parts, "~"+model.FormatDuration(s.AvgDaysToComplete)+" done")
+	}
+
+	line := strings.Join(parts, "  ")
+	return helpTextStyle.Padding(0, 1).Render(line)
+}
+
 // recomputeLayout recalculates list sizes based on the current terminal
 // dimensions and active panel height. Called from WindowSizeMsg and after
 // any mutation that might change the panel (taskSavedMsg).
@@ -1934,7 +2024,7 @@ func (m *Model) recomputeLayout() {
 		return
 	}
 	m.itemHeight = m.computeItemHeight()
-	listH := m.height - 4 - m.activePanelHeight()
+	listH := m.height - 4 - m.activePanelHeight() - m.statsBarHeight()
 	if listH < 3 {
 		listH = 3
 	}
@@ -1992,7 +2082,7 @@ func (m *Model) View() string {
 	if panel := m.activePanelView(); panel != "" {
 		parts = append(parts, panel)
 	}
-	parts = append(parts, header, body, help)
+	parts = append(parts, m.statsBarView(), header, body, help)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
