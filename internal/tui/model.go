@@ -360,9 +360,9 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 func (m *Model) initLists() []list.Model {
 	delegate := newItemDelegate(m)
 	lists := make([]list.Model, len(m.tabs))
-	for i, t := range m.tabs {
+	for i := range m.tabs {
 		l := list.New(nil, delegate, 0, 0)
-		l.Title = t.label
+		l.SetShowTitle(false)
 		l.SetShowStatusBar(false)
 		l.SetShowHelp(false)
 		l.SetFilteringEnabled(false)
