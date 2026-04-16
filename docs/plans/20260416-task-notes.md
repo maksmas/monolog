@@ -103,10 +103,10 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 - Modify: `cmd/root.go`
 - Create: `cmd/show_test.go`
 
-- [ ] Create `cmd/show.go` with `newShowCmd() *cobra.Command` — resolves task, prints formatted detail (title, schedule, tags, created/completed dates, body) to stdout
-- [ ] Register command in `root.go`: `rootCmd.AddCommand(newShowCmd())`
-- [ ] Write tests: output format with body+notes, output without body, tag/schedule display
-- [ ] Run tests: `go test ./cmd/`
+- [x] Create `cmd/show.go` with `newShowCmd() *cobra.Command` — resolves task, prints formatted detail (title, schedule, tags, created/completed dates, body) to stdout
+- [x] Register command in `root.go`: `rootCmd.AddCommand(newShowCmd())`
+- [x] Write tests: output format with body+notes, output without body, tag/schedule display
+- [x] Run tests: `go test ./cmd/`
 
 ### Task 4: Note count badge in TUI task list
 
