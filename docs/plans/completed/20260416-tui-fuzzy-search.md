@@ -311,8 +311,8 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 - Modify: `CLAUDE.md`
 - Move: `docs/plans/20260416-tui-fuzzy-search.md` → `docs/plans/completed/`
 
-- [ ] add a bullet in `CLAUDE.md` under "Key Design Decisions" documenting the search mode (entry key, match scope, matching algorithm)
-- [ ] move this plan file into `docs/plans/completed/`
+- [x] add a bullet in `CLAUDE.md` under "Key Design Decisions" documenting the search mode (entry key, match scope, matching algorithm)
+- [x] move this plan file into `docs/plans/completed/`
 
 ## Post-Completion
 
