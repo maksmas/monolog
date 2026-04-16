@@ -18,6 +18,7 @@ monolog add "Review PR #42"         # add a task (defaults to today)
 monolog add "Write tests" -s week   # schedule for this week
 monolog ls                          # list today's open tasks
 monolog done 01J5K                  # mark done by ID prefix
+monolog done rp                     # ...or by title initials ("Review PR #42")
 monolog sync                        # push/pull with a git remote
 monolog                             # launch the interactive TUI
 ```
@@ -132,4 +133,20 @@ Active tasks render in green in the list and appear in a dedicated panel above t
 
 ## How it works
 
-Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-commits to git. You reference tasks by typing the first few characters of their ID (prefix matching). Ordering uses fractional positions with automatic rebalancing.
+Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-commits to git. Ordering uses fractional positions with automatic rebalancing.
+
+## Task lookup
+
+Commands that take a task identifier (`done`, `edit`, `rm`, `mv`) resolve it in two steps:
+
+1. **ULID prefix** — type the first few characters of the task ID (e.g. `01J5K`).
+2. **Title initials** — if no ULID matches and you typed at least 2 characters, monolog computes the first letter of each word in every open task's title and looks for a prefix match.
+
+```bash
+monolog done 01J5K   # ULID prefix
+monolog done flb     # matches "Fix login bug" (f-l-b)
+monolog done fl      # also matches, if unambiguous
+monolog done FL      # case-insensitive
+```
+
+If multiple tasks share the same initials prefix, monolog reports the ambiguity and lists the conflicting titles.

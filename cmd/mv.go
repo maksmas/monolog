@@ -18,7 +18,7 @@ import (
 // Returns an error if the target is not in the same schedule bucket (distinguishing
 // done targets from different-bucket targets).
 func findTargetIndex(s *store.Store, prefix string, others []model.Task, taskBucket string) (model.Task, int, error) {
-	target, err := s.GetByPrefix(prefix)
+	target, err := s.Resolve(prefix)
 	if err != nil {
 		return model.Task{}, -1, fmt.Errorf("resolve target task: %w", err)
 	}
@@ -161,7 +161,7 @@ func newMvCmd() *cobra.Command {
 				return err
 			}
 
-			task, err := s.GetByPrefix(prefix)
+			task, err := s.Resolve(prefix)
 			if err != nil {
 				return fmt.Errorf("resolve task: %w", err)
 			}

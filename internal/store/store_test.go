@@ -252,6 +252,142 @@ func TestGetByPrefixIgnoresNonJSON(t *testing.T) {
 	}
 }
 
+// --- Resolve tests ---
+
+func TestResolveByULIDPrefix(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01ABCDEF", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got, err := s.Resolve("01ABC")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if got.ID != "01ABCDEF" {
+		t.Errorf("ID: got %q, want %q", got.ID, "01ABCDEF")
+	}
+}
+
+func TestResolveByInitials(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01AAA", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got, err := s.Resolve("flb")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if got.ID != "01AAA" {
+		t.Errorf("ID: got %q, want %q", got.ID, "01AAA")
+	}
+}
+
+func TestResolveByInitialsPrefix(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01AAA", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got, err := s.Resolve("fl")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if got.ID != "01AAA" {
+		t.Errorf("ID: got %q, want %q", got.ID, "01AAA")
+	}
+}
+
+func TestResolveByInitialsCaseInsensitive(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01AAA", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got, err := s.Resolve("FLB")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if got.ID != "01AAA" {
+		t.Errorf("ID: got %q, want %q", got.ID, "01AAA")
+	}
+}
+
+func TestResolveInitialsAmbiguous(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01AAA", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := s.Create(sampleTask("01BBB", "Find lost backup")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err := s.Resolve("fl")
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Errorf("expected ErrAmbiguous, got: %v", err)
+	}
+}
+
+func TestResolveInitialsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01AAA", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err := s.Resolve("xyz")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestResolveTooShortForInitials(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(sampleTask("01AAA", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// single char "f" should not trigger initials lookup, and won't match ULID prefix
+	_, err := s.Resolve("f")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for single char, got: %v", err)
+	}
+}
+
+func TestResolveSkipsDoneTasks(t *testing.T) {
+	s := newTestStore(t)
+	task := sampleTask("01AAA", "Fix login bug")
+	task.Status = "done"
+	if err := s.Create(task); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err := s.Resolve("flb")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for done task, got: %v", err)
+	}
+}
+
+func TestResolveULIDPrefixTakesPriority(t *testing.T) {
+	s := newTestStore(t)
+	// Create a task whose ID starts with "fl" — ULID prefix should win
+	if err := s.Create(sampleTask("fl123456", "Something else")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := s.Create(sampleTask("01AAA", "Fix login bug")); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got, err := s.Resolve("fl")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	// Should match ULID prefix "fl123456", not initials "flb"
+	if got.ID != "fl123456" {
+		t.Errorf("ID: got %q, want %q (ULID prefix should take priority)", got.ID, "fl123456")
+	}
+}
+
 // --- List tests ---
 
 func TestListEmpty(t *testing.T) {

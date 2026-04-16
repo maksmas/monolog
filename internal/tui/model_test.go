@@ -4612,3 +4612,147 @@ func TestStats_UpdateAfterDone(t *testing.T) {
 		t.Errorf("after done: stats.Done = %d, want 1", m.stats.Done)
 	}
 }
+
+// --- multi-line title tests -------------------------------------------------
+
+func TestAdd_AltEnterInsertsNewline(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "first")
+	// Alt+Enter should insert a newline, not submit.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m = next.(*Model)
+	if cmd != nil {
+		// Running the cmd would advance textinput.Blink; nothing destructive.
+		_ = cmd
+	}
+	if m.mode != modeAdd {
+		t.Fatalf("after alt+enter: mode = %v, want still modeAdd", m.mode)
+	}
+	m = typeString(t, m, "second")
+
+	// Plain Enter now submits.
+	m, cmd = key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should submit")
+	}
+	m = runCmd(t, m, cmd)
+
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	got := items[0].(item).task.Title
+	want := "first\nsecond"
+	if got != want {
+		t.Errorf("Title = %q, want %q", got, want)
+	}
+}
+
+func TestAdd_AltEnterKeepsFirstLineVisible(t *testing.T) {
+	// Regression: after Alt+Enter the textarea viewport must not scroll such
+	// that the first line disappears.
+	//
+	// Subtlety: viewport.ScrollDown no-ops when viewport.lines is empty
+	// (bubbles/viewport.go). The real TUI calls View() on every render, which
+	// populates viewport.lines via SetContent — so the scroll *does* happen
+	// in production. We call titleArea.View() between operations here to
+	// reproduce that behavior; without it the bug is silently hidden.
+	m := newTestModel(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "first")
+	_ = m.titleArea.View() // simulate a render cycle so viewport.lines is populated
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m = next.(*Model)
+	_ = m.titleArea.View()
+	m = typeString(t, m, "second")
+
+	view := m.titleArea.View()
+	t.Logf("view=%q", view)
+	lines := strings.Split(view, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("titleArea.View() should render 2 lines, got %d: %q", len(lines), view)
+	}
+	if !strings.Contains(lines[0], "first") {
+		t.Errorf("line 0 missing 'first' (viewport scrolled off): %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "second") {
+		t.Errorf("line 1 missing 'second': %q", lines[1])
+	}
+}
+
+func TestAdd_EnterWithoutAltSubmitsSingleLine(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "single line")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should submit")
+	}
+	m = runCmd(t, m, cmd)
+	got := m.lists[0].Items()[0].(item).task.Title
+	if got != "single line" {
+		t.Errorf("Title = %q, want %q", got, "single line")
+	}
+}
+
+func TestWrapText_SplitsOnNewlines(t *testing.T) {
+	got := wrapText("line one\nline two", 20)
+	want := []string{"line one", "line two"}
+	if !sliceEq(got, want) {
+		t.Errorf("wrapText = %v, want %v", got, want)
+	}
+}
+
+func TestWrapText_WrapsEachLineIndependently(t *testing.T) {
+	// First line fits; second line wraps at the space.
+	got := wrapText("short\none two three", 7)
+	want := []string{"short", "one two", "three"}
+	if !sliceEq(got, want) {
+		t.Errorf("wrapText = %v, want %v", got, want)
+	}
+}
+
+func TestFlattenTitle(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"simple", "simple"},
+		{"one\ntwo", "one two"},
+		{"one\r\ntwo", "one two"},
+		{"a\n\nb", "a b"},
+		{"  lead\ntrail  ", "lead trail"},
+	}
+	for _, tc := range cases {
+		if got := flattenTitle(tc.in); got != tc.want {
+			t.Errorf("flattenTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSanitizeTitle_DropsBlankLines(t *testing.T) {
+	got := sanitizeTitle("  first  \n\n  second\n")
+	want := "first\nsecond"
+	if got != want {
+		t.Errorf("sanitizeTitle = %q, want %q", got, want)
+	}
+}
+
+func TestComputeItemHeight_BumpsOnMultilineTitle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "line1\nline2", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+	// 80 - 2 padding = 78 text width; title is short but has a newline -> height 3.
+	if m.itemHeight != 3 {
+		t.Errorf("itemHeight = %d, want 3 (newline in title)", m.itemHeight)
+	}
+}

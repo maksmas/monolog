@@ -109,6 +109,49 @@ func (s *Store) GetByPrefix(prefix string) (model.Task, error) {
 	}
 }
 
+// Resolve finds a task by ULID prefix first, then falls back to title-initials
+// matching when the input is at least 2 characters and the prefix search found
+// nothing. Initials matching is case-insensitive and supports prefix matching
+// (e.g. "fl" matches a task whose full initials are "flb").
+func (s *Store) Resolve(input string) (model.Task, error) {
+	task, err := s.GetByPrefix(input)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		return task, err
+	}
+
+	if len(input) < 2 {
+		return model.Task{}, ErrNotFound
+	}
+
+	tasks, err := s.List(ListOptions{Status: "open"})
+	if err != nil {
+		return model.Task{}, fmt.Errorf("list tasks for initials lookup: %w", err)
+	}
+
+	lower := strings.ToLower(input)
+	var matches []model.Task
+	for _, t := range tasks {
+		initials := model.Initials(t.Title)
+		if strings.HasPrefix(initials, lower) {
+			matches = append(matches, t)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return model.Task{}, ErrNotFound
+	case 1:
+		return matches[0], nil
+	default:
+		titles := make([]string, len(matches))
+		for i, m := range matches {
+			titles[i] = fmt.Sprintf("%q", m.Title)
+		}
+		return model.Task{}, fmt.Errorf("%w: initials %q matches %d tasks (%s)",
+			ErrAmbiguous, input, len(matches), strings.Join(titles, ", "))
+	}
+}
+
 // List reads all tasks and applies optional filters, returning results sorted by position.
 func (s *Store) List(opts ListOptions) ([]model.Task, error) {
 	entries, err := os.ReadDir(s.dir)

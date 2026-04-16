@@ -23,7 +23,7 @@ func newRmCmd() *cobra.Command {
 				return err
 			}
 
-			task, err := s.GetByPrefix(prefix)
+			task, err := s.Resolve(prefix)
 			if err != nil {
 				return fmt.Errorf("resolve task: %w", err)
 			}

@@ -143,6 +143,20 @@ func AutoTag(title string, knownTags []string, existingTags []string) []string {
 	return append(existingTags, autoTag)
 }
 
+// Initials returns the lowercase first letters of each whitespace-separated
+// word in the title. For example, "Fix login bug" → "flb".
+func Initials(title string) string {
+	words := strings.Fields(title)
+	var b strings.Builder
+	for _, w := range words {
+		for _, r := range w {
+			b.WriteRune(r)
+			break
+		}
+	}
+	return strings.ToLower(b.String())
+}
+
 // NewID generates a new ULID string.
 // It returns an error if the random source fails.
 func NewID() (string, error) {

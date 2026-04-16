@@ -230,6 +230,31 @@ func TestAutoTag(t *testing.T) {
 	}
 }
 
+func TestInitials(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{"multiple words", "Fix login bug", "flb"},
+		{"single word", "Refactor", "r"},
+		{"empty string", "", ""},
+		{"mixed case", "Update API Docs", "uad"},
+		{"extra whitespace", "  Fix   login   bug  ", "flb"},
+		{"single char words", "A B C", "abc"},
+		{"numbers in words", "Fix 3rd bug", "f3b"},
+		{"unicode first letter", "über cool thing", "üct"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Initials(tc.title)
+			if got != tc.want {
+				t.Errorf("Initials(%q) = %q, want %q", tc.title, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeTags(t *testing.T) {
 	tests := []struct {
 		name string

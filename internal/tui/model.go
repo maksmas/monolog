@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -110,7 +111,9 @@ type Model struct {
 	modalTask     *model.Task // task the modal is acting on (nil for add)
 	rescheduleSub int         // 0 = picker, 1 = custom date input
 
-	// Add-modal state: second text input for tags and focus tracker.
+	// Add-modal state. The title uses a textarea so Alt+Enter can insert a
+	// newline while Enter submits; tags remain a single-line textinput.
+	titleArea textarea.Model
 	tagInput  textinput.Model
 	addFocus  addField
 	knownTags []string // cached known tags, populated when add modal opens
@@ -337,12 +340,29 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	tagTi.CharLimit = 512
 	tagTi.Prompt = ""
 
+	ta := textarea.New()
+	ta.Placeholder = "task title"
+	ta.CharLimit = 512
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	// Rebind newline insertion from Enter to Alt+Enter. Plain Enter is handled
+	// one level up in updateAdd() where it submits the task.
+	ta.KeyMap.InsertNewline.SetKeys("alt+enter")
+	ta.SetHeight(1)
+	// Flatten the textarea's own cursor-line background so the modal looks like
+	// a regular one-line input until the user presses Alt+Enter.
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+
 	m := &Model{
-		store:    s,
-		repoPath: repoPath,
-		tabs:     defaultTabs,
-		input:    ti,
-		tagInput: tagTi,
+		store:     s,
+		repoPath:  repoPath,
+		tabs:      defaultTabs,
+		input:     ti,
+		tagInput:  tagTi,
+		titleArea: ta,
 	}
 
 	m.lists = m.initLists()
@@ -975,6 +995,9 @@ func (m *Model) closeModal() {
 	m.input.SetValue("")
 	m.tagInput.Blur()
 	m.tagInput.SetValue("")
+	m.titleArea.Blur()
+	m.titleArea.Reset()
+	m.titleArea.SetHeight(1)
 	m.addFocus = addFocusTitle
 }
 
@@ -994,7 +1017,8 @@ func (m *Model) doneSelected() tea.Cmd {
 	t.SetActive(false)
 	t.UpdatedAt = now()
 	t.CompletedAt = now()
-	return m.saveCmd(t, fmt.Sprintf("done: %s", t.Title), fmt.Sprintf("Completed: %s", t.Title))
+	flat := flattenTitle(t.Title)
+	return m.saveCmd(t, fmt.Sprintf("done: %s", flat), fmt.Sprintf("Completed: %s", flat))
 }
 
 // --- active toggle ---------------------------------------------------------
@@ -1011,7 +1035,8 @@ func (m *Model) toggleActive() tea.Cmd {
 	if !t.IsActive() {
 		label = "deactivated"
 	}
-	return m.saveCmd(t, fmt.Sprintf("edit: %s", t.Title), fmt.Sprintf("%s: %s", label, t.Title))
+	flat := flattenTitle(t.Title)
+	return m.saveCmd(t, fmt.Sprintf("edit: %s", flat), fmt.Sprintf("%s: %s", label, flat))
 }
 
 // --- reschedule modal ------------------------------------------------------
@@ -1085,8 +1110,9 @@ func (m *Model) applyReschedule(sched string) tea.Cmd {
 		}
 	}
 	m.closeModal()
-	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", t.Title, sched),
-		fmt.Sprintf("Rescheduled: %s -> %s", t.Title, sched))
+	flat := flattenTitle(t.Title)
+	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", flat, sched),
+		fmt.Sprintf("Rescheduled: %s -> %s", flat, sched))
 }
 
 // bucketSiblings returns all open tasks that fall into the same bucket as the
@@ -1140,9 +1166,10 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		t.SetActive(wasActive)
 		t.UpdatedAt = now()
 		m.closeModal()
+		flat := flattenTitle(t.Title)
 		return m, m.saveCmd(t,
-			fmt.Sprintf("edit: %s", t.Title),
-			fmt.Sprintf("Retagged: %s", t.Title))
+			fmt.Sprintf("edit: %s", flat),
+			fmt.Sprintf("Retagged: %s", flat))
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -1157,11 +1184,11 @@ func (m *Model) openAdd() tea.Cmd {
 	// renders a trailing cursor space (1 char beyond its configured Width), so
 	// subtract 8 total.
 	inputW := m.modalInnerWidth() - 8
-	m.input.Width = inputW
+	m.titleArea.SetWidth(inputW)
+	m.titleArea.SetHeight(1)
 	m.tagInput.Width = inputW
-	m.input.Placeholder = "task title"
-	m.input.SetValue("")
-	m.input.Focus()
+	m.titleArea.Reset()
+	m.titleArea.Focus()
 	m.tagInput.SetValue("")
 	m.tagInput.Blur()
 	m.addFocus = addFocusTitle
@@ -1181,22 +1208,24 @@ func (m *Model) openAdd() tea.Cmd {
 
 func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Tab toggles focus between title and tags — intercept before the
-	// textinput swallows it.
+	// inputs swallow it.
 	if msg.Type == tea.KeyTab {
 		if m.addFocus == addFocusTitle {
 			m.addFocus = addFocusTags
-			m.input.Blur()
+			m.titleArea.Blur()
 			m.tagInput.Focus()
 		} else {
 			m.addFocus = addFocusTitle
 			m.tagInput.Blur()
-			m.input.Focus()
+			m.titleArea.Focus()
 		}
 		return m, textinput.Blink
 	}
 
-	if msg.Type == tea.KeyEnter {
-		title := strings.TrimSpace(m.input.Value())
+	// Enter submits; Alt+Enter falls through to the textarea where its
+	// InsertNewline binding (rebound to alt+enter) inserts a line break.
+	if msg.Type == tea.KeyEnter && !msg.Alt {
+		title := sanitizeTitle(m.titleArea.Value())
 		if title == "" {
 			m.closeModal()
 			return m, nil
@@ -1211,10 +1240,21 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.addFocus == addFocusTags {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 	} else {
-		m.input, cmd = m.input.Update(msg)
+		// Pre-grow the textarea height before Alt+Enter so the viewport has a
+		// visible row for the new line. Otherwise InsertNewline moves the
+		// cursor past the bottom of a height-1 viewport and the textarea's
+		// repositionView scrolls the original line off the top. Post-update we
+		// resize to the actual line count.
+		if msg.Type == tea.KeyEnter && msg.Alt {
+			m.titleArea.SetHeight(m.titleArea.LineCount() + 1)
+		}
+		m.titleArea, cmd = m.titleArea.Update(msg)
+		if h := m.titleArea.LineCount(); h != m.titleArea.Height() {
+			m.titleArea.SetHeight(h)
+		}
 		// After updating the title input, check if a known tag prefix was typed.
 		// Auto-populate the tags field on ":" so the user gets instant feedback.
-		if autoTag := model.ParseTitleTag(m.input.Value(), m.knownTags); autoTag != "" {
+		if autoTag := model.ParseTitleTag(m.titleArea.Value(), m.knownTags); autoTag != "" {
 			existing := m.tagInput.Value()
 			if !tagFieldContains(existing, autoTag) {
 				if existing == "" {
@@ -1226,6 +1266,22 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// sanitizeTitle trims surrounding whitespace but preserves interior newlines
+// inserted via Alt+Enter. Each line is individually trimmed and blank lines
+// are dropped so stray empty lines don't bloat the stored title.
+func sanitizeTitle(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n")
 }
 
 // tagFieldContains reports whether the comma-separated tag field text already
@@ -1385,10 +1441,11 @@ func (m *Model) openEdit() tea.Cmd {
 		if err := storeRef.Update(updated); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
 		}
-		if err := git.AutoCommit(repoPath, fmt.Sprintf("edit: %s", updated.Title), taskRelPath(updated.ID)); err != nil {
+		flat := flattenTitle(updated.Title)
+		if err := git.AutoCommit(repoPath, fmt.Sprintf("edit: %s", flat), taskRelPath(updated.ID)); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Edited: %s", updated.Title)}
+		return taskSavedMsg{status: fmt.Sprintf("Edited: %s", flat)}
 	})
 }
 
@@ -1712,10 +1769,11 @@ func (m *Model) commitGrab() tea.Cmd {
 				}
 			}
 		}
-		if err := git.AutoCommit(repoPath, fmt.Sprintf("move: %s", t.Title), taskRelPath(t.ID)); err != nil {
+		flat := flattenTitle(t.Title)
+		if err := git.AutoCommit(repoPath, fmt.Sprintf("move: %s", flat), taskRelPath(t.ID)); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Moved: %s", t.Title), focusID: t.ID}
+		return taskSavedMsg{status: fmt.Sprintf("Moved: %s", flat), focusID: t.ID}
 	}
 }
 
@@ -1847,10 +1905,11 @@ func (m *Model) createCmd(title string, tags []string) tea.Cmd {
 		if err := storeRef.Create(task); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("create: %w", err)}
 		}
-		if err := git.AutoCommit(repoPath, fmt.Sprintf("add: %s", title), taskRelPath(id)); err != nil {
+		flat := flattenTitle(title)
+		if err := git.AutoCommit(repoPath, fmt.Sprintf("add: %s", flat), taskRelPath(id)); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Added: %s", title), focusID: id}
+		return taskSavedMsg{status: fmt.Sprintf("Added: %s", flat), focusID: id}
 	}
 }
 
@@ -1893,10 +1952,11 @@ func (m *Model) deleteCmd(task model.Task) tea.Cmd {
 		if err := m.store.Delete(task.ID); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("delete: %w", err)}
 		}
-		if err := git.AutoCommit(m.repoPath, fmt.Sprintf("rm: %s", task.Title), taskRelPath(task.ID)); err != nil {
+		flat := flattenTitle(task.Title)
+		if err := git.AutoCommit(m.repoPath, fmt.Sprintf("rm: %s", flat), taskRelPath(task.ID)); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Deleted: %s", task.Title)}
+		return taskSavedMsg{status: fmt.Sprintf("Deleted: %s", flat)}
 	}
 }
 
@@ -2052,7 +2112,7 @@ func (m *Model) recomputeLayout() {
 	switch m.mode {
 	case modeAdd:
 		inputW := m.modalInnerWidth() - 8
-		m.input.Width = inputW
+		m.titleArea.SetWidth(inputW)
 		m.tagInput.Width = inputW
 	case modeRetag, modeReschedule:
 		m.input.Width = m.modalInnerWidth() - 1
@@ -2073,7 +2133,8 @@ func (m *Model) computeItemHeight() int {
 	}
 	for _, it := range m.lists[m.activeTab].Items() {
 		if task, ok := it.(item); ok {
-			if utf8.RuneCountInString(task.Title()) > textWidth {
+			title := task.Title()
+			if strings.Contains(title, "\n") || utf8.RuneCountInString(title) > textWidth {
 				return 3
 			}
 		}
@@ -2273,7 +2334,11 @@ func (m *Model) modalView() string {
 		return modalBox("Tags (comma-separated):\n\n"+m.input.View(), iw)
 	case modeAdd:
 		t := m.tabs[m.activeTab]
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s", t.label, m.input.View(), m.tagInput.View()), iw)
+		// The textarea's View() spans titleArea.Height() lines; align the "Title:"
+		// label with its first line so taller boxes still read naturally.
+		titleView := indentContinuation(m.titleArea.View(), "       ")
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View()), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""
@@ -2319,6 +2384,19 @@ func modalBox(content string, innerWidth int) string {
 
 // --- helpers ---------------------------------------------------------------
 
+// indentContinuation prepends prefix to every line of s after the first. Used
+// to align multi-line text under a leading label like "Title: ".
+func indentContinuation(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= 1 {
+		return s
+	}
+	for i := 1; i < len(lines); i++ {
+		lines[i] = prefix + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func taskRelPath(id string) string {
 	return filepath.Join(".monolog", "tasks", id+".json")
 }
@@ -2329,8 +2407,21 @@ func now() string {
 
 // wrapText breaks s into lines of at most width runes, splitting at word
 // boundaries when possible. Falls back to hard-breaking mid-word when a
-// single word exceeds the width. Returns at least one line.
+// single word exceeds the width. Explicit '\n' characters (from multi-line
+// titles) always start a new line. Returns at least one line.
 func wrapText(s string, width int) []string {
+	if !strings.Contains(s, "\n") {
+		return wrapLine(s, width)
+	}
+	var lines []string
+	for _, ln := range strings.Split(s, "\n") {
+		lines = append(lines, wrapLine(ln, width)...)
+	}
+	return lines
+}
+
+// wrapLine width-wraps a single line (no embedded newlines).
+func wrapLine(s string, width int) []string {
 	if width <= 0 || utf8.RuneCountInString(s) <= width {
 		return []string{s}
 	}
@@ -2358,6 +2449,22 @@ func wrapText(s string, width int) []string {
 		}
 	}
 	return lines
+}
+
+// flattenTitle replaces any newlines in a title with spaces so it fits on a
+// single line. Used for git commit subjects and one-line status messages.
+func flattenTitle(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	// Collapse the runs of spaces that blank lines would have produced.
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	return strings.TrimSpace(s)
 }
 
 // truncateTitle shortens s to width runes, appending "…" if truncated.

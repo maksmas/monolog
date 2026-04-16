@@ -22,7 +22,7 @@ go vet ./...                 # Lint
 main.go                 → Entrypoint, calls cobra root command
 cmd/                    → One file per CLI command (add.go, ls.go, etc.)
 internal/model/task.go  → Task struct with JSON tags, ULID generation
-internal/store/         → File-based CRUD, prefix-match ID lookup, filtering/sorting
+internal/store/         → File-based CRUD, prefix-match ID lookup, initials resolution, filtering/sorting
 internal/ordering/      → Fractional position math and rebalancing
 internal/schedule/      → Bucket names ↔ ISO dates, bucket classification
 internal/display/       → Terminal table formatting and compact date helpers
@@ -36,6 +36,7 @@ Commands in `cmd/` handle CLI parsing and delegate to `internal/` packages. Runn
 
 - **One JSON file per task** (`<repo>/.monolog/tasks/<ULID>.json`): eliminates merge conflicts on sync. Two devices editing different tasks rebase cleanly.
 - **ULID IDs**: time-sortable, globally unique, users type partial prefixes (e.g. `01J5K`) which resolve via directory scan.
+- **Title-initials lookup**: CLI commands (`done`, `edit`, `rm`, `mv`) resolve identifiers via `store.Resolve()`, which tries ULID prefix first, then falls back to matching the first letters of each word in open task titles (e.g. `flb` → "Fix login bug"). Minimum 2 characters, case-insensitive, prefix-matching on initials. Ambiguous matches list conflicting titles. Implemented via `model.Initials()` and `store.Resolve()`.
 - **Fractional positions**: inserting between positions 1000 and 2000 gives 1500. Rebalance all positions in a schedule group when any gap drops below 1.0. Default spacing is 1000.
 - **Schedule values**: `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date (`2026-04-15`). Stored on disk as ISO dates; bucket names are input shorthand and display-time predicates.
 - **Runtime data directory**: `~/.monolog/` by default, override with `MONOLOG_DIR` env var.
