@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -626,13 +625,11 @@ func TestGrab_DelegateHighlightsGrabbedItemOnly(t *testing.T) {
 	// Delegate needs a non-zero list width to render.
 	m.lists[0].SetSize(80, 20)
 
-	d := newItemDelegate(m)
 	items := m.lists[0].Items()
 
 	// Index 0 is the selected/cursor row in normal mode.
-	var normalSel, normalOther bytes.Buffer
-	d.Render(&normalSel, m.lists[0], 0, items[0])
-	d.Render(&normalOther, m.lists[0], 1, items[1])
+	normalSel := m.renderListItem(0, items[0], true)
+	normalOther := m.renderListItem(1, items[1], false)
 
 	// Grab the first item.
 	m, _ = key(t, m, "m")
@@ -640,17 +637,16 @@ func TestGrab_DelegateHighlightsGrabbedItemOnly(t *testing.T) {
 		t.Fatalf("mode = %v, want modeGrab", m.mode)
 	}
 
-	var grabSel, grabOther bytes.Buffer
-	d.Render(&grabSel, m.lists[0], 0, items[0])
-	d.Render(&grabOther, m.lists[0], 1, items[1])
+	grabSel := m.renderListItem(0, items[0], true)
+	grabOther := m.renderListItem(1, items[1], false)
 
-	if normalSel.String() == grabSel.String() {
+	if normalSel == grabSel {
 		t.Errorf("grabbed row should render with different styling than normal selected row;\n normal=%q\n grab  =%q",
-			normalSel.String(), grabSel.String())
+			normalSel, grabSel)
 	}
-	if normalOther.String() != grabOther.String() {
+	if normalOther != grabOther {
 		t.Errorf("non-grabbed row should render identically in grab mode;\n normal=%q\n grab  =%q",
-			normalOther.String(), grabOther.String())
+			normalOther, grabOther)
 	}
 }
 
@@ -1019,17 +1015,12 @@ func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
 			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m.lists[0].SetSize(80, 20)
-	d := newItemDelegate(m)
 	items := m.lists[0].Items()
 
 	// Render the active item (index 0 = selected row) and the normal item
 	// (index 1 = unselected row).
-	var activeBuf, normalBuf bytes.Buffer
-	d.Render(&activeBuf, m.lists[0], 0, items[0])
-	d.Render(&normalBuf, m.lists[0], 1, items[1])
-
-	activeOut := activeBuf.String()
-	normalOut := normalBuf.String()
+	activeOut := m.renderListItem(0, items[0], true)
+	normalOut := m.renderListItem(1, items[1], false)
 
 	// When the active item is selected it uses the brighter AdaptiveColor Dark="#4ADE80" = RGB(73,222,128).
 	// In TrueColor mode this produces the ANSI sequence "38;2;73;222;128".
@@ -1060,7 +1051,6 @@ func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
 			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	m.lists[0].SetSize(80, 20)
-	d := newItemDelegate(m)
 
 	// Grab the active task (index 0 is selected by default).
 	m, _ = key(t, m, "m")
@@ -1070,10 +1060,7 @@ func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
 
 	// Render the grabbed+active task at cursor index using the same item.
 	theItem := m.lists[0].Items()[0]
-	var grabbedBuf bytes.Buffer
-	d.Render(&grabbedBuf, m.lists[0], 0, theItem)
-
-	grabbedOut := grabbedBuf.String()
+	grabbedOut := m.renderListItem(0, theItem, true)
 
 	// Grab style uses orange/yellow. Active style uses green. When both
 	// apply, grab must win — so green should NOT appear in the output, and
@@ -1202,7 +1189,7 @@ func TestActivePanel_ShrinksListHeight(t *testing.T) {
 	m = next.(*Model)
 
 	// No active tasks: record height.
-	heightBefore := m.lists[0].Height()
+	heightBefore := m.lists[0].height
 
 	// Activate a task.
 	m, cmd := key(t, m, "a")
@@ -1211,7 +1198,7 @@ func TestActivePanel_ShrinksListHeight(t *testing.T) {
 	}
 	m = runCmd(t, m, cmd)
 
-	heightAfter := m.lists[0].Height()
+	heightAfter := m.lists[0].height
 	panelH := m.activePanelHeight()
 
 	if panelH == 0 {
@@ -1248,7 +1235,7 @@ func TestActivePanel_HeightMatchesRendered(t *testing.T) {
 	}
 }
 
-func TestActivePanel_TruncatesLongTitles(t *testing.T) {
+func TestActivePanel_ShowsFullLongTitle(t *testing.T) {
 	prev := lipgloss.DefaultRenderer().ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
@@ -1269,12 +1256,14 @@ func TestActivePanel_TruncatesLongTitles(t *testing.T) {
 			t.Errorf("panel line exceeds terminal width (%d): got %d runes: %q", width, lineLen, line)
 		}
 	}
-	// The panel must contain the ellipsis character and must NOT contain the full title.
-	if !strings.Contains(panel, "\u2026") {
-		t.Error("panel should contain ellipsis character '\u2026' for truncated title")
+	// Count x's in the rendered panel — all 200 must be present (no truncation).
+	xCount := strings.Count(panel, "x")
+	if xCount != 200 {
+		t.Errorf("panel should contain all 200 x's, got %d", xCount)
 	}
-	if strings.Contains(panel, longTitle) {
-		t.Error("panel should NOT contain the full 200-char title")
+	// Must NOT contain ellipsis.
+	if strings.Contains(panel, "\u2026") {
+		t.Error("panel should not truncate with ellipsis")
 	}
 }
 
@@ -1590,21 +1579,22 @@ func TestWrapText(t *testing.T) {
 	}
 }
 
-// --- itemHeight tests --------------------------------------------------------
+// --- vlist itemHeight tests --------------------------------------------------
 
-func TestComputeItemHeight_DefaultWhenShortTitles(t *testing.T) {
+func TestVlistItemHeight_ShortTitle(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "short", Status: "open", Schedule: "today",
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
-	if m.itemHeight != 2 {
-		t.Errorf("itemHeight = %d, want 2 for short titles", m.itemHeight)
+	// Short title: 1 title line + 1 desc line + 1 blank = 3.
+	if h := m.lists[0].itemHeight(0); h != 3 {
+		t.Errorf("itemHeight = %d, want 3 for short title", h)
 	}
 }
 
-func TestComputeItemHeight_BumpsWhenLongTitle(t *testing.T) {
+func TestVlistItemHeight_LongTitle(t *testing.T) {
 	longTitle := strings.Repeat("x", 100)
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: longTitle, Status: "open", Schedule: "today",
@@ -1612,36 +1602,20 @@ func TestComputeItemHeight_BumpsWhenLongTitle(t *testing.T) {
 	)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
 	m = next.(*Model)
-	// 60 - 2 (padding) = 58 text width; 100 chars > 58, so height should be 3.
-	if m.itemHeight != 3 {
-		t.Errorf("itemHeight = %d, want 3 for long title", m.itemHeight)
+	// 60 - 2 (padding) = 58 text width; 100 chars wraps to 2 lines + 1 desc + 1 blank = 4.
+	if h := m.lists[0].itemHeight(0); h != 4 {
+		t.Errorf("itemHeight = %d, want 4 for long title", h)
 	}
 }
 
-func TestItemHeightChangesOnTabSwitch(t *testing.T) {
-	longTitle := strings.Repeat("word ", 20) // 100 chars
-	m := newTestModel(t,
-		model.Task{ID: "01A", Title: "short", Status: "open", Schedule: "today",
-			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
-		model.Task{ID: "01B", Title: longTitle, Status: "open", Schedule: "tomorrow",
-			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
-	)
+func TestVlistItemHeight_Separator(t *testing.T) {
+	m := newTestModel(t)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
 	m = next.(*Model)
-
-	// Today tab: short title → height 2.
-	if m.itemHeight != 2 {
-		t.Errorf("Today tab: itemHeight = %d, want 2", m.itemHeight)
-	}
-	// Switch to Tomorrow tab: long title → height 3.
-	m, _ = key(t, m, "right")
-	if m.itemHeight != 3 {
-		t.Errorf("Tomorrow tab: itemHeight = %d, want 3", m.itemHeight)
-	}
-	// Switch back to Today: height should return to 2.
-	m, _ = key(t, m, "left")
-	if m.itemHeight != 2 {
-		t.Errorf("Today tab after return: itemHeight = %d, want 2", m.itemHeight)
+	sep := newSeparatorItem("Today")
+	m.lists[0].SetItems([]list.Item{sep})
+	if h := m.lists[0].itemHeight(0); h != 1 {
+		t.Errorf("separator itemHeight = %d, want 1", h)
 	}
 }
 
@@ -2539,16 +2513,12 @@ func TestSeparatorRender_ContainsLabel(t *testing.T) {
 	// Verify that the separator renderer produces output containing the label.
 	lipgloss.SetColorProfile(termenv.Ascii)
 	m := newTestModel(t)
-	delegate := newItemDelegate(m)
 
 	sep := newSeparatorItem("Week")
-	lm := m.lists[0]
-	lm.SetItems([]list.Item{sep})
-	lm.SetSize(60, 10)
+	m.lists[0].SetItems([]list.Item{sep})
+	m.lists[0].SetSize(60, 10)
 
-	var buf bytes.Buffer
-	delegate.Render(&buf, lm, 0, sep)
-	out := buf.String()
+	out := m.renderListItem(0, sep, false)
 	if !strings.Contains(out, "Week") {
 		t.Errorf("separator render should contain label %q, got %q", "Week", out)
 	}
@@ -3350,7 +3320,7 @@ func TestToggleViewMode_RecomputeLayout(t *testing.T) {
 	}
 
 	// Get list height in schedule view.
-	schedListH := m.lists[0].Height()
+	schedListH := m.lists[0].height
 
 	// Toggle to tag view.
 	m, _ = key(t, m, "v")
@@ -3361,7 +3331,7 @@ func TestToggleViewMode_RecomputeLayout(t *testing.T) {
 	}
 
 	// List should be taller in tag view (recovered the panel space).
-	tagListH := m.lists[0].Height()
+	tagListH := m.lists[0].height
 	if tagListH <= schedListH {
 		t.Errorf("tag view list height (%d) should be > schedule view list height (%d)", tagListH, schedListH)
 	}
@@ -4212,21 +4182,21 @@ func TestSkipSeparator_CursorSkipsPastSeparator(t *testing.T) {
 
 	// Select the today task (index 1), then skip should be a no-op.
 	m.lists[m.activeTab].Select(1)
-	m.skipSeparator(0)
+	m.skipSeparator(1)
 	if m.lists[m.activeTab].Index() != 1 {
 		t.Errorf("cursor after skipSeparator on non-separator = %d, want 1", m.lists[m.activeTab].Index())
 	}
 
 	// Manually place cursor on separator at index 2 (simulating a down move from 1).
 	m.lists[m.activeTab].Select(2)
-	m.skipSeparator(1) // previous was 1, so direction is down
+	m.skipSeparator(1) // direction is down
 	if m.lists[m.activeTab].Index() != 3 {
 		t.Errorf("cursor after skipping separator downward = %d, want 3", m.lists[m.activeTab].Index())
 	}
 
 	// Place cursor on separator at index 2 (simulating an up move from 3).
 	m.lists[m.activeTab].Select(2)
-	m.skipSeparator(3) // previous was 3, so direction is up
+	m.skipSeparator(-1) // direction is up
 	if m.lists[m.activeTab].Index() != 1 {
 		t.Errorf("cursor after skipping separator upward = %d, want 1", m.lists[m.activeTab].Index())
 	}
@@ -4744,15 +4714,15 @@ func TestSanitizeTitle_DropsBlankLines(t *testing.T) {
 	}
 }
 
-func TestComputeItemHeight_BumpsOnMultilineTitle(t *testing.T) {
+func TestVlistItemHeight_MultilineTitle(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "line1\nline2", Status: "open", Schedule: "today",
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
-	// 80 - 2 padding = 78 text width; title is short but has a newline -> height 3.
-	if m.itemHeight != 3 {
-		t.Errorf("itemHeight = %d, want 3 (newline in title)", m.itemHeight)
+	// 80 - 2 padding = 78 text width; title is short but has a newline → 2 title lines + 1 desc + 1 blank = 4.
+	if h := m.lists[0].itemHeight(0); h != 4 {
+		t.Errorf("itemHeight = %d, want 4 (newline in title)", h)
 	}
 }

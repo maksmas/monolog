@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,7 +95,12 @@ type Model struct {
 
 	tabs      []tab
 	activeTab int
-	lists     []list.Model // one per tab
+	lists     []*vlist // one per tab
+
+	// Style sets for list item rendering.
+	baseStyles   list.DefaultItemStyles
+	grabStyles   list.DefaultItemStyles
+	activeStyles list.DefaultItemStyles
 
 	// View mode: schedule (default) or tag.
 	viewMode viewMode
@@ -137,10 +141,6 @@ type Model struct {
 	// Used for computing global stats.
 	allTasks []model.Task
 	stats    model.Stats
-
-	// itemHeight is the delegate height for list items: 2 when all titles
-	// in the active tab fit in one line, 3 when any title requires wrapping.
-	itemHeight int
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
@@ -187,113 +187,84 @@ func (i item) Description() string {
 
 func (i item) FilterValue() string { return i.task.Title }
 
-// itemDelegate wraps list.DefaultDelegate to apply context-dependent styling.
-// A pointer to Model lets Render consult the current mode and task state.
-// Render decision tree (first match wins):
-//   - grab: in modeGrab the selected row uses orange grabStyles to signal it's being moved.
-//   - active: tasks with the "active" tag use green activeStyles (both selected and unselected).
-//   - base: all other tasks use the default delegate styles.
-type itemDelegate struct {
-	base         list.DefaultDelegate
-	grabStyles   list.DefaultItemStyles
-	activeStyles list.DefaultItemStyles
-	m            *Model
-}
+// initStyles sets up the three style sets used for list item rendering.
+// Styles carry only foreground colors (no padding or borders) because bullet
+// prefixes handle indentation and selection indication.
+func initStyles() (base, grab, active list.DefaultItemStyles) {
+	normalFg := lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"}
+	selectedFg := lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"}
+	dimFg := lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"}
 
-func newItemDelegate(m *Model) *itemDelegate {
-	base := list.NewDefaultDelegate()
-	grab := list.NewDefaultItemStyles()
+	base.NormalTitle = lipgloss.NewStyle().Foreground(normalFg)
+	base.SelectedTitle = lipgloss.NewStyle().Foreground(selectedFg)
+	base.NormalDesc = lipgloss.NewStyle().Foreground(dimFg)
+	base.SelectedDesc = lipgloss.NewStyle().Foreground(selectedFg)
+
 	// Distinct from default pink selection: orange/yellow reads as "held".
+	grab = base
 	grabColor := lipgloss.AdaptiveColor{Light: "#D97706", Dark: "#FFB454"}
-	grab.SelectedTitle = grab.SelectedTitle.
-		Foreground(grabColor).
-		BorderForeground(grabColor).
-		Bold(true)
-	grab.SelectedDesc = grab.SelectedDesc.
-		Foreground(grabColor).
-		BorderForeground(grabColor)
+	grab.SelectedTitle = lipgloss.NewStyle().Foreground(grabColor).Bold(true)
+	grab.SelectedDesc = lipgloss.NewStyle().Foreground(grabColor)
 
 	// Green styling for active tasks (persistent "currently working on" state).
-	active := list.NewDefaultItemStyles()
+	active = base
 	activeColor := lipgloss.AdaptiveColor{Light: "#16A34A", Dark: "#22C55E"}
-	// Brighter green when an active task is selected so selection is unmissable.
 	activeSelectedColor := lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#4ADE80"}
-	active.NormalTitle = active.NormalTitle.Foreground(activeColor)
-	active.NormalDesc = active.NormalDesc.Foreground(activeColor)
-	active.SelectedTitle = active.SelectedTitle.
-		Foreground(activeSelectedColor).
-		BorderForeground(activeSelectedColor).
-		Bold(true)
-	active.SelectedDesc = active.SelectedDesc.
-		Foreground(activeSelectedColor).
-		BorderForeground(activeSelectedColor)
+	active.NormalTitle = lipgloss.NewStyle().Foreground(activeColor)
+	active.NormalDesc = lipgloss.NewStyle().Foreground(activeColor)
+	active.SelectedTitle = lipgloss.NewStyle().Foreground(activeSelectedColor).Bold(true)
+	active.SelectedDesc = lipgloss.NewStyle().Foreground(activeSelectedColor)
 
-	return &itemDelegate{base: base, grabStyles: grab, activeStyles: active, m: m}
+	return
 }
 
-func (d *itemDelegate) Height() int {
-	if d.m.itemHeight > 0 {
-		return d.m.itemHeight
-	}
-	return d.base.Height()
-}
-func (d *itemDelegate) Spacing() int { return d.base.Spacing() }
-func (d *itemDelegate) Update(msg tea.Msg, lm *list.Model) tea.Cmd {
-	return d.base.Update(msg, lm)
-}
-
-func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Item) {
+// renderListItem renders a single list item (regular or separator) as a
+// fully styled multi-line string. Used as the callback for vlist.Render.
+func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 	i, ok := it.(item)
-	if !ok || lm.Width() <= 0 {
-		return
+	if !ok {
+		return ""
 	}
-
-	// Separator items: dimmed, non-selectable bucket headings.
 	if i.isSeparator {
-		d.renderSeparator(w, lm, i)
-		return
+		label := "── " + i.task.Title + " ──"
+		return separatorStyle.Render(label)
 	}
 
 	// Pick the style set based on mode and task state.
 	var s *list.DefaultItemStyles
 	switch {
-	case d.m.mode == modeGrab && index == lm.Index():
-		s = &d.grabStyles
+	case m.mode == modeGrab && selected:
+		s = &m.grabStyles
 	case i.task.IsActive():
-		s = &d.activeStyles
+		s = &m.activeStyles
 	default:
-		s = &d.base.Styles
+		s = &m.baseStyles
 	}
 
-	isSelected := index == lm.Index()
+	// Text width after bullet prefix ("▸ " / "· " = 2 chars).
+	textWidth := m.lists[m.activeTab].Width() - 2
 
-	// Available text width (left padding is 2 for both normal and selected).
-	textWidth := lm.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight()
-
-	// Wrap title across available lines (height − 1 reserved for description).
 	titleLines := wrapText(i.Title(), textWidth)
-	maxTitleLines := d.Height() - 1
-	if maxTitleLines < 1 {
-		maxTitleLines = 1
+
+	// Prepend bullet on first line, indent continuation lines.
+	bullet := "· "
+	if selected {
+		bullet = "▸ "
 	}
-	if len(titleLines) > maxTitleLines {
-		titleLines = titleLines[:maxTitleLines]
-		// Add ellipsis to signal truncation.
-		last := titleLines[len(titleLines)-1]
-		runes := []rune(last)
-		if len(runes) >= textWidth {
-			titleLines[len(titleLines)-1] = string(runes[:textWidth-1]) + "…"
+	const indent = "  "
+	for j := range titleLines {
+		if j == 0 {
+			titleLines[j] = bullet + titleLines[j]
 		} else {
-			titleLines[len(titleLines)-1] = last + "…"
+			titleLines[j] = indent + titleLines[j]
 		}
 	}
 	title := strings.Join(titleLines, "\n")
 
 	desc := i.Description()
-	desc = truncateTitle(desc, textWidth)
+	desc = indent + truncateTitle(desc, textWidth)
 
-	// Apply styles.
-	if isSelected {
+	if selected {
 		title = s.SelectedTitle.Render(title)
 		desc = s.SelectedDesc.Render(desc)
 	} else {
@@ -301,20 +272,7 @@ func (d *itemDelegate) Render(w io.Writer, lm list.Model, index int, it list.Ite
 		desc = s.NormalDesc.Render(desc)
 	}
 
-	fmt.Fprintf(w, "%s\n%s", title, desc)
-}
-
-// renderSeparator draws a bucket heading line with dimmed styling. The label
-// is framed by "── " / " ──" dashes and takes up the full delegate height with
-// blank lines padding below the title.
-func (d *itemDelegate) renderSeparator(w io.Writer, lm list.Model, i item) {
-	label := "── " + i.task.Title + " ──"
-	line := separatorStyle.Render(label)
-	// Pad remaining lines of the delegate height with empty lines.
-	for extra := 1; extra < d.Height(); extra++ {
-		line += "\n"
-	}
-	fmt.Fprint(w, line)
+	return title + "\n" + desc + "\n"
 }
 
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
@@ -364,6 +322,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		tagInput:  tagTi,
 		titleArea: ta,
 	}
+	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
 
 	m.lists = m.initLists()
 
@@ -381,18 +340,11 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	return m, nil
 }
 
-// initLists creates a fresh slice of list.Model widgets, one per tab.
-func (m *Model) initLists() []list.Model {
-	delegate := newItemDelegate(m)
-	lists := make([]list.Model, len(m.tabs))
+// initLists creates a fresh slice of vlist widgets, one per tab.
+func (m *Model) initLists() []*vlist {
+	lists := make([]*vlist, len(m.tabs))
 	for i := range m.tabs {
-		l := list.New(nil, delegate, 0, 0)
-		l.SetShowTitle(false)
-		l.SetShowStatusBar(false)
-		l.SetShowHelp(false)
-		l.SetFilteringEnabled(false)
-		l.DisableQuitKeybindings()
-		lists[i] = l
+		lists[i] = &vlist{}
 	}
 	return lists
 }
@@ -446,7 +398,6 @@ func (m *Model) refreshTagTabs() error {
 		m.tagTabs = newTagTabs
 		for i, tt := range m.tagTabs {
 			m.tabs[i] = tab{label: tt.label, bucket: "", status: "open"}
-			m.lists[i].Title = tt.label
 		}
 	}
 	return nil
@@ -621,6 +572,21 @@ func bucketDisplayName(bucket string) string {
 func (m *Model) findBucketAbove() string {
 	items := m.lists[m.activeTab].Items()
 	for i := m.grabIndex - 1; i >= 0; i-- {
+		it, ok := items[i].(item)
+		if ok && it.isSeparator {
+			return bucketNameFromLabel(it.task.Title)
+		}
+	}
+	return ""
+}
+
+// bucketAtCursor scans backwards from the current list cursor to find the
+// nearest separator item. Returns the bucket name (e.g. "today", "week") or
+// empty string if no separator is found. Used to determine schedule context
+// when creating tasks in tag view.
+func (m *Model) bucketAtCursor() string {
+	items := m.lists[m.activeTab].Items()
+	for i := m.lists[m.activeTab].Index(); i >= 0; i-- {
 		it, ok := items[i].(item)
 		if ok && it.isSeparator {
 			return bucketNameFromLabel(it.task.Title)
@@ -804,40 +770,13 @@ func (m *Model) selectedTask() *model.Task {
 	return &it.task
 }
 
-// skipSeparator advances the cursor past a separator item if the list's
-// current selection is one. prevIdx is the cursor position before the list
-// processed the key; the direction is inferred from the movement.
-func (m *Model) skipSeparator(prevIdx int) {
-	l := &m.lists[m.activeTab]
-	items := l.Items()
-	cur := l.Index()
-	if cur < 0 || cur >= len(items) {
-		return
+// skipSeparator moves the cursor off a separator item. dir indicates the
+// preferred direction (+1 down, -1 up); 0 defaults to +1.
+func (m *Model) skipSeparator(dir int) {
+	if dir == 0 {
+		dir = 1
 	}
-	it, ok := items[cur].(item)
-	if !ok || !it.isSeparator {
-		return
-	}
-	// Determine direction: default to down if the cursor didn't change
-	// (e.g. first render with cursor already on a separator).
-	delta := 1
-	if cur < prevIdx {
-		delta = -1
-	}
-	// Scan in the same direction for the next non-separator item.
-	for next := cur + delta; next >= 0 && next < len(items); next += delta {
-		if it2, ok := items[next].(item); ok && !it2.isSeparator {
-			l.Select(next)
-			return
-		}
-	}
-	// No non-separator found in that direction — try the opposite.
-	for next := cur - delta; next >= 0 && next < len(items); next -= delta {
-		if it2, ok := items[next].(item); ok && !it2.isSeparator {
-			l.Select(next)
-			return
-		}
-	}
+	m.lists[m.activeTab].SkipSeparator(dir)
 }
 
 // Init is the Bubble Tea Init hook.
@@ -953,15 +892,23 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	prevIdx := m.lists[m.activeTab].Index()
-	var cmd tea.Cmd
-	m.lists[m.activeTab], cmd = m.lists[m.activeTab].Update(msg)
-	// If the cursor landed on a separator, skip past it in the same
-	// direction so separators are not selectable during normal navigation.
-	if m.viewMode == viewTag {
-		m.skipSeparator(prevIdx)
+	// Cursor navigation — handled by vlist directly.
+	vl := m.lists[m.activeTab]
+	switch msg.String() {
+	case "j", "down":
+		vl.CursorDown()
+	case "k", "up":
+		vl.CursorUp()
+	case "pgdown":
+		vl.PageDown()
+	case "pgup":
+		vl.PageUp()
+	case "g", "home":
+		vl.GoToStart()
+	case "G", "end":
+		vl.GoToEnd()
 	}
-	return m, cmd
+	return m, nil
 }
 
 // updateModal routes keys based on the current modal.
@@ -1189,7 +1136,17 @@ func (m *Model) openAdd() tea.Cmd {
 	m.tagInput.Width = inputW
 	m.titleArea.Reset()
 	m.titleArea.Focus()
-	m.tagInput.SetValue("")
+	// In tag view, prepopulate the tag field with the current tab's tag.
+	if m.viewMode == viewTag {
+		tt := m.tagTabs[m.activeTab]
+		if !tt.isActive && !tt.isUntagged {
+			m.tagInput.SetValue(tt.tag)
+		} else {
+			m.tagInput.SetValue("")
+		}
+	} else {
+		m.tagInput.SetValue("")
+	}
 	m.tagInput.Blur()
 	m.addFocus = addFocusTitle
 	// Cache known tags from all loaded list items for instant auto-tag on ":".
@@ -1240,18 +1197,13 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.addFocus == addFocusTags {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 	} else {
-		// Pre-grow the textarea height before Alt+Enter so the viewport has a
-		// visible row for the new line. Otherwise InsertNewline moves the
-		// cursor past the bottom of a height-1 viewport and the textarea's
-		// repositionView scrolls the original line off the top. Post-update we
-		// resize to the actual line count.
-		if msg.Type == tea.KeyEnter && msg.Alt {
-			m.titleArea.SetHeight(m.titleArea.LineCount() + 1)
-		}
+		// Pre-grow the textarea height before the update so the viewport
+		// never needs to scroll. Without this, Update()'s internal
+		// repositionView sees a too-small viewport and scrolls the top
+		// line out of view. After the update we trim to the exact count.
+		m.titleArea.SetHeight(textareaVisualHeight(m.titleArea) + 1)
 		m.titleArea, cmd = m.titleArea.Update(msg)
-		if h := m.titleArea.LineCount(); h != m.titleArea.Height() {
-			m.titleArea.SetHeight(h)
-		}
+		m.titleArea.SetHeight(textareaVisualHeight(m.titleArea) + 1)
 		// After updating the title input, check if a known tag prefix was typed.
 		// Auto-populate the tags field on ":" so the user gets instant feedback.
 		if autoTag := model.ParseTitleTag(m.titleArea.Value(), m.knownTags); autoTag != "" {
@@ -1851,13 +1803,21 @@ func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
 
 // createCmd creates a new task in the current tab's bucket at the bottom.
 func (m *Model) createCmd(title string, tags []string) tea.Cmd {
-	// Capture active-tab bucket at dispatch time; if user changes tabs
-	// while the cmd is in flight, we still place it in the intended bucket.
-	t := m.tabs[m.activeTab]
-	// "Add" on the Done tab doesn't really make sense; fall back to today.
-	bucket := t.bucket
-	if bucket == "" {
-		bucket = schedule.Today
+	// Capture bucket at dispatch time; if user changes tabs while the cmd
+	// is in flight, we still place it in the intended bucket.
+	var bucket string
+	if m.viewMode == viewTag {
+		// In tag view, derive bucket from the separator above the cursor.
+		bucket = m.bucketAtCursor()
+		if bucket == "" || bucket == "done" {
+			bucket = schedule.Today
+		}
+	} else {
+		bucket = m.tabs[m.activeTab].bucket
+		// "Add" on the Done tab doesn't really make sense; fall back to today.
+		if bucket == "" {
+			bucket = schedule.Today
+		}
 	}
 	storeRef := m.store
 	repoPath := m.repoPath
@@ -1973,16 +1933,6 @@ func (m *Model) activePanelView() string {
 	var lines []string
 	for _, t := range m.activeTasks {
 		titleLines := wrapText(t.Title, titleWidth)
-		if len(titleLines) > 2 {
-			titleLines = titleLines[:2]
-			last := titleLines[1]
-			runes := []rune(last)
-			if len(runes) >= titleWidth {
-				titleLines[1] = string(runes[:titleWidth-1]) + "…"
-			} else {
-				titleLines[1] = last + "…"
-			}
-		}
 		prefix := display.ShortID(t.ID) + "  "
 		indent := strings.Repeat(" ", utf8.RuneCountInString(prefix))
 		for i, line := range titleLines {
@@ -2015,11 +1965,7 @@ func (m *Model) activePanelHeight() int {
 	}
 	contentLines := 0
 	for _, t := range m.activeTasks {
-		n := len(wrapText(t.Title, titleWidth))
-		if n > 2 {
-			n = 2
-		}
-		contentLines += n
+		contentLines += len(wrapText(t.Title, titleWidth))
 	}
 	return contentLines + 2
 }
@@ -2098,7 +2044,6 @@ func (m *Model) recomputeLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	m.itemHeight = m.computeItemHeight()
 	listH := m.height - 4 - m.activePanelHeight() - m.statsBarHeight()
 	if listH < 3 {
 		listH = 3
@@ -2119,29 +2064,6 @@ func (m *Model) recomputeLayout() {
 	}
 }
 
-// computeItemHeight returns 3 if any title in the active tab exceeds the
-// available text width (needs wrapping), otherwise 2.
-func (m *Model) computeItemHeight() int {
-	if m.width <= 0 {
-		return 2
-	}
-	// Text width matches the delegate Render calculation: list width minus
-	// NormalTitle left padding (2).
-	textWidth := m.width - 2
-	if textWidth <= 0 {
-		return 2
-	}
-	for _, it := range m.lists[m.activeTab].Items() {
-		if task, ok := it.(item); ok {
-			title := task.Title()
-			if strings.Contains(title, "\n") || utf8.RuneCountInString(title) > textWidth {
-				return 3
-			}
-		}
-	}
-	return 2
-}
-
 // --- View ------------------------------------------------------------------
 
 func (m *Model) View() string {
@@ -2157,8 +2079,7 @@ func (m *Model) View() string {
 
 	var body string
 	if m.mode == modeNormal || m.mode == modeGrab {
-		// Grab mode keeps the list view; the help bar signals the mode.
-		body = m.lists[m.activeTab].View()
+		body = m.lists[m.activeTab].Render(m.renderListItem)
 	} else {
 		body = m.modalView()
 	}
@@ -2383,6 +2304,30 @@ func modalBox(content string, innerWidth int) string {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// textareaVisualHeight returns the number of visual (display) lines the
+// textarea content occupies, accounting for soft-wrapping. This differs from
+// textarea.LineCount() which only counts logical lines delimited by newlines.
+func textareaVisualHeight(ta textarea.Model) int {
+	w := ta.Width()
+	if w <= 0 {
+		return max(1, ta.LineCount())
+	}
+	val := ta.Value()
+	if val == "" {
+		return 1
+	}
+	total := 0
+	for _, line := range strings.Split(val, "\n") {
+		lw := lipgloss.Width(line)
+		if lw <= w {
+			total++
+		} else {
+			total += (lw + w - 1) / w
+		}
+	}
+	return max(1, total)
+}
 
 // indentContinuation prepends prefix to every line of s after the first. Used
 // to align multi-line text under a leading label like "Title: ".
