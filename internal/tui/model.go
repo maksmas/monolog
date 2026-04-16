@@ -2480,9 +2480,17 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
+		if m.detailOpen {
+			return renderHelpBar(
+				[2]string{"esc", "close"},
+				[2]string{"enter", "submit"},
+				[2]string{"alt+enter", "newline"},
+			)
+		}
 		if m.viewMode == viewTag {
 			return renderHelpBar(
 				[2]string{"←/→", "tabs"},
+				[2]string{"enter", "notes"},
 				[2]string{"d", "done"},
 				[2]string{"e", "edit"},
 				[2]string{"r", "date"},
@@ -2500,6 +2508,7 @@ func (m *Model) helpLine() string {
 		return renderHelpBar(
 			[2]string{"←/→", "tabs"},
 			[2]string{"1-6", "jump"},
+			[2]string{"enter", "notes"},
 			[2]string{"d", "done"},
 			[2]string{"e", "edit"},
 			[2]string{"r", "date"},

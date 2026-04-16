@@ -5078,6 +5078,53 @@ func TestHelpMode_ModalViewNonEmpty(t *testing.T) {
 	}
 }
 
+func TestHelpLine_ScheduleView_EnterNotes(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+	m.viewMode = viewSchedule
+
+	help := m.helpLine()
+	if !strings.Contains(help, "enter") || !strings.Contains(help, "notes") {
+		t.Errorf("schedule view help line should contain 'enter notes', got: %s", help)
+	}
+}
+
+func TestHelpLine_TagView_EnterNotes(t *testing.T) {
+	task := makeTask(t, "01HN01", "task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	m.mode = modeNormal
+
+	help := m.helpLine()
+	if !strings.Contains(help, "enter") || !strings.Contains(help, "notes") {
+		t.Errorf("tag view help line should contain 'enter notes', got: %s", help)
+	}
+}
+
+func TestHelpLine_DetailOpen_ShowsPanelKeys(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01HN02", Title: "test task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-16T00:00:00Z"},
+	)
+	m.mode = modeNormal
+	m.detailOpen = true
+
+	help := m.helpLine()
+	for _, want := range []string{"esc", "close", "enter", "submit", "alt+enter", "newline"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("detail open help line should contain %q, got: %s", want, help)
+		}
+	}
+	// Should NOT contain normal mode keys like "done", "edit", "grab"
+	for _, notWant := range []string{"done", "edit", "grab"} {
+		if strings.Contains(help, notWant) {
+			t.Errorf("detail open help line should not contain %q, got: %s", notWant, help)
+		}
+	}
+}
+
 func TestDone_SetsCompletedAt(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "complete me", Status: "open", Schedule: "today",

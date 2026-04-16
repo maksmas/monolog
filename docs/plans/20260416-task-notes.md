@@ -147,9 +147,9 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Update `helpLine()` in `modeNormal` — add `Enter:notes` to both schedule-view and tag-view help bars
-- [ ] Update `helpLine()` when `detailOpen` — show `Esc:close Enter:submit` instead of the normal keybindings
-- [ ] Run tests: `go test ./internal/tui/`
+- [x] Update `helpLine()` in `modeNormal` — add `Enter:notes` to both schedule-view and tag-view help bars
+- [x] Update `helpLine()` when `detailOpen` — show `Esc:close Enter:submit` instead of the normal keybindings
+- [x] Run tests: `go test ./internal/tui/`
 
 ### Task 8: TUI detail panel — note submission
 
