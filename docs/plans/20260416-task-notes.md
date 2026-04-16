@@ -135,12 +135,12 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Create `detailPanelView() string` method — renders panel with: title (bold), schedule, tags, created date (completed if done), blank line, body as-is (scrollable), separator, textarea
-- [ ] Update `View()` — when `detailOpen`, render task list and detail panel side-by-side using `lipgloss.JoinHorizontal`. Allocate ~55% width to list, ~45% to panel.
-- [ ] Adjust list width when panel is open (narrower list to make room)
-- [ ] Handle terminal resize — recalculate split widths in `WindowSizeMsg`
-- [ ] Write tests for panel rendering (metadata display, body content, layout dimensions)
-- [ ] Run tests: `go test ./internal/tui/`
+- [x] Create `detailPanelView() string` method — renders panel with: title (bold), schedule, tags, created date (completed if done), blank line, body as-is (scrollable), separator, textarea
+- [x] Update `View()` — when `detailOpen`, render task list and detail panel side-by-side using `lipgloss.JoinHorizontal`. Allocate ~55% width to list, ~45% to panel.
+- [x] Adjust list width when panel is open (narrower list to make room)
+- [x] Handle terminal resize — recalculate split widths in `WindowSizeMsg`
+- [x] Write tests for panel rendering (metadata display, body content, layout dimensions)
+- [x] Run tests: `go test ./internal/tui/`
 
 ### Task 7: Update help/status bar with Enter hotkey
 

@@ -5601,3 +5601,370 @@ func TestDetailPanel_TabSwitchResetsScroll(t *testing.T) {
 		t.Errorf("detailScroll = %d after tab switch, want 0", m.detailScroll)
 	}
 }
+
+// --- detail panel rendering tests ------------------------------------------
+
+func TestDetailPanelView_EmptyWhenClosed(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	if got := m.detailPanelView(); got != "" {
+		t.Errorf("detailPanelView() should be empty when panel is closed, got %q", got)
+	}
+}
+
+func TestDetailPanelView_ShowsTaskMetadata(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ABCDEF", Title: "my test task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Tags:      []string{"work", "urgent"},
+			CreatedAt: "2026-04-15T10:00:00Z",
+			UpdatedAt: "2026-04-15T10:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open the panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	panel := m.detailPanelView()
+	if panel == "" {
+		t.Fatal("detailPanelView() should not be empty when panel is open")
+	}
+
+	// Title should be visible.
+	if !strings.Contains(panel, "my test task") {
+		t.Errorf("panel should contain the task title; got %q", panel)
+	}
+
+	// Schedule should be visible.
+	if !strings.Contains(panel, "Schedule:") {
+		t.Errorf("panel should contain schedule label; got %q", panel)
+	}
+
+	// Tags should be visible.
+	if !strings.Contains(panel, "Tags:") {
+		t.Errorf("panel should contain tags label; got %q", panel)
+	}
+	if !strings.Contains(panel, "work") {
+		t.Errorf("panel should contain tag 'work'; got %q", panel)
+	}
+	if !strings.Contains(panel, "urgent") {
+		t.Errorf("panel should contain tag 'urgent'; got %q", panel)
+	}
+
+	// Created date should be visible.
+	if !strings.Contains(panel, "Created:") {
+		t.Errorf("panel should contain created label; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_ShowsCompletedDate(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01DONE", Title: "done task", Status: "done",
+			Schedule:    expectSchedule(t, "today"), Position: 1000,
+			CreatedAt:   "2026-04-10T10:00:00Z",
+			UpdatedAt:   "2026-04-15T10:00:00Z",
+			CompletedAt: "2026-04-15T10:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Navigate to the Done tab.
+	doneIdx := findTabByLabel(t, m, "Done")
+	for m.activeTab != doneIdx {
+		m, _ = key(t, m, "right")
+	}
+
+	// Open the panel.
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "Completed:") {
+		t.Errorf("panel should show completed date for done tasks; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_ShowsBody(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01BODY", Title: "task with body", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "this is the body text\nwith multiple lines",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "this is the body text") {
+		t.Errorf("panel should contain body text; got %q", panel)
+	}
+	if !strings.Contains(panel, "with multiple lines") {
+		t.Errorf("panel should contain body continuation; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_EmptyBodyOK(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01NOBODY", Title: "no body task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+	if panel == "" {
+		t.Error("panel should render even with empty body")
+	}
+	// Should still contain the separator line (─).
+	if !strings.Contains(panel, "─") {
+		t.Errorf("panel should contain separator line; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_HidesActiveTag(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ACTIVE", Title: "active task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Tags:      []string{"work", "active"},
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	// "work" should be visible but "active" tag should be filtered by VisibleTags.
+	if !strings.Contains(panel, "work") {
+		t.Errorf("panel should show visible tags; got %q", panel)
+	}
+	// The panel should not show "active" as a tag (it's filtered by VisibleTags).
+	// Check that Tags: line doesn't contain the word "active".
+	for _, line := range strings.Split(panel, "\n") {
+		if strings.Contains(line, "Tags:") && strings.Contains(line, "active") {
+			t.Errorf("panel Tags line should not contain the reserved 'active' tag; got %q", line)
+		}
+	}
+}
+
+func TestDetailPanelView_NoTagsLine(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01NOTAG", Title: "no tags", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Tags:      nil,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+	if strings.Contains(panel, "Tags:") {
+		t.Errorf("panel should not show Tags line when there are no tags; got %q", panel)
+	}
+}
+
+func TestDetailPanel_ListNarrowsWhenOpen(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	widthBefore := m.lists[0].Width()
+
+	// Open the detail panel.
+	m, _ = key(t, m, "enter")
+
+	widthAfter := m.lists[0].Width()
+	if widthAfter >= widthBefore {
+		t.Errorf("list width should shrink when detail panel opens: before=%d after=%d", widthBefore, widthAfter)
+	}
+
+	// The detail panel width should be ~45% of terminal width.
+	dpw := m.detailPanelWidth()
+	if dpw == 0 {
+		t.Fatal("detailPanelWidth() should be > 0 when panel is open")
+	}
+	if widthAfter+dpw != 100 {
+		t.Errorf("list width + detail panel width should equal terminal width: %d + %d = %d, want 100",
+			widthAfter, dpw, widthAfter+dpw)
+	}
+}
+
+func TestDetailPanel_ListRestoresWidthWhenClosed(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	widthBefore := m.lists[0].Width()
+
+	// Open and close the panel.
+	m, _ = key(t, m, "enter")
+	m, _ = key(t, m, "esc")
+
+	widthAfter := m.lists[0].Width()
+	if widthAfter != widthBefore {
+		t.Errorf("list width should restore after panel close: before=%d after=%d", widthBefore, widthAfter)
+	}
+}
+
+func TestDetailPanel_ResizeRecalculatesWidths(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	widthAt100 := m.lists[0].Width()
+
+	// Resize terminal wider.
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = next.(*Model)
+	widthAt120 := m.lists[0].Width()
+
+	if widthAt120 <= widthAt100 {
+		t.Errorf("list width should grow when terminal widens: at100=%d at120=%d", widthAt100, widthAt120)
+	}
+	// Sum should equal new terminal width.
+	dpw := m.detailPanelWidth()
+	if widthAt120+dpw != 120 {
+		t.Errorf("list + panel should equal terminal width: %d + %d = %d, want 120",
+			widthAt120, dpw, widthAt120+dpw)
+	}
+}
+
+func TestDetailPanelView_AppearsInView(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ABCDEF", Title: "my viewable task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "some body content",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// View without panel open should not contain detail-panel-specific content.
+	viewClosed := m.View()
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	viewOpen := m.View()
+
+	// The open view should contain the task title in the panel.
+	if !strings.Contains(viewOpen, "my viewable task") {
+		t.Errorf("View() with panel open should contain task title")
+	}
+	if !strings.Contains(viewOpen, "some body content") {
+		t.Errorf("View() with panel open should contain body content")
+	}
+	// The separator (─) should appear in the panel.
+	if !strings.Contains(viewOpen, "─") {
+		t.Errorf("View() with panel open should contain the separator line")
+	}
+	// Confirm that closed view does NOT contain body content in the list rendering.
+	if strings.Contains(viewClosed, "some body content") {
+		t.Errorf("View() without panel should not contain body content")
+	}
+}
+
+func TestDetailPanelWidth_ZeroWhenClosed(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	if w := m.detailPanelWidth(); w != 0 {
+		t.Errorf("detailPanelWidth() = %d when closed, want 0", w)
+	}
+}
+
+func TestDetailPanelWidth_Proportional(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	pw := m.detailPanelWidth()
+
+	// Should be ~45% of 100 = 45.
+	if pw != 45 {
+		t.Errorf("detailPanelWidth() = %d for width 100, want 45", pw)
+	}
+}
+
+func TestDetailPanelView_BodyScrollOffset(t *testing.T) {
+	// Create a task with a long body that requires scrolling.
+	var bodyLines []string
+	for i := 0; i < 50; i++ {
+		bodyLines = append(bodyLines, fmt.Sprintf("line %d of the body", i))
+	}
+	longBody := strings.Join(bodyLines, "\n")
+
+	m := newTestModel(t,
+		model.Task{ID: "01SCROLL", Title: "scrollable", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      longBody,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+
+	// With scroll at 0, "line 0" should be visible.
+	panel0 := m.detailPanelView()
+	if !strings.Contains(panel0, "line 0 of the body") {
+		t.Error("panel at scroll=0 should show line 0")
+	}
+
+	// Set scroll offset to skip first 10 lines.
+	m.detailScroll = 10
+	panel10 := m.detailPanelView()
+
+	// "line 0" should no longer be visible (scrolled past).
+	if strings.Contains(panel10, "line 0 of the body") {
+		t.Error("panel at scroll=10 should not show line 0")
+	}
+	// "line 10" should now be visible (first visible after scroll).
+	if !strings.Contains(panel10, "line 10 of the body") {
+		t.Error("panel at scroll=10 should show line 10")
+	}
+}

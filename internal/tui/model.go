@@ -2241,6 +2241,28 @@ func (m *Model) statsBarView() string {
 	return helpTextStyle.Padding(0, 1).Render(line)
 }
 
+// detailPanelWidth returns the width allocated to the detail panel when it is
+// open. Returns 0 when the panel is closed. Uses ~45% of terminal width.
+func (m *Model) detailPanelWidth() int {
+	if !m.detailOpen {
+		return 0
+	}
+	w := m.width * 45 / 100
+	if w < 30 {
+		w = 30
+	}
+	if w > m.width-20 {
+		w = m.width - 20
+	}
+	return w
+}
+
+// listWidth returns the width allocated to the task list. When the detail panel
+// is open, the list is narrowed to make room.
+func (m *Model) listWidth() int {
+	return m.width - m.detailPanelWidth()
+}
+
 // recomputeLayout recalculates list sizes based on the current terminal
 // dimensions and active panel height. Called from WindowSizeMsg and after
 // any mutation that might change the panel (taskSavedMsg).
@@ -2252,8 +2274,19 @@ func (m *Model) recomputeLayout() {
 	if listH < 3 {
 		listH = 3
 	}
+	lw := m.listWidth()
 	for i := range m.lists {
-		m.lists[i].SetSize(m.width, listH)
+		m.lists[i].SetSize(lw, listH)
+	}
+	// Resize the note textarea to fit inside the detail panel.
+	if m.detailOpen {
+		pw := m.detailPanelWidth()
+		// Panel inner width: total minus border (2) and padding (4).
+		noteW := pw - 6
+		if noteW < 10 {
+			noteW = 10
+		}
+		m.noteArea.SetWidth(noteW)
 	}
 	// Keep textinput widths in sync when the terminal is resized while a modal
 	// is open, so the fixed-width border doesn't reflow on the next render.
@@ -2269,6 +2302,118 @@ func (m *Model) recomputeLayout() {
 }
 
 // --- View ------------------------------------------------------------------
+
+// detailPanelView renders the right-side detail panel for the currently
+// selected task. Returns an empty string when the panel is closed or no task
+// is selected.
+//
+// Layout (top to bottom, all within a bordered box):
+//   - Title (bold)
+//   - Schedule
+//   - Tags (if any)
+//   - Created date (and Completed date if done)
+//   - Blank line
+//   - Body text (scrollable via detailScroll)
+//   - Separator line
+//   - Note textarea
+func (m *Model) detailPanelView() string {
+	if !m.detailOpen {
+		return ""
+	}
+	task := m.selectedTask()
+	if task == nil {
+		return ""
+	}
+
+	pw := m.detailPanelWidth()
+	// Inner width: panel width minus border (2) and padding (4).
+	iw := pw - 6
+	if iw < 10 {
+		iw = 10
+	}
+
+	now := time.Now()
+
+	// --- header section ---
+	titleStyle := lipgloss.NewStyle().Bold(true)
+	var header []string
+	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
+
+	header = append(header, "Schedule: "+task.Schedule)
+
+	if vt := display.VisibleTags(task.Tags); len(vt) > 0 {
+		header = append(header, "Tags: "+strings.Join(vt, ", "))
+	}
+
+	created := display.FormatRelDate(now, task.CreatedAt)
+	if created != "" {
+		dateLine := "Created: " + created
+		if task.CompletedAt != "" {
+			completed := display.FormatRelDate(now, task.CompletedAt)
+			if completed != "" {
+				dateLine += "  Completed: " + completed
+			}
+		}
+		header = append(header, dateLine)
+	}
+
+	// --- body section (scrollable) ---
+	// Calculate how many lines we have for the body area.
+	// Total panel height = list height (from vlist) + 2 for tab bar line + 1 for help line.
+	// The body gets whatever is left after header, separator, and textarea.
+	listH := 0
+	if len(m.lists) > 0 {
+		listH = m.lists[0].height
+	}
+	// Panel content area height = listH + tab bar (1) + help (1) - border (2) - top/bottom padding (0).
+	// Actually, the panel border costs 2 lines.
+	panelContentH := listH + 2 - 2
+	if panelContentH < 5 {
+		panelContentH = 5
+	}
+	headerLines := len(header)
+	noteAreaH := m.noteArea.Height() + 1 // +1 for the separator line above
+	bodyH := panelContentH - headerLines - 1 - noteAreaH // -1 for blank line between header and body
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	var bodyLines []string
+	if task.Body != "" {
+		bodyLines = wrapText(task.Body, iw)
+	}
+
+	// Apply scroll offset.
+	if m.detailScroll > 0 && m.detailScroll < len(bodyLines) {
+		bodyLines = bodyLines[m.detailScroll:]
+	}
+
+	// Truncate to fit available body height.
+	if len(bodyLines) > bodyH {
+		bodyLines = bodyLines[:bodyH]
+	}
+
+	// --- assemble panel content ---
+	var parts []string
+	parts = append(parts, strings.Join(header, "\n"))
+	parts = append(parts, "") // blank line between header and body
+	if len(bodyLines) > 0 {
+		parts = append(parts, strings.Join(bodyLines, "\n"))
+	}
+	sepLine := strings.Repeat("─", iw)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	parts = append(parts, dimStyle.Render(sepLine))
+	parts = append(parts, m.noteArea.View())
+
+	content := strings.Join(parts, "\n")
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(0, 2).
+		Width(pw - 2). // subtract border columns
+		Render(content)
+}
 
 func (m *Model) View() string {
 	var tabBar []string
@@ -2286,6 +2431,12 @@ func (m *Model) View() string {
 		body = m.lists[m.activeTab].Render(m.renderListItem)
 	} else {
 		body = m.modalView()
+	}
+
+	// When the detail panel is open, join the list body and detail panel
+	// side-by-side horizontally.
+	if detail := m.detailPanelView(); detail != "" {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, detail)
 	}
 
 	help := m.helpLine()
