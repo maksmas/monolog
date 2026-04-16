@@ -113,9 +113,9 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Update `item.Description()` (or `renderListItem`) to append `[N]` after the title when `task.NoteCount > 0`
-- [ ] Write tests for badge rendering (count > 0 shows badge, count 0 no badge)
-- [ ] Run tests: `go test ./internal/tui/`
+- [x] Update `item.Description()` (or `renderListItem`) to append `[N]` after the title when `task.NoteCount > 0`
+- [x] Write tests for badge rendering (count > 0 shows badge, count 0 no badge)
+- [x] Run tests: `go test ./internal/tui/`
 
 ### Task 5: TUI detail panel — state and toggle
 

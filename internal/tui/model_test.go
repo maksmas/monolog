@@ -1099,6 +1099,85 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	}
 }
 
+// --- note count badge tests --------------------------------------------------
+
+func TestItemDescription_NoteCountBadge(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "task with notes",
+			Status:    "open",
+			Schedule:  "today",
+			NoteCount: 3,
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if !strings.Contains(desc, "[3]") {
+		t.Errorf("Description() = %q, want to contain note count badge [3]", desc)
+	}
+	// Badge should appear right after the short ID
+	idxID := strings.Index(desc, "01AB")
+	idxBadge := strings.Index(desc, "[3]")
+	if idxBadge < idxID {
+		t.Errorf("note count badge should appear after short ID in Description() = %q", desc)
+	}
+}
+
+func TestItemDescription_NoteCountZeroNoBadge(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "task without notes",
+			Status:    "open",
+			Schedule:  "today",
+			NoteCount: 0,
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if strings.Contains(desc, "[0]") {
+		t.Errorf("Description() = %q, should not contain [0] badge when NoteCount is 0", desc)
+	}
+}
+
+func TestItemDescription_NoteCountWithOtherMetadata(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "noted task",
+			Status:    "open",
+			Schedule:  "tomorrow",
+			Tags:      []string{"work"},
+			NoteCount: 5,
+			CreatedAt: "2026-04-11T12:00:00Z",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	// Should contain all metadata pieces
+	if !strings.Contains(desc, "[5]") {
+		t.Errorf("Description() = %q, want note count badge [5]", desc)
+	}
+	if !strings.Contains(desc, "tomorrow") {
+		t.Errorf("Description() = %q, want schedule 'tomorrow'", desc)
+	}
+	if !strings.Contains(desc, "[work]") {
+		t.Errorf("Description() = %q, want tags [work]", desc)
+	}
+	// Verify ordering: ID, badge, schedule, tags
+	idxID := strings.Index(desc, "01AB")
+	idxBadge := strings.Index(desc, "[5]")
+	idxSched := strings.Index(desc, "tomorrow")
+	idxTags := strings.Index(desc, "[work]")
+	if idxID > idxBadge || idxBadge > idxSched || idxSched > idxTags {
+		t.Errorf("Description() = %q, parts should appear in order: ID, badge, schedule, tags", desc)
+	}
+}
+
 // --- active panel tests ------------------------------------------------------
 
 func TestActivePanel_HiddenWhenNoActiveTasks(t *testing.T) {

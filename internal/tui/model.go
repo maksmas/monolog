@@ -178,6 +178,9 @@ func (i item) Title() string { return i.task.Title }
 
 func (i item) Description() string {
 	parts := []string{display.ShortID(i.task.ID)}
+	if i.task.NoteCount > 0 {
+		parts = append(parts, fmt.Sprintf("[%d]", i.task.NoteCount))
+	}
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
 		parts = append(parts, i.task.Schedule)
 	}
