@@ -23,6 +23,7 @@ type Task struct {
 	UpdatedAt   string `json:"updated_at"`
 	CompletedAt string `json:"completed_at,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
+	NoteCount int      `json:"note_count,omitempty"`
 }
 
 // ActiveTag is the reserved tag name used to mark a task as currently being worked on.
