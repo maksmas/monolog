@@ -122,13 +122,13 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Add new mode or state fields to `Model`: `detailOpen bool`, `detailScroll int`, `noteArea textarea.Model` (for the note input textarea)
-- [ ] Initialize `noteArea` in `newModel()` with placeholder text, configure Alt+Enter for newlines
-- [ ] Handle `Enter` key in `modeNormal` — toggle `detailOpen`, focus `noteArea` when opening, reset scroll
-- [ ] Handle `Esc` when `detailOpen` — close panel, return focus to list navigation
-- [ ] Handle `↑/↓` navigation when panel is open — refresh panel content for newly selected task
-- [ ] Write tests for panel toggle state transitions (open/close, focus management)
-- [ ] Run tests: `go test ./internal/tui/`
+- [x] Add new mode or state fields to `Model`: `detailOpen bool`, `detailScroll int`, `noteArea textarea.Model` (for the note input textarea)
+- [x] Initialize `noteArea` in `newModel()` with placeholder text, configure Alt+Enter for newlines
+- [x] Handle `Enter` key in `modeNormal` — toggle `detailOpen`, focus `noteArea` when opening, reset scroll
+- [x] Handle `Esc` when `detailOpen` — close panel, return focus to list navigation
+- [x] Handle `↑/↓` navigation when panel is open — refresh panel content for newly selected task
+- [x] Write tests for panel toggle state transitions (open/close, focus management)
+- [x] Run tests: `go test ./internal/tui/`
 
 ### Task 6: TUI detail panel — rendering
 

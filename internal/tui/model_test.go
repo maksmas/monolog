@@ -5393,3 +5393,211 @@ func TestVlistItemHeight_MultilineTitle(t *testing.T) {
 		t.Errorf("itemHeight = %d, want 4 (newline in title)", h)
 	}
 }
+
+// --- detail panel tests ---------------------------------------------------
+
+func TestDetailPanel_EnterOpensPanel(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if m.detailOpen {
+		t.Fatal("detailOpen should be false initially")
+	}
+
+	m, _ = key(t, m, "enter")
+
+	if !m.detailOpen {
+		t.Error("detailOpen should be true after Enter")
+	}
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll = %d, want 0", m.detailScroll)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want modeNormal (%d)", m.mode, modeNormal)
+	}
+}
+
+func TestDetailPanel_EnterDoesNothingWithNoTask(t *testing.T) {
+	// Empty tab — no tasks to select.
+	m := newTestModel(t)
+
+	m, _ = key(t, m, "enter")
+
+	if m.detailOpen {
+		t.Error("detailOpen should remain false when no task is selected")
+	}
+}
+
+func TestDetailPanel_EscClosesPanel(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open after Enter")
+	}
+
+	// Close panel.
+	m, _ = key(t, m, "esc")
+	if m.detailOpen {
+		t.Error("detailOpen should be false after Esc")
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want modeNormal (%d)", m.mode, modeNormal)
+	}
+}
+
+func TestDetailPanel_NavigationResetsScroll(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Give it a window so the list has dimensions.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	// Simulate having scrolled down in the detail panel.
+	m.detailScroll = 5
+
+	// Navigate down — should reset scroll.
+	m, _ = key(t, m, "down")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll after down = %d, want 0", m.detailScroll)
+	}
+
+	// Simulate scroll again and navigate up.
+	m.detailScroll = 3
+	m, _ = key(t, m, "up")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll after up = %d, want 0", m.detailScroll)
+	}
+}
+
+func TestDetailPanel_StaysOpenDuringNavigation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Navigate down — panel should stay open.
+	m, _ = key(t, m, "down")
+	if !m.detailOpen {
+		t.Error("detailOpen should remain true after down navigation")
+	}
+
+	// Navigate up — panel should stay open.
+	m, _ = key(t, m, "up")
+	if !m.detailOpen {
+		t.Error("detailOpen should remain true after up navigation")
+	}
+}
+
+func TestDetailPanel_NoteAreaInitialized(t *testing.T) {
+	m := newTestModel(t)
+
+	// The noteArea should have the placeholder text.
+	if m.noteArea.Placeholder != "add a note..." {
+		t.Errorf("noteArea.Placeholder = %q, want %q", m.noteArea.Placeholder, "add a note...")
+	}
+}
+
+func TestDetailPanel_TextInputRoutedToNoteArea(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel — noteArea gets focus.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	// Type some text — it should go into the noteArea.
+	m = typeString(t, m, "hello")
+	if got := m.noteArea.Value(); got != "hello" {
+		t.Errorf("noteArea.Value() = %q, want %q", got, "hello")
+	}
+}
+
+func TestDetailPanel_EscClearsNoteArea(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open, type, close.
+	m, _ = key(t, m, "enter")
+	m = typeString(t, m, "draft note")
+	m, _ = key(t, m, "esc")
+
+	if m.detailOpen {
+		t.Error("panel should be closed")
+	}
+	if got := m.noteArea.Value(); got != "" {
+		t.Errorf("noteArea should be empty after close, got %q", got)
+	}
+}
+
+func TestDetailPanel_ActionKeysStillWorkWhenOpen(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	// 'd' (done) should still work — produces a save command.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Error("'d' should return a command even when detail panel is open")
+	}
+}
+
+func TestDetailPanel_TabSwitchResetsScroll(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel, set some scroll.
+	m, _ = key(t, m, "enter")
+	m.detailScroll = 5
+
+	// Switch tab.
+	m, _ = key(t, m, "right")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll = %d after tab switch, want 0", m.detailScroll)
+	}
+}

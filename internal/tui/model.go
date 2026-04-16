@@ -133,6 +133,13 @@ type Model struct {
 	// error or modal close.
 	pendingAction func() tea.Cmd
 
+	// Detail panel state. The detail panel is a right-side panel showing full
+	// task info and notes with an inline textarea for adding new notes.
+	// detailOpen is independent of mode — it's a panel toggle, not a modal.
+	detailOpen   bool
+	detailScroll int
+	noteArea     textarea.Model
+
 	// Tag autocomplete state. Only one modal is open at a time, so a single
 	// pair of fields is shared between add and retag modals.
 	suggestions   []string // current filtered tag suggestions (max 5)
@@ -322,6 +329,20 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.Base = lipgloss.NewStyle()
 
+	// Note textarea for the detail panel. Alt+Enter inserts newlines; plain
+	// Enter is handled one level up where it submits the note.
+	noteTA := textarea.New()
+	noteTA.Placeholder = "add a note..."
+	noteTA.CharLimit = 4096
+	noteTA.ShowLineNumbers = false
+	noteTA.Prompt = ""
+	noteTA.KeyMap.InsertNewline.SetKeys("alt+enter")
+	noteTA.SetHeight(3)
+	noteTA.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	noteTA.FocusedStyle.Base = lipgloss.NewStyle()
+	noteTA.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	noteTA.BlurredStyle.Base = lipgloss.NewStyle()
+
 	m := &Model{
 		store:     s,
 		repoPath:  repoPath,
@@ -329,6 +350,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		input:     ti,
 		tagInput:  tagTi,
 		titleArea: ta,
+		noteArea:  noteTA,
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
 
@@ -845,6 +867,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = ""
 
+	// When the detail panel is open and noteArea is focused, route key events
+	// through the textarea first. Esc always closes the panel; Enter with
+	// non-empty text will be handled by Task 8 (note submission). Navigation
+	// keys (up/down/left/right/tab) and action keys fall through below.
+	if m.detailOpen {
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.closeDetailPanel()
+			return m, nil
+		case tea.KeyEnter:
+			// Alt+Enter inserts a newline via the textarea's own keymap.
+			if msg.Alt {
+				var cmd tea.Cmd
+				m.noteArea, cmd = m.noteArea.Update(msg)
+				return m, cmd
+			}
+			// When textarea has content, Enter will submit a note (Task 8).
+			// For now, just pass through as a no-op.
+			return m, nil
+		}
+
+		// Let the textarea consume printable input.
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace || msg.Type == tea.KeyBackspace {
+			var cmd tea.Cmd
+			m.noteArea, cmd = m.noteArea.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -854,6 +905,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.viewMode == viewTag {
 			m.skipSeparator(0)
 		}
+		m.detailScroll = 0
 		return m, nil
 	case "right", "tab":
 		m.activeTab = (m.activeTab + 1) % len(m.tabs)
@@ -861,6 +913,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.viewMode == viewTag {
 			m.skipSeparator(0)
 		}
+		m.detailScroll = 0
 		return m, nil
 	case "1", "2", "3", "4", "5", "6":
 		n := int(msg.String()[0] - '1')
@@ -870,6 +923,13 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.viewMode == viewTag {
 				m.skipSeparator(0)
 			}
+			m.detailScroll = 0
+		}
+		return m, nil
+
+	case "enter":
+		if !m.detailOpen {
+			m.openDetailPanel()
 		}
 		return m, nil
 
@@ -905,18 +965,46 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "j", "down":
 		vl.CursorDown()
+		m.detailScroll = 0 // reset scroll when navigating tasks
 	case "k", "up":
 		vl.CursorUp()
+		m.detailScroll = 0 // reset scroll when navigating tasks
 	case "pgdown":
 		vl.PageDown()
+		m.detailScroll = 0
 	case "pgup":
 		vl.PageUp()
+		m.detailScroll = 0
 	case "g", "home":
 		vl.GoToStart()
+		m.detailScroll = 0
 	case "G", "end":
 		vl.GoToEnd()
+		m.detailScroll = 0
 	}
 	return m, nil
+}
+
+// openDetailPanel opens the detail panel and focuses the note textarea.
+func (m *Model) openDetailPanel() {
+	task := m.selectedTask()
+	if task == nil {
+		return
+	}
+	m.detailOpen = true
+	m.detailScroll = 0
+	m.noteArea.Reset()
+	m.noteArea.Focus()
+	m.recomputeLayout()
+}
+
+// closeDetailPanel closes the detail panel and returns focus to the list.
+func (m *Model) closeDetailPanel() {
+	m.detailOpen = false
+	m.detailScroll = 0
+	m.noteArea.Blur()
+	m.noteArea.Reset()
+	m.recomputeLayout()
 }
 
 // updateModal routes keys based on the current modal.
