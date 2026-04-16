@@ -199,17 +199,17 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] add `modeSearch` constant to the mode iota block
-- [ ] add `search searchState` field to `Model` struct
-- [ ] initialize `searchState.input` in the Model constructor (wherever `input`/`tagInput` are initialized today — look for `textinput.New()` calls) with prompt `"> "` and an appropriate placeholder
-- [ ] route `/` in `updateNormal`: add `case "/":` returning `m.openSearch()`
-- [ ] ensure `/` is NOT handled in `updateGrab` (verify grab keeps its current key set; add a guard test later in Task 6)
-- [ ] implement placeholder `openSearch` / `closeSearch` (full bodies come in Task 4; stub them so the model compiles)
-- [ ] dispatch `modeSearch` in the main `Update` switch at lines 820-832: `case modeSearch: return m.updateSearch(msg)` (stub `updateSearch` returning `(m, nil)` for now)
-- [ ] hook `View()` at line 2081: when `m.mode == modeSearch`, return `m.renderSearch()` (stub returning `""` for now) bypassing normal tab/list rendering
-- [ ] write integration test: `/` in modeNormal sets `m.mode == modeSearch`, `len(m.search.haystack) > 0`
-- [ ] write integration test: `/` in modeGrab does NOT change mode (still modeGrab after key)
-- [ ] run `go test ./internal/tui/...` — must pass before Task 4
+- [x] add `modeSearch` constant to the mode iota block
+- [x] add `search searchState` field to `Model` struct
+- [x] initialize `searchState.input` in the Model constructor (wherever `input`/`tagInput` are initialized today — look for `textinput.New()` calls) with prompt `"> "` and an appropriate placeholder
+- [x] route `/` in `updateNormal`: add `case "/":` returning `m.openSearch()`
+- [x] ensure `/` is NOT handled in `updateGrab` (verify grab keeps its current key set; add a guard test later in Task 6)
+- [x] implement placeholder `openSearch` / `closeSearch` (full bodies come in Task 4; stub them so the model compiles)
+- [x] dispatch `modeSearch` in the main `Update` switch at lines 820-832: `case modeSearch: return m.updateSearch(msg)` (stub `updateSearch` returning `(m, nil)` for now)
+- [x] hook `View()` at line 2081: when `m.mode == modeSearch`, return `m.renderSearch()` (stub returning `""` for now) bypassing normal tab/list rendering
+- [x] write integration test: `/` in modeNormal sets `m.mode == modeSearch`, `len(m.search.haystack) > 0`
+- [x] write integration test: `/` in modeGrab does NOT change mode (still modeGrab after key)
+- [x] run `go test ./internal/tui/...` — must pass before Task 4
 
 ### Task 4: Implement `openSearch` / `closeSearch` / `updateSearch` logic
 

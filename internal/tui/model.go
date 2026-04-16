@@ -36,6 +36,7 @@ const (
 	modeAdd
 	modeConfirmDelete
 	modeHelp
+	modeSearch
 )
 
 // addField tracks which input has focus in the add modal.
@@ -86,6 +87,16 @@ var defaultTabs = []tab{
 	{label: "Month", bucket: schedule.Month, status: "open"},
 	{label: "Someday", bucket: schedule.Someday, status: "open"},
 	{label: "Done", bucket: "", status: "done"},
+}
+
+// searchState holds the per-modal state for the fuzzy-search overlay.
+// haystack is captured once at openSearch time; results is re-ranked on every
+// keystroke. cursor is the currently-highlighted index into results.
+type searchState struct {
+	input    textinput.Model
+	haystack []searchDoc
+	results  []searchResult
+	cursor   int
 }
 
 // Model is the top-level Bubble Tea model for the TUI.
@@ -153,6 +164,9 @@ type Model struct {
 	// Used for computing global stats.
 	allTasks []model.Task
 	stats    model.Stats
+
+	// search holds the fuzzy-search overlay state (modeSearch).
+	search searchState
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
@@ -313,6 +327,11 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	tagTi.CharLimit = 512
 	tagTi.Prompt = ""
 
+	searchTi := textinput.New()
+	searchTi.Placeholder = "search title or body"
+	searchTi.CharLimit = 512
+	searchTi.Prompt = "> "
+
 	ta := textarea.New()
 	ta.Placeholder = "task title"
 	ta.CharLimit = 512
@@ -351,6 +370,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		tagInput:  tagTi,
 		titleArea: ta,
 		noteArea:  noteTA,
+		search:    searchState{input: searchTi},
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
 
@@ -856,6 +876,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeHelp:
 			m.mode = modeNormal
 			return m, nil
+		case modeSearch:
+			return m.updateSearch(msg)
 		default:
 			return m.updateModal(msg)
 		}
@@ -989,6 +1011,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "h":
 		m.mode = modeHelp
 		return m, nil
+	case "/":
+		m.openSearch()
+		return m, nil
 	}
 
 	// Cursor navigation — handled by vlist directly.
@@ -1118,6 +1143,66 @@ func (m *Model) submitNote() tea.Cmd {
 	m.noteArea.Reset()
 
 	return m.saveCmd(t, fmt.Sprintf("note: %s", flat), fmt.Sprintf("Note added: %s", flat))
+}
+
+// --- search overlay (stubs; bodies implemented in search.go) --------------
+
+// openSearch enters the fuzzy-search overlay. It captures a one-shot
+// snapshot of all tasks (open + done) and resets input/cursor state so the
+// overlay starts fresh on every invocation.
+//
+// This is a minimal stub implementation; Task 4 replaces it with the full
+// render/ranking pipeline moved into search.go.
+func (m *Model) openSearch() {
+	m.mode = modeSearch
+	tasks, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		m.err = err
+		m.mode = modeNormal
+		return
+	}
+	docs := make([]searchDoc, len(tasks))
+	for i, t := range tasks {
+		docs[i] = searchDoc{
+			task:    t,
+			titleLC: strings.ToLower(t.Title),
+			bodyLC:  strings.ToLower(t.Body),
+		}
+	}
+	m.search.haystack = docs
+	m.search.cursor = 0
+	m.search.input.SetValue("")
+	m.search.input.Focus()
+	m.search.results = rankSearch("", docs, 200)
+}
+
+// closeSearch leaves the fuzzy-search overlay and returns to normal mode,
+// releasing haystack/results slices. activeTab and vlist cursor are left
+// untouched so Esc is a true no-op.
+func (m *Model) closeSearch() {
+	m.mode = modeNormal
+	m.search.input.Blur()
+	m.search.input.SetValue("")
+	m.search.haystack = nil
+	m.search.results = nil
+	m.search.cursor = 0
+}
+
+// updateSearch is the stub key handler for modeSearch. Task 4 replaces this
+// with the full typing/navigation/commit flow.
+func (m *Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.closeSearch()
+		return m, nil
+	}
+	return m, nil
+}
+
+// renderSearch is the stub renderer for modeSearch. Task 6 replaces this
+// with the split-pane / stacked layout.
+func (m *Model) renderSearch() string {
+	return ""
 }
 
 // --- done action -----------------------------------------------------------
@@ -2503,6 +2588,10 @@ func (m *Model) View() string {
 		}
 	}
 	header := lipgloss.JoinHorizontal(lipgloss.Top, tabBar...)
+
+	if m.mode == modeSearch {
+		return m.renderSearch()
+	}
 
 	var body string
 	if m.mode == modeNormal || m.mode == modeGrab {

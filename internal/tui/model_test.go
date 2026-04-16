@@ -6381,3 +6381,72 @@ func TestDetailPanel_HelpLineShowsScrollKeys(t *testing.T) {
 		t.Errorf("help line when detail open should mention scroll, got: %s", help)
 	}
 }
+
+// --- search overlay entry/exit plumbing (Task 3) ---------------------------
+
+func TestSearch_SlashEntersSearchMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "write docs", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("mode after '/' = %v, want modeSearch", m.mode)
+	}
+	if len(m.search.haystack) != 2 {
+		t.Errorf("haystack size = %d, want 2 (open + done tasks)", len(m.search.haystack))
+	}
+	// Initial rank with empty query should return all docs (sorted by CreatedAt desc).
+	if len(m.search.results) != 2 {
+		t.Errorf("results size = %d, want 2 for empty query", len(m.search.results))
+	}
+	if m.search.cursor != 0 {
+		t.Errorf("cursor = %d, want 0", m.search.cursor)
+	}
+}
+
+func TestSearch_EscClosesSearchMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc = %v, want modeNormal", m.mode)
+	}
+	if len(m.search.haystack) != 0 {
+		t.Errorf("haystack should be cleared on close, got len=%d", len(m.search.haystack))
+	}
+	if len(m.search.results) != 0 {
+		t.Errorf("results should be cleared on close, got len=%d", len(m.search.results))
+	}
+}
+
+func TestSearch_SlashInGrabModeDoesNotChangeMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].Select(0)
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("precondition: mode = %v, want modeGrab", m.mode)
+	}
+	m, _ = key(t, m, "/")
+	if m.mode != modeGrab {
+		t.Errorf("mode after '/' in grab = %v, want modeGrab (grab intact)", m.mode)
+	}
+}
