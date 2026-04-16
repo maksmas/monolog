@@ -295,15 +295,15 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] open search, type, select, press Enter → cursor lands on task in correct tab (schedule view)
-- [ ] repeat in tag view
-- [ ] Esc cancels without side effects
-- [ ] done tasks appear and are visually distinct
-- [ ] `/` in grab mode does nothing (grab remains intact)
-- [ ] run full test suite: `go test ./...`
-- [ ] run linter: `go vet ./...`
-- [ ] manually verify wide terminal (120+ cols) — split pane renders
-- [ ] manually verify narrow terminal (<80 cols) — stacked layout renders
+- [x] open search, type, select, press Enter → cursor lands on task in correct tab (schedule view) — covered by `TestSearch_CommitScheduleViewFocusesTargetTab` (internal/tui/model_test.go:5088)
+- [x] repeat in tag view — covered by `TestSearch_CommitTagViewFocusesCorrectTagTab` (internal/tui/model_test.go:5167), `TestSearch_CommitTagViewActiveTakesPriority` (internal/tui/model_test.go:5214), `TestSearch_CommitTagViewUntaggedRoute` (internal/tui/model_test.go:5252)
+- [x] Esc cancels without side effects — covered by `TestSearch_EscClosesSearchMode` (internal/tui/model_test.go:4805) and `TestSearch_EscKeepsActiveTabAndListCursor` (internal/tui/model_test.go:4912)
+- [x] done tasks appear and are visually distinct — covered by `TestRankSearch_DoneTasksIncluded` (internal/tui/search_match_test.go:150), `TestSearch_CommitDoneTaskSwitchesToDoneTab` (internal/tui/model_test.go:5131), and `TestSearch_RenderSearchWideSplitPane` (exercises rendering of a done task, internal/tui/model_test.go:5305)
+- [x] `/` in grab mode does nothing (grab remains intact) — covered by `TestSearch_SlashInGrabModeDoesNotChangeMode` (internal/tui/model_test.go:4827)
+- [x] run full test suite: `go test ./...`
+- [x] run linter: `go vet ./...`
+- [x] manually verify wide terminal (120+ cols) — split pane renders [x] manual test (skipped - not automatable)
+- [x] manually verify narrow terminal (<80 cols) — stacked layout renders [x] manual test (skipped - not automatable)
 
 ### Task 9: Update documentation and finalize
 
