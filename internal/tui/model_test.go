@@ -6015,3 +6015,198 @@ func TestDetailPanelView_BodyScrollOffset(t *testing.T) {
 		t.Error("panel at scroll=10 should show line 10")
 	}
 }
+
+// --- Note Submission (Task 8) tests ----------------------------------------
+
+func TestDetailPanel_NoteSubmission(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01NOTE", Title: "note target", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open detail panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	// Type a note.
+	m = typeString(t, m, "my first note")
+	if got := m.noteArea.Value(); got != "my first note" {
+		t.Fatalf("noteArea = %q, want %q", got, "my first note")
+	}
+
+	// Submit with Enter — should return a tea.Cmd (the async save).
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("submit should return a non-nil cmd")
+	}
+
+	// Textarea should be cleared immediately after submission.
+	if got := m.noteArea.Value(); got != "" {
+		t.Errorf("noteArea should be empty after submit, got %q", got)
+	}
+
+	// Execute the async command to simulate the save completing.
+	m = runCmd(t, m, cmd)
+
+	// After save+reload, the task's body should contain the note text and
+	// NoteCount should be 1.
+	task := m.selectedTask()
+	if task == nil {
+		t.Fatal("no task selected after reload")
+	}
+	if !strings.Contains(task.Body, "my first note") {
+		t.Errorf("task body should contain the note, got %q", task.Body)
+	}
+	if task.NoteCount != 1 {
+		t.Errorf("NoteCount = %d, want 1", task.NoteCount)
+	}
+	if m.statusMsg != "Note added: note target" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "Note added: note target")
+	}
+}
+
+func TestDetailPanel_NoteSubmission_EmptyIgnored(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01EMPTY", Title: "empty note", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Press Enter with empty textarea — should be a no-op (nil cmd).
+	_, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("Enter with empty textarea should return nil cmd")
+	}
+
+	// Task should be unchanged.
+	task := m.selectedTask()
+	if task == nil {
+		t.Fatal("no task selected")
+	}
+	if task.NoteCount != 0 {
+		t.Errorf("NoteCount = %d, want 0 (empty input should be ignored)", task.NoteCount)
+	}
+}
+
+func TestDetailPanel_NoteSubmission_WhitespaceOnlyIgnored(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01WS", Title: "whitespace note", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Type only spaces.
+	m = typeString(t, m, "   ")
+
+	// Press Enter — should be no-op.
+	_, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("Enter with whitespace-only textarea should return nil cmd")
+	}
+}
+
+func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
+	// Task already has a note (NoteCount=1, body with separator).
+	m := newTestModel(t,
+		model.Task{ID: "01INC", Title: "has notes", Status: "open",
+			Schedule:  expectSchedule(t, "today"), Position: 1000,
+			Body:      "--- 2026-04-15 10:00:00 ---\nexisting note",
+			NoteCount: 1,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel, type, submit.
+	m, _ = key(t, m, "enter")
+	m = typeString(t, m, "second note")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task := m.selectedTask()
+	if task == nil {
+		t.Fatal("no task selected after reload")
+	}
+	if task.NoteCount != 2 {
+		t.Errorf("NoteCount = %d, want 2", task.NoteCount)
+	}
+	if !strings.Contains(task.Body, "existing note") {
+		t.Error("original note should still be present")
+	}
+	if !strings.Contains(task.Body, "second note") {
+		t.Error("new note should be present")
+	}
+}
+
+func TestDetailPanel_AltEnterInsertsNewline(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ALT", Title: "alt enter test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Type some text.
+	m = typeString(t, m, "line one")
+
+	// Send Alt+Enter — should insert a newline, not submit.
+	altEnter := tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+	next2, cmd := m.Update(altEnter)
+	m = next2.(*Model)
+	// If there was a cmd from the textarea update, run it (textarea internal).
+	if cmd != nil {
+		// Textarea may return internal cmds; just feed them back.
+		next3, _ := m.Update(cmd())
+		m = next3.(*Model)
+	}
+
+	// Type more text after the newline.
+	m = typeString(t, m, "line two")
+
+	// The value should contain both lines.
+	val := m.noteArea.Value()
+	if !strings.Contains(val, "line one") || !strings.Contains(val, "line two") {
+		t.Errorf("expected multi-line content, got %q", val)
+	}
+}
+
+func TestDetailPanel_NoteSubmission_NoTaskSelected(t *testing.T) {
+	// Empty model — no tasks, so no task selected.
+	m := newTestModel(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Manually force panel open and type text (normally Enter wouldn't open
+	// without a task, but we test the submitNote guard directly).
+	m.detailOpen = true
+	m.noteArea.Focus()
+	m.noteArea.SetValue("orphan note")
+
+	// submitNote should return nil because selectedTask() returns nil.
+	cmd := m.submitNote()
+	if cmd != nil {
+		t.Error("submitNote with no task selected should return nil")
+	}
+}

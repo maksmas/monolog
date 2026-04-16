@@ -883,9 +883,8 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.noteArea, cmd = m.noteArea.Update(msg)
 				return m, cmd
 			}
-			// When textarea has content, Enter will submit a note (Task 8).
-			// For now, just pass through as a no-op.
-			return m, nil
+			// Enter submits the note if textarea has content.
+			return m, m.submitNote()
 		}
 
 		// Let the textarea consume printable input.
@@ -1050,6 +1049,32 @@ func (m *Model) closeModal() {
 	m.addFocus = addFocusTitle
 	m.suggestions = nil
 	m.suggestionIdx = -1
+}
+
+// --- note submission -------------------------------------------------------
+
+// submitNote appends the noteArea's text to the selected task's Body, increments
+// NoteCount, saves, and auto-commits. Returns nil (no-op) when the textarea is
+// empty or no task is selected.
+func (m *Model) submitNote() tea.Cmd {
+	text := strings.TrimSpace(m.noteArea.Value())
+	if text == "" {
+		return nil
+	}
+	task := m.selectedTask()
+	if task == nil {
+		return nil
+	}
+	t := *task
+	t.Body = model.AppendNote(t.Body, text, time.Now())
+	t.NoteCount++
+	t.UpdatedAt = now()
+	flat := flattenTitle(t.Title)
+
+	// Clear and reset the textarea immediately so the UI feels responsive.
+	m.noteArea.Reset()
+
+	return m.saveCmd(t, fmt.Sprintf("note: %s", flat), fmt.Sprintf("Note added: %s", flat))
 }
 
 // --- done action -----------------------------------------------------------

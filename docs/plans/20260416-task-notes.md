@@ -156,11 +156,11 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] Handle `Enter` in textarea when `detailOpen` and textarea is focused — call `AppendNote`, increment `NoteCount`, set `UpdatedAt`, save via `store.Update()`, auto-commit, clear textarea, reload task/panel
-- [ ] Handle `Alt+Enter` in textarea — insert newline (default textarea behavior with proper config)
-- [ ] Ignore submission when textarea is empty (just Enter with no text = no-op)
-- [ ] Write tests for note submission flow (body update, count increment, empty input ignored)
-- [ ] Run tests: `go test ./internal/tui/`
+- [x] Handle `Enter` in textarea when `detailOpen` and textarea is focused — call `AppendNote`, increment `NoteCount`, set `UpdatedAt`, save via `store.Update()`, auto-commit, clear textarea, reload task/panel
+- [x] Handle `Alt+Enter` in textarea — insert newline (default textarea behavior with proper config)
+- [x] Ignore submission when textarea is empty (just Enter with no text = no-op)
+- [x] Write tests for note submission flow (body update, count increment, empty input ignored)
+- [x] Run tests: `go test ./internal/tui/`
 
 ### Task 9: Verify acceptance criteria
 
