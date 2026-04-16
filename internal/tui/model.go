@@ -1145,59 +1145,11 @@ func (m *Model) submitNote() tea.Cmd {
 	return m.saveCmd(t, fmt.Sprintf("note: %s", flat), fmt.Sprintf("Note added: %s", flat))
 }
 
-// --- search overlay (stubs; bodies implemented in search.go) --------------
-
-// openSearch enters the fuzzy-search overlay. It captures a one-shot
-// snapshot of all tasks (open + done) and resets input/cursor state so the
-// overlay starts fresh on every invocation.
+// --- search overlay --------------------------------------------------------
 //
-// This is a minimal stub implementation; Task 4 replaces it with the full
-// render/ranking pipeline moved into search.go.
-func (m *Model) openSearch() {
-	m.mode = modeSearch
-	tasks, err := m.store.List(store.ListOptions{})
-	if err != nil {
-		m.err = err
-		m.mode = modeNormal
-		return
-	}
-	docs := make([]searchDoc, len(tasks))
-	for i, t := range tasks {
-		docs[i] = searchDoc{
-			task:    t,
-			titleLC: strings.ToLower(t.Title),
-			bodyLC:  strings.ToLower(t.Body),
-		}
-	}
-	m.search.haystack = docs
-	m.search.cursor = 0
-	m.search.input.SetValue("")
-	m.search.input.Focus()
-	m.search.results = rankSearch("", docs, 200)
-}
-
-// closeSearch leaves the fuzzy-search overlay and returns to normal mode,
-// releasing haystack/results slices. activeTab and vlist cursor are left
-// untouched so Esc is a true no-op.
-func (m *Model) closeSearch() {
-	m.mode = modeNormal
-	m.search.input.Blur()
-	m.search.input.SetValue("")
-	m.search.haystack = nil
-	m.search.results = nil
-	m.search.cursor = 0
-}
-
-// updateSearch is the stub key handler for modeSearch. Task 4 replaces this
-// with the full typing/navigation/commit flow.
-func (m *Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyCtrlC:
-		m.closeSearch()
-		return m, nil
-	}
-	return m, nil
-}
+// openSearch / closeSearch / updateSearch live in search.go so the mode logic
+// stays close to the ranker. renderSearch remains a stub here until Task 6
+// replaces it with the split-pane / stacked layout.
 
 // renderSearch is the stub renderer for modeSearch. Task 6 replaces this
 // with the split-pane / stacked layout.
@@ -2456,8 +2408,21 @@ func (m *Model) recomputeLayout() {
 		m.tagInput.Width = inputW
 	case modeRetag, modeReschedule:
 		m.input.Width = m.modalInnerWidth() - 1
+	case modeSearch:
+		// Leave room for the "> " prompt (2) plus a few columns for the
+		// right-aligned count counter added by renderSearch in Task 6.
+		w := m.width - searchInputReserve
+		if w < 10 {
+			w = 10
+		}
+		m.search.input.Width = w
 	}
 }
+
+// searchInputReserve is the column budget taken out of the total width for the
+// search input bar's prompt and right-aligned counter. A single constant keeps
+// recomputeLayout and renderSearch in sync.
+const searchInputReserve = 14
 
 // --- View ------------------------------------------------------------------
 

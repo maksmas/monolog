@@ -217,29 +217,29 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 - Create: `internal/tui/search.go`
 - Modify: `internal/tui/model.go` (replace stubs, wire in)
 
-- [ ] move the stubs from Task 3 into `search.go`
-- [ ] `openSearch`:
+- [x] move the stubs from Task 3 into `search.go`
+- [x] `openSearch`:
   - set `m.mode = modeSearch`
   - snapshot haystack: call `m.store.List(...)` with filter that returns all open + all done tasks (or whatever existing store method returns everything; extend store if no such method exists — see ➕ marker below)
   - precompute `titleLC = strings.ToLower(task.Title)` and `bodyLC = strings.ToLower(task.Body)` for each
   - reset `m.search.input.SetValue("")`, `Focus()`, `cursor = 0`
   - call the ranker with empty query to populate initial results
   - call `m.recomputeLayout()`
-- [ ] `closeSearch`:
+- [x] `closeSearch`:
   - `m.mode = modeNormal`
   - blur input, clear value, nil out haystack/results (free memory)
-- [ ] `updateSearch(msg tea.KeyMsg)`:
+- [x] `updateSearch(msg tea.KeyMsg)`:
   - Esc / Ctrl+C → closeSearch
   - Enter → commitSearch (Task 5)
   - Down / Ctrl+J / Ctrl+N → cursor++ clamped to `len(results)-1`
   - Up / Ctrl+K / Ctrl+P → cursor-- clamped to 0
   - PgDn / PgUp → cursor += / -= page height, clamped
   - default: delegate to `m.search.input.Update(msg)`, then if input value changed, re-rank
-- [ ] extend `recomputeLayout` at line 2057 switch: add `case modeSearch:` setting `m.search.input.Width = m.width - <prompt+counter reservation>`
-- [ ] write integration test: typing a character updates `m.search.input.Value()` and `m.search.results` changes
-- [ ] write integration test: Esc returns to `modeNormal` with prior `activeTab` and list cursor unchanged
-- [ ] write integration test: Down/Up move `m.search.cursor` with proper clamping
-- [ ] run `go test ./internal/tui/...` — must pass before Task 5
+- [x] extend `recomputeLayout` at line 2057 switch: add `case modeSearch:` setting `m.search.input.Width = m.width - <prompt+counter reservation>`
+- [x] write integration test: typing a character updates `m.search.input.Value()` and `m.search.results` changes
+- [x] write integration test: Esc returns to `modeNormal` with prior `activeTab` and list cursor unchanged
+- [x] write integration test: Down/Up move `m.search.cursor` with proper clamping
+- [x] run `go test ./internal/tui/...` — must pass before Task 5
 
 ➕ **If `store.List(...)` cannot return all tasks (open + done) in one call**: add a `store.ListAll()` method (thin wrapper over existing list logic) — keep the store change minimal, add a matching store test.
 

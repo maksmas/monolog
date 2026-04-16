@@ -6450,3 +6450,242 @@ func TestSearch_SlashInGrabModeDoesNotChangeMode(t *testing.T) {
 		t.Errorf("mode after '/' in grab = %v, want modeGrab (grab intact)", m.mode)
 	}
 }
+
+// --- search overlay input/navigation behaviour (Task 4) --------------------
+
+func TestSearch_TypingRerunsQueryAndChangesResults(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "write docs", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01C", Title: "refactor login", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 500,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	// Empty-query rank returns all 3 docs.
+	if got := len(m.search.results); got != 3 {
+		t.Fatalf("initial results = %d, want 3", got)
+	}
+
+	m = typeString(t, m, "login")
+	if got := m.search.input.Value(); got != "login" {
+		t.Errorf("input value = %q, want %q", got, "login")
+	}
+	// Only the two "login" tasks should match.
+	if got := len(m.search.results); got != 2 {
+		t.Errorf("results after typing %q = %d, want 2", "login", got)
+	}
+	// Confirm the matched IDs are the login-bearing tasks, not "write docs".
+	for _, r := range m.search.results {
+		id := m.search.haystack[r.docIdx].task.ID
+		if id == "01B" {
+			t.Errorf("result includes non-matching task %q", id)
+		}
+	}
+}
+
+func TestSearch_TypingRefinesAndClampsCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01C", Title: "gamma", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 3000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	// Move cursor to the last result, then type a query that produces fewer
+	// results — the cursor must clamp down.
+	m.search.cursor = 2
+	m = typeString(t, m, "alp")
+	if got := len(m.search.results); got != 1 {
+		t.Fatalf("results after %q = %d, want 1", "alp", got)
+	}
+	if m.search.cursor != 0 {
+		t.Errorf("cursor after narrowing = %d, want 0 (clamped)", m.search.cursor)
+	}
+}
+
+func TestSearch_EscKeepsActiveTabAndListCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open",
+			Schedule: expectSchedule(t, schedule.Tomorrow), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Move to the Tomorrow tab with the cursor anchored there.
+	tomorrowIdx := findTabByLabel(t, m, "Tomorrow")
+	m.activeTab = tomorrowIdx
+	m.lists[tomorrowIdx].Select(0)
+
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	// Type something and move the search cursor around, then cancel.
+	m = typeString(t, m, "first")
+	m, _ = key(t, m, "esc")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc = %v, want modeNormal", m.mode)
+	}
+	if m.activeTab != tomorrowIdx {
+		t.Errorf("activeTab after esc = %d, want %d (untouched)", m.activeTab, tomorrowIdx)
+	}
+	if got := m.lists[tomorrowIdx].Index(); got != 0 {
+		t.Errorf("list cursor after esc = %d, want 0", got)
+	}
+}
+
+func TestSearch_CursorDownUpClampsAtBoundaries(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:02Z"},
+		model.Task{ID: "01C", Title: "gamma", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 3000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:03Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.search.cursor != 0 {
+		t.Fatalf("precondition: cursor = %d, want 0", m.search.cursor)
+	}
+	// Up at position 0 stays at 0 (no underflow).
+	m, _ = key(t, m, "up")
+	if m.search.cursor != 0 {
+		t.Errorf("cursor after up at 0 = %d, want 0", m.search.cursor)
+	}
+	m, _ = key(t, m, "down")
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after down = %d, want 1", m.search.cursor)
+	}
+	m, _ = key(t, m, "down")
+	m, _ = key(t, m, "down") // at end already, should clamp
+	if m.search.cursor != 2 {
+		t.Errorf("cursor after down past end = %d, want 2 (clamped)", m.search.cursor)
+	}
+	m, _ = key(t, m, "up")
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after up from end = %d, want 1", m.search.cursor)
+	}
+}
+
+func TestSearch_CtrlNavAliasesMoveCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:02Z"},
+	)
+	m, _ = key(t, m, "/")
+	// ctrl+n should move cursor down.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = next.(*Model)
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after ctrl+n = %d, want 1", m.search.cursor)
+	}
+	// ctrl+p should move cursor up.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m = next.(*Model)
+	if m.search.cursor != 0 {
+		t.Errorf("cursor after ctrl+p = %d, want 0", m.search.cursor)
+	}
+}
+
+func TestSearch_PgDnPgUpMovesByPage(t *testing.T) {
+	var tasks []model.Task
+	for i := 0; i < searchPageSize+5; i++ {
+		tasks = append(tasks, model.Task{
+			ID:        fmt.Sprintf("01%02d", i),
+			Title:     fmt.Sprintf("task %02d", i),
+			Status:    "open",
+			Schedule:  expectSchedule(t, schedule.Today),
+			Position:  float64((i + 1) * 1000),
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: fmt.Sprintf("2026-04-13T00:00:%02dZ", i),
+		})
+	}
+	m := newTestModel(t, tasks...)
+	m, _ = key(t, m, "/")
+	// pgdown jumps by searchPageSize.
+	m, _ = key(t, m, "pgdown")
+	if m.search.cursor != searchPageSize {
+		t.Errorf("cursor after pgdown = %d, want %d", m.search.cursor, searchPageSize)
+	}
+	// pgdown again clamps at end.
+	m, _ = key(t, m, "pgdown")
+	wantEnd := len(m.search.results) - 1
+	if m.search.cursor != wantEnd {
+		t.Errorf("cursor after second pgdown = %d, want %d (clamped)", m.search.cursor, wantEnd)
+	}
+	// pgup brings it back down by a page.
+	m, _ = key(t, m, "pgup")
+	want := wantEnd - searchPageSize
+	if want < 0 {
+		want = 0
+	}
+	if m.search.cursor != want {
+		t.Errorf("cursor after pgup = %d, want %d", m.search.cursor, want)
+	}
+}
+
+func TestSearch_CtrlCClosesLikeEsc(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = next.(*Model)
+	if m.mode != modeNormal {
+		t.Errorf("mode after ctrl+c = %v, want modeNormal", m.mode)
+	}
+	if len(m.search.haystack) != 0 {
+		t.Errorf("haystack not cleared after ctrl+c, len = %d", len(m.search.haystack))
+	}
+}
+
+func TestSearch_RecomputeLayoutSetsInputWidthInSearchMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(*Model)
+	m, _ = key(t, m, "/")
+	// recomputeLayout is called inside openSearch; input width should be set.
+	wantW := 120 - searchInputReserve
+	if got := m.search.input.Width; got != wantW {
+		t.Errorf("search input width = %d, want %d", got, wantW)
+	}
+
+	// A resize while in search mode should update the width too.
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = next.(*Model)
+	wantW = 80 - searchInputReserve
+	if got := m.search.input.Width; got != wantW {
+		t.Errorf("search input width after resize = %d, want %d", got, wantW)
+	}
+}
