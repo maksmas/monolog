@@ -133,6 +133,11 @@ type Model struct {
 	// error or modal close.
 	pendingAction func() tea.Cmd
 
+	// Tag autocomplete state. Only one modal is open at a time, so a single
+	// pair of fields is shared between add and retag modals.
+	suggestions   []string // current filtered tag suggestions (max 5)
+	suggestionIdx int      // selected suggestion index; -1 = none selected
+
 	// Active tasks panel: tasks that carry the "active" tag, shown in a
 	// persistent panel above the tab bar.
 	activeTasks []model.Task
@@ -913,8 +918,14 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateModal routes keys based on the current modal.
 func (m *Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc always cancels a modal.
+	// Esc: when tag suggestions are visible, clear them instead of closing the
+	// modal. Let the modal handler decide.
 	if msg.Type == tea.KeyEsc {
+		if len(m.suggestions) > 0 && (m.mode == modeAdd || m.mode == modeRetag) {
+			m.suggestions = nil
+			m.suggestionIdx = -1
+			return m, nil
+		}
 		m.closeModal()
 		return m, nil
 	}
@@ -946,6 +957,8 @@ func (m *Model) closeModal() {
 	m.titleArea.Reset()
 	m.titleArea.SetHeight(1)
 	m.addFocus = addFocusTitle
+	m.suggestions = nil
+	m.suggestionIdx = -1
 }
 
 // --- done action -----------------------------------------------------------
@@ -1098,10 +1111,20 @@ func (m *Model) openRetag() tea.Cmd {
 	m.input.SetValue(strings.Join(display.VisibleTags(t.Tags), ", "))
 	m.input.CursorEnd()
 	m.input.Focus()
+	// Cache known tags for autocomplete suggestions.
+	m.knownTags = model.CollectTags(m.allTasks)
+	m.suggestions = nil
+	m.suggestionIdx = -1
 	return textinput.Blink
 }
 
 func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Delegate Up/Down/Tab/Enter to shared suggestion navigation.
+	if m.handleSuggestionNav(msg, &m.input) {
+		return m, nil
+	}
+
+	// Enter: submit retag (suggestion case already handled above).
 	if msg.Type == tea.KeyEnter {
 		if m.modalTask == nil {
 			m.closeModal()
@@ -1118,8 +1141,11 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("edit: %s", flat),
 			fmt.Sprintf("Retagged: %s", flat))
 	}
+
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	// Refresh suggestions after every keystroke in the tag field.
+	m.refreshSuggestions(m.input.Value())
 	return m, cmd
 }
 
@@ -1150,22 +1176,21 @@ func (m *Model) openAdd() tea.Cmd {
 	m.tagInput.Blur()
 	m.addFocus = addFocusTitle
 	// Cache known tags from all loaded list items for instant auto-tag on ":".
-	var allTasks []model.Task
-	for i := range m.lists {
-		for _, li := range m.lists[i].Items() {
-			if li.(item).isSeparator {
-				continue
-			}
-			allTasks = append(allTasks, li.(item).task)
-		}
-	}
-	m.knownTags = model.CollectTags(allTasks)
+	m.knownTags = model.CollectTags(m.allTasks)
+	m.suggestions = nil
+	m.suggestionIdx = -1
 	return textinput.Blink
 }
 
 func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Tab toggles focus between title and tags — intercept before the
-	// inputs swallow it.
+	tagsFocused := m.addFocus == addFocusTags
+
+	// Delegate suggestion navigation to shared helper when tag field is focused.
+	if tagsFocused && m.handleSuggestionNav(msg, &m.tagInput) {
+		return m, nil
+	}
+
+	// Tab: toggle focus between title and tags.
 	if msg.Type == tea.KeyTab {
 		if m.addFocus == addFocusTitle {
 			m.addFocus = addFocusTags
@@ -1175,12 +1200,16 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addFocus = addFocusTitle
 			m.tagInput.Blur()
 			m.titleArea.Focus()
+			// Clear suggestions when leaving the tag field — they are not
+			// interactable while the title area has focus.
+			m.suggestions = nil
+			m.suggestionIdx = -1
 		}
 		return m, textinput.Blink
 	}
 
-	// Enter submits; Alt+Enter falls through to the textarea where its
-	// InsertNewline binding (rebound to alt+enter) inserts a line break.
+	// Enter: submit (plain Enter) or insert newline (Alt+Enter).
+	// Suggestion acceptance is handled by handleSuggestionNav above.
 	if msg.Type == tea.KeyEnter && !msg.Alt {
 		title := sanitizeTitle(m.titleArea.Value())
 		if title == "" {
@@ -1194,8 +1223,10 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Route remaining keys to the focused input only.
 	var cmd tea.Cmd
-	if m.addFocus == addFocusTags {
+	if tagsFocused {
 		m.tagInput, cmd = m.tagInput.Update(msg)
+		// Refresh suggestions after every keystroke in the tag field.
+		m.refreshSuggestions(m.tagInput.Value())
 	} else {
 		// Pre-grow the textarea height before the update so the viewport
 		// never needs to scroll. Without this, Update()'s internal
@@ -1218,6 +1249,88 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// handleSuggestionNav handles Up/Down/Tab/Enter keys when suggestions are
+// visible. It returns true when the key was consumed (caller should return
+// early).
+func (m *Model) handleSuggestionNav(msg tea.KeyMsg, ti *textinput.Model) bool {
+	hasSuggestions := len(m.suggestions) > 0
+
+	// Up/Down navigate suggestions.
+	if hasSuggestions && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
+		if msg.Type == tea.KeyUp {
+			if m.suggestionIdx > 0 {
+				m.suggestionIdx--
+			}
+		} else {
+			if m.suggestionIdx < len(m.suggestions)-1 {
+				m.suggestionIdx++
+			}
+		}
+		return true
+	}
+
+	// Tab/Enter: accept suggestion if visible with a selection.
+	if (msg.Type == tea.KeyTab || msg.Type == tea.KeyEnter) && hasSuggestions && m.suggestionIdx >= 0 {
+		m.acceptSuggestion(ti)
+		return true
+	}
+
+	return false
+}
+
+// refreshSuggestions updates m.suggestions from knownTags based on the current
+// tag field value. Resets suggestionIdx to 0 if there are results, -1 otherwise.
+func (m *Model) refreshSuggestions(fieldValue string) {
+	m.suggestions = model.FilterTags(m.knownTags, fieldValue)
+	if len(m.suggestions) > 0 {
+		m.suggestionIdx = 0
+	} else {
+		m.suggestionIdx = -1
+	}
+}
+
+// acceptSuggestion replaces the current fragment in the given textinput with
+// the selected suggestion, appending ", " so the user can continue typing.
+func (m *Model) acceptSuggestion(ti *textinput.Model) {
+	if m.suggestionIdx < 0 || m.suggestionIdx >= len(m.suggestions) {
+		return
+	}
+	selected := m.suggestions[m.suggestionIdx]
+	val := ti.Value()
+	// Find the last comma to locate the fragment being replaced.
+	lastComma := strings.LastIndex(val, ",")
+	var prefix string
+	if lastComma >= 0 {
+		prefix = val[:lastComma+1] + " "
+	}
+	ti.SetValue(prefix + selected + ", ")
+	ti.CursorEnd()
+	// Recompute suggestions (fragment is now empty after ", " so they'll clear).
+	m.refreshSuggestions(ti.Value())
+}
+
+// renderSuggestions returns a string with suggestion lines to embed in a modal
+// view. Returns "" when there are no suggestions. Each suggestion is indented
+// 7 chars to align with the tag value; the highlighted item is prefixed with
+// "> " and styled bold, others are prefixed with "  " and styled dim.
+func (m *Model) renderSuggestions() string {
+	if len(m.suggestions) == 0 {
+		return ""
+	}
+	bold := lipgloss.NewStyle().Bold(true)
+	dim := lipgloss.NewStyle().Faint(true)
+	var b strings.Builder
+	for i, s := range m.suggestions {
+		b.WriteByte('\n')
+		if i == m.suggestionIdx {
+			b.WriteString("       " + bold.Render("> "+s))
+		} else {
+			b.WriteString("       " + dim.Render("  "+s))
+		}
+	}
+	return b.String()
 }
 
 // sanitizeTitle trims surrounding whitespace but preserves interior newlines
@@ -2252,14 +2365,16 @@ func (m *Model) modalView() string {
 		}
 		return modalBox("Custom date:\n\n"+m.input.View(), iw)
 	case modeRetag:
-		return modalBox("Tags (comma-separated):\n\n"+m.input.View(), iw)
+		sugLines := m.renderSuggestions()
+		return modalBox("Tags (comma-separated):\n\n"+m.input.View()+sugLines, iw)
 	case modeAdd:
 		t := m.tabs[m.activeTab]
 		// The textarea's View() spans titleArea.Height() lines; align the "Title:"
 		// label with its first line so taller boxes still read naturally.
 		titleView := indentContinuation(m.titleArea.View(), "       ")
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s\n\n(Alt+Enter = newline, Enter = save)",
-			t.label, titleView, m.tagInput.View()), iw)
+		sugLines := m.renderSuggestions()
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View(), sugLines), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""
