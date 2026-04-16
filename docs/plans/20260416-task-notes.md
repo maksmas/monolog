@@ -91,10 +91,10 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 - Modify: `cmd/root.go`
 - Create: `cmd/note_test.go`
 
-- [ ] Create `cmd/note.go` with `newNoteCmd() *cobra.Command` — takes `<identifier> <text>`, resolves via `store.Resolve()`, calls `AppendNote`, increments `NoteCount`, sets `UpdatedAt`, saves via `store.Update()`, auto-commits
-- [ ] Register command in `root.go`: `rootCmd.AddCommand(newNoteCmd())`
-- [ ] Write tests: successful note addition, task not found, output message format
-- [ ] Run tests: `go test ./cmd/`
+- [x] Create `cmd/note.go` with `newNoteCmd() *cobra.Command` — takes `<identifier> <text>`, resolves via `store.Resolve()`, calls `AppendNote`, increments `NoteCount`, sets `UpdatedAt`, saves via `store.Update()`, auto-commits
+- [x] Register command in `root.go`: `rootCmd.AddCommand(newNoteCmd())`
+- [x] Write tests: successful note addition, task not found, output message format
+- [x] Run tests: `go test ./cmd/`
 
 ### Task 3: CLI `show` command
 
