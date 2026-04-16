@@ -265,6 +265,30 @@ func TestShowCommand_ErrorNoArgs(t *testing.T) {
 	}
 }
 
+func TestShowCommand_OmitsNotesWhenZero(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "No notes task")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"show", id[:8]})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("show command error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+
+	// NoteCount is 0, so "Notes:" should not appear in output.
+	if strings.Contains(output, "Notes:") {
+		t.Errorf("output should not contain Notes: when NoteCount is 0, got:\n%s", output)
+	}
+}
+
 func TestShowCommand_ScheduleDisplay(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

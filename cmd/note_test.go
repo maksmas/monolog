@@ -179,6 +179,43 @@ func TestNoteCommand_OutputMessage(t *testing.T) {
 	}
 }
 
+func TestNoteCommand_ErrorOnEmptyText(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Empty note target")
+
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"note", id[:8], ""})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for empty note text, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error should mention 'empty', got: %v", err)
+	}
+}
+
+func TestNoteCommand_ErrorOnWhitespaceOnlyText(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Whitespace note target")
+
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"note", id[:8], "   \t  "})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for whitespace-only note text, got nil")
+	}
+}
+
 func TestNoteCommand_AutoCommit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

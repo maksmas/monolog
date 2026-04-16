@@ -868,9 +868,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = ""
 
 	// When the detail panel is open and noteArea is focused, route key events
-	// through the textarea first. Esc always closes the panel; Enter with
-	// non-empty text will be handled by Task 8 (note submission). Navigation
-	// keys (up/down/left/right/tab) and action keys fall through below.
+	// through the textarea first. Esc always closes the panel; Enter submits
+	// the note. Single-character action keys (d/r/t/c/x/m/a/e/s/v/h/q) and
+	// navigation keys fall through to their normal handlers below.
 	if m.detailOpen {
 		switch msg.Type {
 		case tea.KeyEsc:
@@ -887,8 +887,40 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.submitNote()
 		}
 
-		// Let the textarea consume printable input.
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace || msg.Type == tea.KeyBackspace {
+		// When the textarea is empty, let single-char action and navigation
+		// keys fall through to their normal handlers so the user can mark
+		// done, retag, reschedule, etc. without closing the panel first.
+		// Once the user starts typing (non-empty textarea), all printable
+		// input goes to the textarea; only [/] for body scroll still falls
+		// through.
+		if msg.Type == tea.KeyRunes {
+			s := string(msg.Runes)
+			noteEmpty := strings.TrimSpace(m.noteArea.Value()) == ""
+			if noteEmpty {
+				switch s {
+				case "d", "r", "t", "c", "x", "m", "a", "e", "s", "v", "h", "q",
+					"j", "k", "g", "G",
+					"1", "2", "3", "4", "5", "6",
+					"[", "]":
+					// Fall through to normal handlers below.
+				default:
+					var cmd tea.Cmd
+					m.noteArea, cmd = m.noteArea.Update(msg)
+					return m, cmd
+				}
+			} else {
+				// Textarea has content — route everything except scroll keys.
+				switch s {
+				case "[", "]":
+					// Fall through for body scroll.
+				default:
+					var cmd tea.Cmd
+					m.noteArea, cmd = m.noteArea.Update(msg)
+					return m, cmd
+				}
+			}
+		}
+		if msg.Type == tea.KeySpace || msg.Type == tea.KeyBackspace {
 			var cmd tea.Cmd
 			m.noteArea, cmd = m.noteArea.Update(msg)
 			return m, cmd
@@ -980,6 +1012,16 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		vl.GoToEnd()
 		m.detailScroll = 0
+	case "]":
+		// Scroll detail panel body down.
+		if m.detailOpen {
+			m.detailScroll++
+		}
+	case "[":
+		// Scroll detail panel body up.
+		if m.detailOpen && m.detailScroll > 0 {
+			m.detailScroll--
+		}
 	}
 	return m, nil
 }
@@ -1066,9 +1108,10 @@ func (m *Model) submitNote() tea.Cmd {
 		return nil
 	}
 	t := *task
-	t.Body = model.AppendNote(t.Body, text, time.Now())
+	nowT := time.Now()
+	t.Body = model.AppendNote(t.Body, text, nowT)
 	t.NoteCount++
-	t.UpdatedAt = now()
+	t.UpdatedAt = nowT.UTC().Format(time.RFC3339)
 	flat := flattenTitle(t.Title)
 
 	// Clear and reset the textarea immediately so the UI feels responsive.
@@ -1435,15 +1478,13 @@ func (m *Model) renderSuggestions() string {
 	if len(m.suggestions) == 0 {
 		return ""
 	}
-	bold := lipgloss.NewStyle().Bold(true)
-	dim := lipgloss.NewStyle().Faint(true)
 	var b strings.Builder
 	for i, s := range m.suggestions {
 		b.WriteByte('\n')
 		if i == m.suggestionIdx {
-			b.WriteString("       " + bold.Render("> "+s))
+			b.WriteString("       " + suggestionBoldStyle.Render("> "+s))
 		} else {
-			b.WriteString("       " + dim.Render("  "+s))
+			b.WriteString("       " + suggestionDimStyle.Render("  "+s))
 		}
 	}
 	return b.String()
@@ -2279,6 +2320,9 @@ func (m *Model) detailPanelWidth() int {
 	if w > m.width-20 {
 		w = m.width - 20
 	}
+	if w < 0 {
+		w = 0
+	}
 	return w
 }
 
@@ -2286,6 +2330,16 @@ func (m *Model) detailPanelWidth() int {
 // is open, the list is narrowed to make room.
 func (m *Model) listWidth() int {
 	return m.width - m.detailPanelWidth()
+}
+
+// detailPanelInnerWidth returns the usable content width inside the detail
+// panel, accounting for border (2) and padding (4). Returns at least 10.
+func (m *Model) detailPanelInnerWidth() int {
+	iw := m.detailPanelWidth() - 6
+	if iw < 10 {
+		iw = 10
+	}
+	return iw
 }
 
 // recomputeLayout recalculates list sizes based on the current terminal
@@ -2305,13 +2359,7 @@ func (m *Model) recomputeLayout() {
 	}
 	// Resize the note textarea to fit inside the detail panel.
 	if m.detailOpen {
-		pw := m.detailPanelWidth()
-		// Panel inner width: total minus border (2) and padding (4).
-		noteW := pw - 6
-		if noteW < 10 {
-			noteW = 10
-		}
-		m.noteArea.SetWidth(noteW)
+		m.noteArea.SetWidth(m.detailPanelInnerWidth())
 	}
 	// Keep textinput widths in sync when the terminal is resized while a modal
 	// is open, so the fixed-width border doesn't reflow on the next render.
@@ -2351,11 +2399,7 @@ func (m *Model) detailPanelView() string {
 	}
 
 	pw := m.detailPanelWidth()
-	// Inner width: panel width minus border (2) and padding (4).
-	iw := pw - 6
-	if iw < 10 {
-		iw = 10
-	}
+	iw := m.detailPanelInnerWidth()
 
 	now := time.Now()
 
@@ -2364,7 +2408,12 @@ func (m *Model) detailPanelView() string {
 	var header []string
 	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
 
-	header = append(header, "Schedule: "+task.Schedule)
+	bucket := schedule.Bucket(task.Schedule, now)
+	if bucket != task.Schedule {
+		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, task.Schedule))
+	} else {
+		header = append(header, "Schedule: "+task.Schedule)
+	}
 
 	if vt := display.VisibleTags(task.Tags); len(vt) > 0 {
 		header = append(header, "Tags: "+strings.Join(vt, ", "))
@@ -2390,9 +2439,9 @@ func (m *Model) detailPanelView() string {
 	if len(m.lists) > 0 {
 		listH = m.lists[0].height
 	}
-	// Panel content area height = listH + tab bar (1) + help (1) - border (2) - top/bottom padding (0).
-	// Actually, the panel border costs 2 lines.
-	panelContentH := listH + 2 - 2
+	// Panel content area height matches the list height (tab bar and help line
+	// offset the border cost).
+	panelContentH := listH
 	if panelContentH < 5 {
 		panelContentH = 5
 	}
@@ -2408,6 +2457,10 @@ func (m *Model) detailPanelView() string {
 		bodyLines = wrapText(task.Body, iw)
 	}
 
+	// Clamp scroll offset to valid range so we never wrap to top.
+	if m.detailScroll >= len(bodyLines) {
+		m.detailScroll = max(0, len(bodyLines)-1)
+	}
 	// Apply scroll offset.
 	if m.detailScroll > 0 && m.detailScroll < len(bodyLines) {
 		bodyLines = bodyLines[m.detailScroll:]
@@ -2458,10 +2511,13 @@ func (m *Model) View() string {
 		body = m.modalView()
 	}
 
-	// When the detail panel is open, join the list body and detail panel
-	// side-by-side horizontally.
-	if detail := m.detailPanelView(); detail != "" {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, detail)
+	// When the detail panel is open in normal/grab mode, join the list body
+	// and detail panel side-by-side horizontally. Skip when a modal is active
+	// to avoid layout conflicts.
+	if m.mode == modeNormal || m.mode == modeGrab {
+		if detail := m.detailPanelView(); detail != "" {
+			body = lipgloss.JoinHorizontal(lipgloss.Top, body, detail)
+		}
 	}
 
 	help := m.helpLine()
@@ -2510,6 +2566,7 @@ func (m *Model) helpLine() string {
 				[2]string{"esc", "close"},
 				[2]string{"enter", "submit"},
 				[2]string{"alt+enter", "newline"},
+				[2]string{"[/]", "scroll"},
 			)
 		}
 		if m.viewMode == viewTag {
@@ -2619,6 +2676,7 @@ func helpModalContent() string {
 		"  " + k("m") + "    grab / reorder\n" +
 		"  " + k("a") + "    toggle active\n" +
 		"  " + k("v") + "    toggle view\n" +
+		"  " + k("↵") + "    notes panel\n" +
 		"  " + k("s") + "    sync\n" +
 		"  " + k("h") + "    this help\n" +
 		"  " + k("q") + "    quit"

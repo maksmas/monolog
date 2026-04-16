@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/display"
@@ -19,7 +20,10 @@ func newNoteCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			identifier := args[0]
-			text := args[1]
+			text := strings.TrimSpace(args[1])
+			if text == "" {
+				return fmt.Errorf("note text cannot be empty")
+			}
 
 			s, repoPath, err := openStore()
 			if err != nil {

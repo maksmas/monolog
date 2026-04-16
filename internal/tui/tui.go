@@ -65,4 +65,10 @@ var (
 	// separators in the status bar (no padding — padding applied by renderHelpBar).
 	helpTextStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	// suggestionBoldStyle highlights the currently selected autocomplete suggestion.
+	suggestionBoldStyle = lipgloss.NewStyle().Bold(true)
+
+	// suggestionDimStyle dims non-selected autocomplete suggestions.
+	suggestionDimStyle = lipgloss.NewStyle().Faint(true)
 )

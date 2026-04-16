@@ -5581,10 +5581,13 @@ func TestDetailPanel_TextInputRoutedToNoteArea(t *testing.T) {
 		t.Fatal("panel should be open")
 	}
 
-	// Type some text — it should go into the noteArea.
-	m = typeString(t, m, "hello")
-	if got := m.noteArea.Value(); got != "hello" {
-		t.Errorf("noteArea.Value() = %q, want %q", got, "hello")
+	// Type text that doesn't start with an action key — when the textarea is
+	// empty, single-char action keys (d/r/t/c/x/m/a/e/s/v/h/q) fall through
+	// to their handlers. Once the first non-action character lands in the
+	// textarea, subsequent characters (including action keys) are captured.
+	m = typeString(t, m, "notes")
+	if got := m.noteArea.Value(); got != "notes" {
+		t.Errorf("noteArea.Value() = %q, want %q", got, "notes")
 	}
 }
 
@@ -5596,9 +5599,9 @@ func TestDetailPanel_EscClearsNoteArea(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
 
-	// Open, type, close.
+	// Open, type (non-action-key starting text), close.
 	m, _ = key(t, m, "enter")
-	m = typeString(t, m, "draft note")
+	m = typeString(t, m, "note text")
 	m, _ = key(t, m, "esc")
 
 	if m.detailOpen {
@@ -5617,17 +5620,63 @@ func TestDetailPanel_ActionKeysStillWorkWhenOpen(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
 
-	// Open panel.
+	// Open panel — textarea should be empty.
 	m, _ = key(t, m, "enter")
 	if !m.detailOpen {
 		t.Fatal("panel should be open")
 	}
+	if strings.TrimSpace(m.noteArea.Value()) != "" {
+		t.Fatal("textarea should be empty after opening panel")
+	}
 
-	// 'd' (done) should still work — produces a save command.
+	// 'd' (done) should work because textarea is empty — produces a save
+	// command and marks the task done when the command completes.
 	m, cmd := key(t, m, "d")
 	if cmd == nil {
-		t.Error("'d' should return a command even when detail panel is open")
+		t.Fatal("'d' should return a command when detail panel is open with empty textarea")
 	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+	// Verify the task actually moved to the Done tab (index 5).
+	if got := len(m.lists[0].Items()); got != 0 {
+		t.Errorf("Today tab should be empty after done, got %d items", got)
+	}
+	if got := len(m.lists[5].Items()); got != 1 {
+		t.Errorf("Done tab should have 1 item, got %d", got)
+	}
+
+	// Also verify 'h' opens help mode when textarea is empty.
+	m2 := newTestModel(t,
+		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next2, _ := m2.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m2 = next2.(*Model)
+	m2, _ = key(t, m2, "enter")
+	m2, _ = key(t, m2, "h")
+	if m2.mode != modeHelp {
+		t.Errorf("'h' with panel open (empty textarea) should switch to help mode, got mode=%d", m2.mode)
+	}
+
+	// Verify action keys are captured by textarea when it has content.
+	m3 := newTestModel(t,
+		model.Task{ID: "01C", Title: "task three", Status: "open", Schedule: "today",
+			Position: 3000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next3, _ := m3.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m3 = next3.(*Model)
+	m3, _ = key(t, m3, "enter")
+	m3 = typeString(t, m3, "some text")
+	// Now 'd' should go to textarea, not trigger done.
+	m3, cmd3 := key(t, m3, "d")
+	// The cmd should be nil (textarea internal cursor blink) or at least not a done save.
+	// The textarea value should contain 'd'.
+	if !strings.Contains(m3.noteArea.Value(), "d") {
+		t.Errorf("'d' with non-empty textarea should go to textarea, got value=%q", m3.noteArea.Value())
+	}
+	_ = cmd3
 }
 
 func TestDetailPanel_TabSwitchResetsScroll(t *testing.T) {
@@ -6033,10 +6082,10 @@ func TestDetailPanel_NoteSubmission(t *testing.T) {
 		t.Fatal("panel should be open")
 	}
 
-	// Type a note.
-	m = typeString(t, m, "my first note")
-	if got := m.noteArea.Value(); got != "my first note" {
-		t.Fatalf("noteArea = %q, want %q", got, "my first note")
+	// Type a note (starts with non-action-key character so it goes to textarea).
+	m = typeString(t, m, "first note")
+	if got := m.noteArea.Value(); got != "first note" {
+		t.Fatalf("noteArea = %q, want %q", got, "first note")
 	}
 
 	// Submit with Enter — should return a tea.Cmd (the async save).
@@ -6059,7 +6108,7 @@ func TestDetailPanel_NoteSubmission(t *testing.T) {
 	if task == nil {
 		t.Fatal("no task selected after reload")
 	}
-	if !strings.Contains(task.Body, "my first note") {
+	if !strings.Contains(task.Body, "first note") {
 		t.Errorf("task body should contain the note, got %q", task.Body)
 	}
 	if task.NoteCount != 1 {
@@ -6132,9 +6181,9 @@ func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = next.(*Model)
 
-	// Open panel, type, submit.
+	// Open panel, type (non-action-key starting text), submit.
 	m, _ = key(t, m, "enter")
-	m = typeString(t, m, "second note")
+	m = typeString(t, m, "new note")
 	m, cmd := key(t, m, "enter")
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd")
@@ -6151,7 +6200,7 @@ func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
 	if !strings.Contains(task.Body, "existing note") {
 		t.Error("original note should still be present")
 	}
-	if !strings.Contains(task.Body, "second note") {
+	if !strings.Contains(task.Body, "new note") {
 		t.Error("new note should be present")
 	}
 }
@@ -6185,10 +6234,13 @@ func TestDetailPanel_AltEnterInsertsNewline(t *testing.T) {
 	// Type more text after the newline.
 	m = typeString(t, m, "line two")
 
-	// The value should contain both lines.
+	// The value should contain both lines separated by a newline.
 	val := m.noteArea.Value()
 	if !strings.Contains(val, "line one") || !strings.Contains(val, "line two") {
 		t.Errorf("expected multi-line content, got %q", val)
+	}
+	if !strings.Contains(val, "\n") {
+		t.Errorf("expected newline character in multi-line content, got %q", val)
 	}
 }
 
@@ -6208,5 +6260,124 @@ func TestDetailPanel_NoteSubmission_NoTaskSelected(t *testing.T) {
 	cmd := m.submitNote()
 	if cmd != nil {
 		t.Error("submitNote with no task selected should return nil")
+	}
+}
+
+func TestDetailPanel_NoteSubmission_UpdatesUpdatedAt(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01UPD", Title: "update at test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2020-01-01T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel and type a note (non-action-key starting text).
+	m, _ = key(t, m, "enter")
+	m = typeString(t, m, "note for update")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("submit should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+
+	task, err := m.store.GetByPrefix("01UPD")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.UpdatedAt == "2020-01-01T00:00:00Z" {
+		t.Error("UpdatedAt should change after note submission via TUI")
+	}
+}
+
+func TestDetailPanel_ViewWithNoTaskSelected(t *testing.T) {
+	// Empty model — no tasks.
+	m := newTestModel(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Force panel open — detailPanelView should return "" with no task.
+	m.detailOpen = true
+	got := m.detailPanelView()
+	if got != "" {
+		t.Errorf("detailPanelView with no task should return empty, got %q", got)
+	}
+}
+
+func TestDetailPanel_ScrollBodyDown(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01SCR", Title: "scroll test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+	if m.detailScroll != 0 {
+		t.Fatalf("initial scroll should be 0, got %d", m.detailScroll)
+	}
+
+	// Scroll down with ']'.
+	m, _ = key(t, m, "]")
+	if m.detailScroll != 1 {
+		t.Errorf("detailScroll after ] should be 1, got %d", m.detailScroll)
+	}
+
+	// Scroll up with '['.
+	m, _ = key(t, m, "[")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll after [ should be 0, got %d", m.detailScroll)
+	}
+
+	// Scroll up at 0 should stay at 0.
+	m, _ = key(t, m, "[")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll should not go negative, got %d", m.detailScroll)
+	}
+}
+
+func TestDetailPanel_ScrollOutOfBoundsStillRenders(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01OOB", Title: "oob scroll", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "short body",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel and set scroll way beyond body length.
+	m, _ = key(t, m, "enter")
+	m.detailScroll = 999
+
+	// detailPanelView should still render without panic.
+	got := m.detailPanelView()
+	if got == "" {
+		t.Error("detailPanelView should still render even with scroll out of bounds")
+	}
+}
+
+func TestDetailPanel_HelpLineShowsScrollKeys(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01HLP", Title: "help test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	help := m.helpLine()
+	if !strings.Contains(help, "scroll") {
+		t.Errorf("help line when detail open should mention scroll, got: %s", help)
 	}
 }
