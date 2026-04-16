@@ -1804,12 +1804,600 @@ func TestAdd_ColonNoAutoPopulateDuplicate(t *testing.T) {
 	m, _ = key(t, m, "c")
 	m, _ = key(t, m, "tab") // focus tags
 	m = typeString(t, m, "jean")
-	m, _ = key(t, m, "tab") // focus title
+	// First Tab accepts the autocomplete suggestion ("jean" -> "jean, ").
+	m, _ = key(t, m, "tab")
+	// Second Tab switches focus back to the title field.
+	m, _ = key(t, m, "tab")
 	m = typeString(t, m, "jean: ")
 	got := m.tagInput.Value()
-	// Should still be just "jean", not "jean, jean" or "jean,jean".
-	if got != "jean" {
-		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean")
+	// The tag field should contain "jean, " (from autocomplete acceptance) but
+	// not a duplicate "jean, jean, " — the auto-populate should detect that
+	// "jean" is already present.
+	if got != "jean, " {
+		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean, ")
+	}
+}
+
+// --- tag autocomplete tests ------------------------------------------------
+
+func TestAdd_SuggestionsAppearWhenTypingPrefix(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c") // open add
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
+		t.Errorf("suggestions = %v, want [work]", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsEmptyOnNoMatch(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "xyz")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsEmptyOnEmptyFragment(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	// Empty tag field — no suggestions.
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty on empty fragment", m.suggestions)
+	}
+}
+
+func TestAdd_UpDownNavigatesSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project", "priority"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	// Should have all three p-tags.
+	if len(m.suggestions) != 3 {
+		t.Fatalf("suggestions = %v, want 3 items", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Down moves to 1.
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after down: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	// Down again to 2.
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 2 {
+		t.Errorf("after 2nd down: suggestionIdx = %d, want 2", m.suggestionIdx)
+	}
+	// Down at end stays at 2.
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 2 {
+		t.Errorf("down at end: suggestionIdx = %d, want 2", m.suggestionIdx)
+	}
+	// Up goes back to 1.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after up: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	// Up again to 0.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("after 2nd up: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Up at start stays at 0.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("up at start: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestAdd_TabAcceptsSuggestion(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	// suggestions = ["work"], idx = 0
+	m, _ = key(t, m, "tab") // accept suggestion
+	got := m.tagInput.Value()
+	if got != "work, " {
+		t.Errorf("tagInput = %q, want %q", got, "work, ")
+	}
+	// Suggestions should be cleared after acceptance (empty fragment).
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after accept = %v, want empty", m.suggestions)
+	}
+	// Focus should still be on tags (accept doesn't switch focus).
+	if m.addFocus != addFocusTags {
+		t.Errorf("addFocus = %v, want addFocusTags", m.addFocus)
+	}
+}
+
+func TestAdd_EnterAcceptsSuggestionInsteadOfSubmitting(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "a title")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	// Enter should accept the suggestion, not submit the form.
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("enter with active suggestion should not submit (cmd should be nil)")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode = %v, want modeAdd (should still be in modal)", m.mode)
+	}
+	got := m.tagInput.Value()
+	if got != "work, " {
+		t.Errorf("tagInput = %q, want %q", got, "work, ")
+	}
+}
+
+func TestAdd_EnterSubmitsWhenNoSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "new task")
+	// Do not type anything in tags — no suggestions visible.
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter with no suggestions should submit")
+	}
+	m = runCmd(t, m, cmd)
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal after submit", m.mode)
+	}
+}
+
+func TestAdd_EscClearsSuggestionsInsteadOfClosing(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before Esc")
+	}
+	// First Esc clears suggestions but stays in modal.
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after esc = %v, want empty", m.suggestions)
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode after first esc = %v, want modeAdd", m.mode)
+	}
+	// Second Esc closes the modal.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after second esc = %v, want modeNormal", m.mode)
+	}
+}
+
+func TestAdd_SuggestionsClearedOnCloseModal(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before close")
+	}
+	// Esc once to clear suggestions, Esc again to close.
+	m, _ = key(t, m, "esc")
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after close = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after close = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsExcludeAlreadyEnteredTags(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	// Type "work" and accept it.
+	m = typeString(t, m, "wo")
+	m, _ = key(t, m, "tab") // accept "work"
+	// Now type "w" — "work" should be excluded, only "writing" suggested.
+	m = typeString(t, m, "w")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "writing" {
+		t.Errorf("suggestions = %v, want [writing] (work excluded)", m.suggestions)
+	}
+}
+
+func TestAdd_DownNavigatesBeforeAccepting(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	// suggestions = ["personal", "project"], idx = 0
+	m, _ = key(t, m, "down") // idx = 1 -> "project"
+	m, _ = key(t, m, "tab")  // accept "project"
+	got := m.tagInput.Value()
+	if got != "project, " {
+		t.Errorf("tagInput = %q, want %q", got, "project, ")
+	}
+}
+
+func TestAdd_SuggestionsClearedInOpenAdd(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Set up some suggestions state, then open add modal.
+	m.suggestions = []string{"stale"}
+	m.suggestionIdx = 0
+	m, _ = key(t, m, "c")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after openAdd = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after openAdd = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_UpDownIgnoredWhenTitleFocused(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	// Focus is on title (default). Even if we had stale suggestions, Up/Down
+	// should not navigate them.
+	m.suggestions = []string{"work"}
+	m.suggestionIdx = 0
+	m, _ = key(t, m, "down")
+	// Should not change since title is focused — key falls through to textarea.
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx = %d, want 0 (should be unchanged when title focused)", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsClearedOnTabToTitle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	// Simulate the stale-suggestions scenario: tag field has a partial value
+	// and suggestions were populated, but suggestionIdx is -1 (no selection).
+	// This happens after Esc clears the index but the field value remains.
+	m.tagInput.SetValue("wo")
+	m.suggestions = []string{"work"}
+	m.suggestionIdx = -1
+	// Tab should switch focus to title (since idx < 0, handleSuggestionNav
+	// does not intercept). Suggestions must be cleared so the dropdown
+	// does not render while the title field is focused.
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Fatalf("addFocus = %v, want addFocusTitle", m.addFocus)
+	}
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after Tab to title = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after Tab to title = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionIdxResetsOnKeystrokeAfterNavigation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	// suggestions = ["personal", "project"], idx = 0
+	if m.suggestionIdx != 0 {
+		t.Fatalf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "down") // idx = 1
+	m, _ = key(t, m, "down") // idx stays 1 (clamped)
+	if m.suggestionIdx < 1 {
+		t.Fatalf("suggestionIdx after Down = %d, want >= 1", m.suggestionIdx)
+	}
+	// Type another character — should reset idx to 0 via refreshSuggestions.
+	m = typeString(t, m, "e")
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx after keystroke = %d, want 0 (should reset on new input)", m.suggestionIdx)
+	}
+}
+
+func TestAdd_ModalViewRendersSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	// Focus tag field and type a prefix to trigger suggestions.
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "w")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'w'")
+	}
+	view := m.modalView()
+	// The selected suggestion should appear with "> " prefix.
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("modalView should contain highlighted suggestion %q, got:\n%s", m.suggestions[0], view)
+	}
+	// All suggestions should be present in the output.
+	for _, s := range m.suggestions {
+		if !strings.Contains(view, s) {
+			t.Errorf("modalView should contain suggestion %q", s)
+		}
+	}
+}
+
+func TestAdd_ModalViewNoSuggestionsWhenEmpty(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	// Don't type anything in the tag field.
+	view := m.modalView()
+	// Should not contain the indented suggestion marker format.
+	if strings.Contains(view, "       > ") {
+		t.Errorf("modalView should not contain suggestion markers when no suggestions, got:\n%s", view)
+	}
+}
+
+func TestAdd_ModalViewSuggestionHighlightChangesOnNavigation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	if len(m.suggestions) < 2 {
+		t.Fatalf("expected at least 2 suggestions, got %d", len(m.suggestions))
+	}
+	// Initially the first suggestion is highlighted.
+	view1 := m.modalView()
+	if !strings.Contains(view1, "> "+m.suggestions[0]) {
+		t.Errorf("first suggestion should be highlighted initially")
+	}
+	// Navigate down — second suggestion should now be highlighted.
+	m, _ = key(t, m, "down")
+	view2 := m.modalView()
+	if !strings.Contains(view2, "> "+m.suggestions[1]) {
+		t.Errorf("second suggestion should be highlighted after down, got:\n%s", view2)
+	}
+}
+
+// --- retag autocomplete tests -----------------------------------------------
+
+func TestRetag_SuggestionsAppearWhenTypingPrefix(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t") // open retag
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	// knownTags should be populated.
+	if len(m.knownTags) == 0 {
+		t.Fatal("knownTags should be populated in openRetag")
+	}
+	// Clear the input and type a prefix.
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
+		t.Errorf("suggestions = %v, want [work]", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestRetag_UpDownNavigatesSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project", "priority"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "p")
+	if len(m.suggestions) != 3 {
+		t.Fatalf("suggestions = %v, want 3 items", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after down: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("after up: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Up at start stays at 0.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("up at start: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestRetag_TabAcceptsSuggestion(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	// suggestions = ["work"], idx = 0
+	m, _ = key(t, m, "tab")
+	got := m.input.Value()
+	if got != "work, " {
+		t.Errorf("after tab accept: input = %q, want %q", got, "work, ")
+	}
+	// Suggestions should be cleared after acceptance (empty fragment).
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after accept = %v, want empty", m.suggestions)
+	}
+}
+
+func TestRetag_EnterAcceptsSuggestionInsteadOfSubmitting(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	// Enter with active suggestion should accept, not submit.
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("enter with active suggestion should not submit (cmd should be nil)")
+	}
+	if m.mode != modeRetag {
+		t.Errorf("mode = %v, want modeRetag (should stay in retag modal)", m.mode)
+	}
+	if !strings.Contains(m.input.Value(), "work, ") {
+		t.Errorf("input value = %q, want it to contain accepted suggestion 'work, '", m.input.Value())
+	}
+}
+
+func TestRetag_EnterSubmitsWhenNoSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	// Don't type anything new — no suggestions visible.
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter with no suggestions should submit")
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal (should close modal after submit)", m.mode)
+	}
+}
+
+func TestRetag_EscClearsSuggestionsInsteadOfClosing(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before Esc")
+	}
+	// First Esc clears suggestions but stays in modal.
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after esc = %v, want empty", m.suggestions)
+	}
+	if m.mode != modeRetag {
+		t.Errorf("mode after esc = %v, want modeRetag (should stay in modal)", m.mode)
+	}
+	// Second Esc closes the modal.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after 2nd esc = %v, want modeNormal", m.mode)
+	}
+}
+
+func TestRetag_SuggestionsClearedInOpenRetag(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Set up stale suggestions, then open retag modal.
+	m.suggestions = []string{"stale"}
+	m.suggestionIdx = 0
+	m, _ = key(t, m, "t")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after openRetag = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after openRetag = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestRetag_ModalViewRendersSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "w")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'w'")
+	}
+	view := m.modalView()
+	// The selected suggestion should appear with "> " prefix.
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("retag modalView should contain highlighted suggestion %q, got:\n%s", m.suggestions[0], view)
+	}
+	// All suggestions should be present in the output.
+	for _, s := range m.suggestions {
+		if !strings.Contains(view, s) {
+			t.Errorf("retag modalView should contain suggestion %q", s)
+		}
+	}
+}
+
+func TestRetag_ModalViewNoSuggestionsWhenEmpty(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	// Don't type anything new in the tag field.
+	view := m.modalView()
+	// Should not contain the indented suggestion marker format.
+	if strings.Contains(view, "       > ") {
+		t.Errorf("retag modalView should not contain suggestion markers when no suggestions, got:\n%s", view)
 	}
 }
 
