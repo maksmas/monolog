@@ -168,10 +168,10 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 - Modify: `go.mod`
 - Modify: `go.sum`
 
-- [ ] run `go get github.com/sahilm/fuzzy`
-- [ ] run `go mod tidy`
-- [ ] verify `go build ./...` succeeds with the new dep
-- [ ] (no tests — dependency-only change)
+- [x] run `go get github.com/sahilm/fuzzy`
+- [x] run `go mod tidy`
+- [x] verify `go build ./...` succeeds with the new dep
+- [x] (no tests — dependency-only change)
 
 ### Task 2: Implement pure ranker `rankSearch`
 
