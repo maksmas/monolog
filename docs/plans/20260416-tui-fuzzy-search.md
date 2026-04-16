@@ -179,11 +179,11 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 - Create: `internal/tui/search_match.go`
 - Create: `internal/tui/search_match_test.go`
 
-- [ ] define `searchDoc` and `searchResult` types (either here or in model.go; pick wherever cleanest — prefer search_match.go so the test file can import just this package file)
-- [ ] implement `rankSearch(query string, docs []searchDoc, limit int) []searchResult`:
+- [x] define `searchDoc` and `searchResult` types (either here or in model.go; pick wherever cleanest — prefer search_match.go so the test file can import just this package file)
+- [x] implement `rankSearch(query string, docs []searchDoc, limit int) []searchResult`:
   - empty query branch → copy all docs, sort by CreatedAt desc, truncate
   - non-empty branch → build lowercased title/body slices, run `fuzzy.Find` against each, merge per doc with `max(titleScore*2, bodyScore)`, keep winning highlight set, sort by (score desc, CreatedAt desc), truncate
-- [ ] write table-driven tests covering:
+- [x] write table-driven tests covering:
   - empty query returns all docs in CreatedAt-desc order
   - title 2x weight beats body match (same letters, same positions)
   - case-insensitive (`FIX` matches title `"Fix login bug"`)
@@ -192,7 +192,7 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
   - limit truncates correctly (len(result) ≤ limit)
   - done tasks appear in results (status is not filtered)
   - match positions (`titleHit` / `bodyHit`) returned correctly
-- [ ] run `go test ./internal/tui/ -run TestRankSearch` — must pass before Task 3
+- [x] run `go test ./internal/tui/ -run TestRankSearch` — must pass before Task 3
 
 ### Task 3: Add `modeSearch` + `searchState` + entry/exit plumbing
 
