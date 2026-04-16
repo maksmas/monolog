@@ -5125,6 +5125,54 @@ func TestHelpLine_DetailOpen_ShowsPanelKeys(t *testing.T) {
 	}
 }
 
+// TestHelpLine_NormalMode_ContainsSearchHint verifies the `/` search key is
+// advertised in the normal-mode help bar for both schedule and tag views.
+func TestHelpLine_NormalMode_ContainsSearchHint_ScheduleView(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+	m.viewMode = viewSchedule
+
+	help := m.helpLine()
+	if !strings.Contains(help, "/") {
+		t.Errorf("schedule view help line missing '/' hint, got: %s", help)
+	}
+	if !strings.Contains(strings.ToLower(help), "search") {
+		t.Errorf("schedule view help line missing 'search' hint, got: %s", help)
+	}
+}
+
+func TestHelpLine_NormalMode_ContainsSearchHint_TagView(t *testing.T) {
+	task := makeTask(t, "01HS01", "task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	m.mode = modeNormal
+
+	help := m.helpLine()
+	if !strings.Contains(help, "/") {
+		t.Errorf("tag view help line missing '/' hint, got: %s", help)
+	}
+	if !strings.Contains(strings.ToLower(help), "search") {
+		t.Errorf("tag view help line missing 'search' hint, got: %s", help)
+	}
+}
+
+// TestHelpModal_ContainsSearchSection ensures the Help modal lists the search
+// entry key and a brief description of search keybindings.
+func TestHelpModal_ContainsSearchSection(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeHelp
+
+	view := m.modalView()
+	if !strings.Contains(view, "/") {
+		t.Errorf("help modal missing '/' key: %s", view)
+	}
+	if !strings.Contains(strings.ToLower(view), "search") {
+		t.Errorf("help modal missing 'search' label: %s", view)
+	}
+}
+
 func TestDone_SetsCompletedAt(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "complete me", Status: "open", Schedule: "today",

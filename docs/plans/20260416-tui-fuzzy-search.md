@@ -288,10 +288,10 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 **Files:**
 - Modify: `internal/tui/model.go` (existing help screen / `helpLine`)
 
-- [ ] add `/` to the normal-mode help line hints (wherever the current key set is listed)
-- [ ] add a brief "Search" section to the `modeHelp` screen listing entry key and in-search keys
-- [ ] write integration test: the help screen text contains `"/"` and `"search"` (case-insensitive)
-- [ ] run `go test ./internal/tui/...` — must pass before Task 8
+- [x] add `/` to the normal-mode help line hints (wherever the current key set is listed)
+- [x] add a brief "Search" section to the `modeHelp` screen listing entry key and in-search keys
+- [x] write integration test: the help screen text contains `"/"` and `"search"` (case-insensitive)
+- [x] run `go test ./internal/tui/...` — must pass before Task 8
 
 ### Task 8: Verify acceptance criteria
 

@@ -2628,6 +2628,7 @@ func (m *Model) helpLine() string {
 				[2]string{"x", "del"},
 				[2]string{"m", "grab"},
 				[2]string{"a", "active"},
+				[2]string{"/", "search"},
 				[2]string{"v", "schedule"},
 				[2]string{"s", "sync"},
 				[2]string{"h", "help"},
@@ -2646,6 +2647,7 @@ func (m *Model) helpLine() string {
 			[2]string{"x", "del"},
 			[2]string{"m", "grab"},
 			[2]string{"a", "active"},
+			[2]string{"/", "search"},
 			[2]string{"v", "tags"},
 			[2]string{"s", "sync"},
 			[2]string{"h", "help"},
@@ -2722,11 +2724,17 @@ func helpModalContent() string {
 		"  " + k("x") + "    delete\n" +
 		"  " + k("m") + "    grab / reorder\n" +
 		"  " + k("a") + "    toggle active\n" +
+		"  " + k("/") + "    search\n" +
 		"  " + k("v") + "    toggle view\n" +
 		"  " + k("↵") + "    notes panel\n" +
 		"  " + k("s") + "    sync\n" +
 		"  " + k("h") + "    this help\n" +
-		"  " + k("q") + "    quit"
+		"  " + k("q") + "    quit\n\n" +
+		"Search:\n\n" +
+		"  " + k("/") + "       open fuzzy search\n" +
+		"  " + k("↑/↓") + "     move selection\n" +
+		"  " + k("enter") + "   jump to task\n" +
+		"  " + k("esc") + "     cancel"
 }
 
 func (m *Model) modalView() string {
