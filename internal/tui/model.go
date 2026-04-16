@@ -90,14 +90,23 @@ var defaultTabs = []tab{
 }
 
 // searchState holds the per-modal state for the fuzzy-search overlay.
-// haystack is captured once at openSearch time; results is re-ranked on every
-// keystroke. cursor is the currently-highlighted index into results.
+// haystack is captured once at openSearch time along with parallel titles/
+// bodies slices that sahilm/fuzzy consumes, so the ranker does not re-allocate
+// on every keystroke. results is re-ranked on every keystroke. cursor is the
+// currently-highlighted index into results.
 type searchState struct {
 	input    textinput.Model
 	haystack []searchDoc
+	titles   []string
+	bodies   []string
 	results  []searchResult
 	cursor   int
 }
+
+// searchInputReserve is the column budget taken out of the total width for the
+// search input bar's prompt and right-aligned counter. A single constant keeps
+// recomputeLayout and renderSearch in sync.
+const searchInputReserve = 14
 
 // Model is the top-level Bubble Tea model for the TUI.
 type Model struct {
@@ -2412,11 +2421,6 @@ func (m *Model) recomputeLayout() {
 	}
 }
 
-// searchInputReserve is the column budget taken out of the total width for the
-// search input bar's prompt and right-aligned counter. A single constant keeps
-// recomputeLayout and renderSearch in sync.
-const searchInputReserve = 14
-
 // --- View ------------------------------------------------------------------
 
 // detailPanelView renders the right-side detail panel for the currently
@@ -2537,6 +2541,12 @@ func (m *Model) detailPanelView() string {
 }
 
 func (m *Model) View() string {
+	// Search overlay owns the full screen: render and return before computing
+	// anything specific to the normal-mode layout (tab bar, panels, etc).
+	if m.mode == modeSearch {
+		return m.renderSearch()
+	}
+
 	var tabBar []string
 	for i, t := range m.tabs {
 		if i == m.activeTab {
@@ -2546,10 +2556,6 @@ func (m *Model) View() string {
 		}
 	}
 	header := lipgloss.JoinHorizontal(lipgloss.Top, tabBar...)
-
-	if m.mode == modeSearch {
-		return m.renderSearch()
-	}
 
 	var body string
 	if m.mode == modeNormal || m.mode == modeGrab {
@@ -2731,10 +2737,13 @@ func helpModalContent() string {
 		"  " + k("h") + "    this help\n" +
 		"  " + k("q") + "    quit\n\n" +
 		"Search:\n\n" +
-		"  " + k("/") + "       open fuzzy search\n" +
-		"  " + k("↑/↓") + "     move selection\n" +
-		"  " + k("enter") + "   jump to task\n" +
-		"  " + k("esc") + "     cancel"
+		"  " + k("/") + "              open fuzzy search\n" +
+		"  " + k("↑/↓") + "            move selection\n" +
+		"  " + k("ctrl+j/k") + "       move selection\n" +
+		"  " + k("ctrl+n/p") + "       move selection\n" +
+		"  " + k("pgdn/pgup") + "      page selection\n" +
+		"  " + k("enter") + "          jump to task\n" +
+		"  " + k("esc") + "            cancel"
 }
 
 func (m *Model) modalView() string {

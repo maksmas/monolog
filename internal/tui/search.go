@@ -7,11 +7,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
-	"github.com/mmaksmas/monolog/internal/store"
 )
 
 // searchResultLimit caps the number of ranked results returned each keystroke.
@@ -24,30 +24,30 @@ const searchResultLimit = 200
 // height) so behavior does not depend on the renderer, which simplifies tests.
 const searchPageSize = 10
 
-// openSearch enters the fuzzy-search overlay. It captures a one-shot snapshot
-// of every task (open + done) with precomputed lowercased title/body strings,
-// resets input/cursor state, and seeds the results with an empty-query rank
-// so the list starts populated.
+// openSearch enters the fuzzy-search overlay. It snapshots the current
+// in-memory task list (Model.allTasks, kept current by every mutation via
+// reloadAllTasks) into searchDoc wrappers with parallel titles/bodies slices
+// for the ranker, resets input/cursor state, and seeds the results with an
+// empty-query rank so the list starts populated. Using the cached slice
+// avoids a fresh disk scan on every "/" press.
 func (m *Model) openSearch() {
-	tasks, err := m.store.List(store.ListOptions{})
-	if err != nil {
-		m.err = err
-		return
-	}
+	tasks := m.allTasks
 	docs := make([]searchDoc, len(tasks))
+	titles := make([]string, len(tasks))
+	bodies := make([]string, len(tasks))
 	for i, t := range tasks {
-		docs[i] = searchDoc{
-			task:    t,
-			titleLC: strings.ToLower(t.Title),
-			bodyLC:  strings.ToLower(t.Body),
-		}
+		docs[i] = searchDoc{task: t}
+		titles[i] = t.Title
+		bodies[i] = t.Body
 	}
 	m.mode = modeSearch
 	m.search.haystack = docs
+	m.search.titles = titles
+	m.search.bodies = bodies
 	m.search.cursor = 0
 	m.search.input.SetValue("")
 	m.search.input.Focus()
-	m.search.results = rankSearch("", docs, searchResultLimit)
+	m.search.results = rankSearch("", docs, titles, bodies, searchResultLimit)
 	m.recomputeLayout()
 }
 
@@ -59,6 +59,8 @@ func (m *Model) closeSearch() {
 	m.search.input.Blur()
 	m.search.input.SetValue("")
 	m.search.haystack = nil
+	m.search.titles = nil
+	m.search.bodies = nil
 	m.search.results = nil
 	m.search.cursor = 0
 }
@@ -98,7 +100,7 @@ func (m *Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.search.input, cmd = m.search.input.Update(msg)
 	if m.search.input.Value() != before {
-		m.search.results = rankSearch(m.search.input.Value(), m.search.haystack, searchResultLimit)
+		m.search.results = rankSearch(m.search.input.Value(), m.search.haystack, m.search.titles, m.search.bodies, searchResultLimit)
 		m.clampSearchCursor()
 	}
 	return m, cmd
@@ -160,54 +162,28 @@ func (m *Model) commitSearch() {
 }
 
 // focusTaskAcrossTabs switches activeTab to whichever tab currently owns the
-// given task and then focuses it via focusTaskByID. In schedule view the tab
-// is derived from task.Status (Done tab) or the schedule bucket; in tag view
-// the active tab is preferred when the task carries the active tag, otherwise
-// the first visible tag that has a matching tagTab, otherwise the Untagged
-// tab. If no matching tab can be found the activeTab is left untouched and
-// focusTaskByID is still attempted — on failure it is simply a no-op.
+// given task and then focuses it via focusTaskByID. In schedule view each
+// task appears in exactly one tab's list, so focusTaskByID alone finds and
+// selects it. In tag view a task with multiple tags appears in multiple tabs;
+// tagTabForTask picks the preferred tab (active > first visible tag >
+// untagged) so we land somewhere predictable rather than on whichever list
+// focusTaskByID scans first.
 func (m *Model) focusTaskAcrossTabs(task model.Task) {
-	if idx := m.tabForTask(task); idx >= 0 {
-		m.activeTab = idx
+	if m.viewMode == viewTag {
+		if idx := m.tagTabForTask(task); idx >= 0 {
+			m.activeTab = idx
+		}
 	}
 	m.focusTaskByID(task.ID)
-}
-
-// tabForTask returns the tab index that should show the given task in the
-// current viewMode, or -1 if no tab matches. It does not mutate state.
-func (m *Model) tabForTask(task model.Task) int {
-	if m.viewMode == viewTag {
-		return m.tagTabForTask(task)
-	}
-	return m.scheduleTabForTask(task)
-}
-
-// scheduleTabForTask returns the schedule-view tab index for a task:
-// the Done tab when the task is done, otherwise whichever tab matches its
-// classified schedule bucket. Returns -1 if no tab matches (e.g. a custom
-// tab layout without a Done tab).
-func (m *Model) scheduleTabForTask(task model.Task) int {
-	if task.Status == "done" {
-		for i, t := range m.tabs {
-			if t.status == "done" {
-				return i
-			}
-		}
-		return -1
-	}
-	bkt := schedule.Bucket(task.Schedule, time.Now())
-	for i, t := range m.tabs {
-		if t.status == "open" && t.bucket == bkt {
-			return i
-		}
-	}
-	return -1
 }
 
 // tagTabForTask returns the tag-view tab index that should display the task.
 // Priority: active tab (if the task carries the active tag), then the first
 // matching visible-tag tab, then the untagged tab when the task has no
-// visible tags. Returns -1 if no tab matches.
+// visible tags or when no visible tag has a tab (buildTagTabs derives tabs
+// only from open tasks, so a done task whose tags belonged to open tasks that
+// are now gone would otherwise land on -1). Returns -1 only if neither a
+// matching tag tab nor the untagged tab exists.
 func (m *Model) tagTabForTask(task model.Task) int {
 	if task.IsActive() {
 		for i, tt := range m.tagTabs {
@@ -224,11 +200,12 @@ func (m *Model) tagTabForTask(task model.Task) int {
 			}
 		}
 	}
-	if len(visible) == 0 {
-		for i, tt := range m.tagTabs {
-			if tt.isUntagged {
-				return i
-			}
+	// Fall through to the untagged tab both when the task has no visible tags
+	// and when its tags have no corresponding visible tab — without this
+	// fallback, Enter on a done-with-orphaned-tag task would silently no-op.
+	for i, tt := range m.tagTabs {
+		if tt.isUntagged {
+			return i
 		}
 	}
 	return -1
@@ -254,6 +231,15 @@ func searchHelpHint() string {
 	)
 }
 
+// searchCompactMinHeight is the height below which the overlay switches to a
+// compact layout (input + results only, no preview/meta/help). Below this, the
+// full layout would overflow the terminal: the stacked path needs at least 10
+// rows (3 results + 4 preview incl. border + 1 input + 1 meta + 1 help), and
+// the wide path needs at least 8. Using the stacked path's minimum as a single
+// threshold keeps the logic simple at the cost of a slightly-overzealous
+// fallback for 8x80+ terminals — acceptable since those are rare.
+const searchCompactMinHeight = 10
+
 // renderSearch builds the full-screen fuzzy search overlay. Layout:
 //
 //	input bar (1 line, counter on the right)
@@ -264,8 +250,10 @@ func searchHelpHint() string {
 //	help line (1 line)
 //
 // When m.width < searchNarrowThreshold, results and preview stack vertically.
-// The renderer never mutates state — it reads from m.search and computes a
-// string. Safe to call repeatedly per frame.
+// When m.height < searchCompactMinHeight, the preview, meta, and help lines are
+// dropped to keep the render within the terminal bounds. The renderer never
+// mutates state — it reads from m.search and computes a string. Safe to call
+// repeatedly per frame.
 func (m *Model) renderSearch() string {
 	// Input bar: `> ` + value with a right-aligned "visible/total" counter.
 	total := len(m.search.haystack)
@@ -274,17 +262,38 @@ func (m *Model) renderSearch() string {
 	input := m.search.input.View()
 	inputLine := joinInputAndCounter(input, counter, m.width)
 
-	// Results panel.
-	resultsWidth, previewWidth := searchSplitWidths(m.width)
-	bodyHeight := searchBodyHeight(m.height)
+	// Very short terminal: drop preview/meta/help and render only input +
+	// results. This guarantees the overlay never exceeds m.height on tiny
+	// windows (where the full layout's 2-row preview border + 3 other rows
+	// already equals or exceeds m.height on its own).
+	if m.height < searchCompactMinHeight {
+		resultsH := m.height - 1 // reserve 1 row for the input line
+		if resultsH < 1 {
+			resultsH = 1
+		}
+		width := m.width
+		if width < 10 {
+			width = 10
+		}
+		resultsBody := m.renderSearchResults(width, resultsH)
+		return lipgloss.JoinVertical(lipgloss.Left, inputLine, resultsBody)
+	}
 
-	resultsBody := m.renderSearchResults(resultsWidth, bodyHeight)
-	previewBody := m.renderSearchPreview(previewWidth, bodyHeight)
+	// Results panel. searchBodyHeight accounts for input/meta/help AND the
+	// preview's top+bottom border rows, so the preview is rendered with
+	// height=bodyHeight (the border adds 2 rows on top). The wide path
+	// additionally uses searchSplitWidths, which reserves 2 cols for the
+	// preview border so the total width of the horizontally-joined panes
+	// stays at m.width.
+	bodyHeight := searchBodyHeight(m.height)
 
 	var body string
 	if m.width < searchNarrowThreshold {
 		// Stacked layout: split bodyHeight between results (top) and preview
 		// (bottom). Give results a little more room since navigation needs it.
+		// The preview pane has a 2-row border, so it consumes 2 extra rows
+		// beyond its content height — subtract those from the stacked preview
+		// slice to keep the total render height at bodyHeight+2.
 		stackedResultsH := bodyHeight * 2 / 3
 		if stackedResultsH < 3 {
 			stackedResultsH = 3
@@ -293,10 +302,22 @@ func (m *Model) renderSearch() string {
 		if stackedPreviewH < 2 {
 			stackedPreviewH = 2
 		}
-		resultsBody = m.renderSearchResults(m.width, stackedResultsH)
-		previewBody = m.renderSearchPreview(m.width, stackedPreviewH)
+		// Preview border adds 2 cols outside its .Width(), so pass m.width-2
+		// to keep the rendered row at exactly m.width. Results uses the same
+		// width (no border) so both panes align.
+		previewW := m.width - 2
+		if previewW < 10 {
+			previewW = 10
+		}
+		resultsBody := m.renderSearchResults(previewW, stackedResultsH)
+		previewBody := m.renderSearchPreview(previewW, stackedPreviewH)
 		body = lipgloss.JoinVertical(lipgloss.Left, resultsBody, previewBody)
 	} else {
+		// Wide path: results gets bodyHeight+2 rows so its height matches the
+		// bordered preview (which renders at previewHeight+2 due to the border).
+		resultsWidth, previewWidth := searchSplitWidths(m.width)
+		resultsBody := m.renderSearchResults(resultsWidth, bodyHeight+2)
+		previewBody := m.renderSearchPreview(previewWidth, bodyHeight)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, resultsBody, previewBody)
 	}
 
@@ -324,7 +345,11 @@ func joinInputAndCounter(input, counter string, totalWidth int) string {
 }
 
 // searchSplitWidths returns (resultsWidth, previewWidth) for the wide layout.
-// Results get ~40% of the width and preview gets the rest.
+// Results get ~40% of the width and preview gets the rest. The returned
+// previewWidth is the content width passed to searchPreviewBorderStyle.Width,
+// which adds 2 cols for the rounded border. searchSplitWidths therefore
+// reserves 2 cols up-front so the horizontally-joined panes render at exactly
+// `total` columns (resultsWidth + previewWidth + border == total).
 func searchSplitWidths(total int) (int, int) {
 	if total < searchNarrowThreshold {
 		// Caller is expected to switch to stacked layout; return same defaults
@@ -335,7 +360,7 @@ func searchSplitWidths(total int) (int, int) {
 	if results < 20 {
 		results = 20
 	}
-	preview := total - results
+	preview := total - results - 2 // 2 cols reserved for the preview border
 	if preview < 20 {
 		preview = 20
 	}
@@ -343,9 +368,13 @@ func searchSplitWidths(total int) (int, int) {
 }
 
 // searchBodyHeight carves out vertical space for the results+preview region.
-// Reserves rows for input bar, meta line, and help line.
+// Reserves rows for input bar, meta line, help line, and the preview's 2-row
+// rounded border (which renders outside the height passed to .Height()).
+// The returned value is the content height to pass to renderSearchPreview;
+// the results pane uses h+2 in the wide layout so both panes occupy the same
+// number of rows.
 func searchBodyHeight(total int) int {
-	h := total - 3 // input + meta + help
+	h := total - 5 // input + meta + help + preview border (top+bottom)
 	if h < 3 {
 		h = 3
 	}
@@ -410,8 +439,8 @@ func (m *Model) renderSearchResultRow(resultIdx, width int) string {
 		prefix = "✓ "
 	}
 
-	title := highlightRunes(task.Title, res.titleHit)
-	// Truncate after highlighting to keep the rune indices aligned with the
+	title := highlightMatches(task.Title, res.titleHit)
+	// Truncate after highlighting to keep the byte offsets aligned with the
 	// original title. We budget the styled prefix width out of the total.
 	available := width - lipgloss.Width(prefix)
 	if available < 1 {
@@ -432,16 +461,16 @@ func (m *Model) renderSearchResultRow(resultIdx, width int) string {
 	return row
 }
 
-// highlightRunes bolds the runes at the given indices in s. Indices out of
-// range are skipped defensively.
-func highlightRunes(s string, hits []int) string {
+// highlightMatches bolds the runes at the given byte offsets in s (the offsets
+// sahilm/fuzzy returns in MatchedIndexes). Offsets outside the string or that
+// do not start a rune are skipped defensively.
+func highlightMatches(s string, hits []int) string {
 	if len(hits) == 0 {
 		return s
 	}
-	runes := []rune(s)
 	hitSet := make(map[int]struct{}, len(hits))
 	for _, h := range hits {
-		if h >= 0 && h < len(runes) {
+		if h >= 0 && h < len(s) {
 			hitSet[h] = struct{}{}
 		}
 	}
@@ -449,7 +478,9 @@ func highlightRunes(s string, hits []int) string {
 		return s
 	}
 	var b strings.Builder
-	for i, r := range runes {
+	// Walk the string by rune, keyed on the byte offset of each rune start,
+	// so multi-byte highlight positions line up with their source rune.
+	for i, r := range s {
 		if _, ok := hitSet[i]; ok {
 			b.WriteString(searchMatchStyle.Render(string(r)))
 		} else {
@@ -466,32 +497,13 @@ func truncateStyledTitle(s string, width int) string {
 	if lipgloss.Width(s) <= width {
 		return s
 	}
-	// Best-effort: strip styling by re-constructing from the plain runes. We
-	// lose highlights in the truncated portion, which is an acceptable
-	// tradeoff since only very long titles hit this branch.
-	plain := stripANSI(s)
+	// Fallback when truncation is needed: strip ALL ANSI styling and truncate
+	// the plain runes. This drops every highlight in the row (not just those
+	// in the trimmed tail) because slicing a styled string mid-escape would
+	// corrupt output. Acceptable tradeoff — only very long titles hit this
+	// branch, and the preview pane still shows the full styled title.
+	plain := ansi.Strip(s)
 	return truncateTitle(plain, width)
-}
-
-// stripANSI removes CSI escape sequences from s. The search overlay only uses
-// simple SGR sequences (ESC [ ... m) and this covers them all.
-func stripANSI(s string) string {
-	var b strings.Builder
-	inEsc := false
-	for _, r := range s {
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		if r == 0x1b { // ESC
-			inEsc = true
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }
 
 // renderSearchPreview renders the body of the currently-selected task inside a

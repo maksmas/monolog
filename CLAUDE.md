@@ -52,7 +52,7 @@ Commands in `cmd/` handle CLI parsing and delegate to `internal/` packages. Runn
 
 ## Dependencies
 
-Minimal: cobra (CLI framework), oklog/ulid/v2 (ID generation), charmbracelet stack (bubbletea, bubbles, lipgloss for TUI), yaml.v3 (YAML editor round-trip in TUI edit). Go stdlib for everything else.
+Minimal: cobra (CLI framework), oklog/ulid/v2 (ID generation), charmbracelet stack (bubbletea, bubbles, lipgloss for TUI), sahilm/fuzzy (TUI fuzzy search ranker), yaml.v3 (YAML editor round-trip in TUI edit). Go stdlib for everything else.
 
 ## Development Rules
 

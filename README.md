@@ -134,6 +134,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `e` | Edit in `$EDITOR` (YAML round-trip) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
 | `v` | Toggle between schedule view and tag view |
+| `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
 | `x` | Delete task (with confirmation) |
 | `s` | Sync (commit, pull --rebase, push) |
 | `q` | Quit |

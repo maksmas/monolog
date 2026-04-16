@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/mmaksmas/monolog/internal/git"
@@ -6564,6 +6565,45 @@ func TestSearch_TypingRefinesAndClampsCursor(t *testing.T) {
 	}
 }
 
+// TestSearch_ClampSearchCursorNoOpWithNonZeroCursor covers the path where the
+// cursor already points inside the (possibly-grown) result set: clampSearchCursor
+// must leave a valid non-zero cursor untouched. A previous implementation could
+// regress by always snapping back to zero when results change.
+func TestSearch_ClampSearchCursorNoOpWithNonZeroCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01C", Title: "gamma", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 3000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if got := len(m.search.results); got != 3 {
+		t.Fatalf("precondition: results = %d, want 3", got)
+	}
+	// Park the cursor on the middle result (still in-range for any result set
+	// that has >= 2 entries).
+	m.search.cursor = 1
+	// Directly exercise clampSearchCursor; it must leave the cursor at 1.
+	m.clampSearchCursor()
+	if m.search.cursor != 1 {
+		t.Errorf("clampSearchCursor moved in-range cursor: got %d, want 1", m.search.cursor)
+	}
+	// Now grow/refresh the result set by typing a broad query that still
+	// matches all docs. Cursor should still be preserved, not snapped to 0.
+	m = typeString(t, m, "a")
+	if len(m.search.results) < 2 {
+		t.Fatalf("results after broad query = %d, want >= 2", len(m.search.results))
+	}
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after broadening query = %d, want 1 (no-op clamp)", m.search.cursor)
+	}
+}
+
 func TestSearch_EscKeepsActiveTabAndListCursor(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "first", Status: "open",
@@ -6975,12 +7015,49 @@ func TestSearch_RenderSearchWideSplitPane(t *testing.T) {
 	if out == "" {
 		t.Fatal("renderSearch() returned empty string")
 	}
-	if !strings.Contains(out, ">") {
-		t.Errorf("renderSearch output missing input prompt '>': %q", out)
+	// Render output must fit within the terminal bounds — every line no wider
+	// than m.width, and no more lines than m.height. Regression guard for the
+	// preview border width/height not being accounted for in the split math.
+	for i, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("renderSearch wide: line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+		}
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > m.height {
+		t.Errorf("renderSearch wide: rendered %d lines, want <= %d", lines, m.height)
+	}
+	// Strip ANSI so we can substring-match the plain content.
+	plain := ansi.Strip(out)
+
+	if !strings.Contains(plain, ">") {
+		t.Errorf("renderSearch output missing input prompt '>': %q", plain)
 	}
 	// The counter is rendered as "N/M" where N=visible and M=total.
-	if !strings.Contains(out, "2/2") {
-		t.Errorf("renderSearch output missing counter '2/2': %q", out)
+	if !strings.Contains(plain, "2/2") {
+		t.Errorf("renderSearch output missing counter '2/2': %q", plain)
+	}
+	// Results pane: at least the first task's title must appear (it is the
+	// default-selected result).
+	if !strings.Contains(plain, "fix login bug") {
+		t.Errorf("renderSearch output missing first result title: %q", plain)
+	}
+	// Preview pane: the body of the selected task must be rendered.
+	if !strings.Contains(plain, "the preview body text") {
+		t.Errorf("renderSearch output missing preview body: %q", plain)
+	}
+	// Meta line: schedule bucket + status for the selected task, separated by
+	// middot. "today" is the bucket for Schedule.Today.
+	if !strings.Contains(plain, "today") || !strings.Contains(plain, "open") {
+		t.Errorf("renderSearch output missing meta line (bucket/status): %q", plain)
+	}
+	if !strings.Contains(plain, "·") {
+		t.Errorf("renderSearch output missing middot separator in meta line: %q", plain)
+	}
+	// Help hint: the in-search key set.
+	for _, want := range []string{"enter", "esc", "filter"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("renderSearch output missing help hint %q: %q", want, plain)
+		}
 	}
 }
 
@@ -6998,6 +7075,15 @@ func TestSearch_RenderSearchNarrowStacked(t *testing.T) {
 	out := m.renderSearch()
 	if out == "" {
 		t.Fatal("renderSearch() returned empty string in narrow layout")
+	}
+	// Stacked (narrow) path must also respect terminal bounds.
+	for i, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("renderSearch narrow: line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+		}
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > m.height {
+		t.Errorf("renderSearch narrow: rendered %d lines, want <= %d", lines, m.height)
 	}
 	if !strings.Contains(out, ">") {
 		t.Errorf("renderSearch narrow output missing input prompt '>': %q", out)
@@ -7024,32 +7110,58 @@ func TestSearch_RenderSearchEmptyResults(t *testing.T) {
 	}
 }
 
-func TestSearch_HighlightRunesBoldsMatches(t *testing.T) {
+func TestSearch_HighlightMatchesBoldsMatches(t *testing.T) {
 	// Reset style profile so ANSI output is deterministic regardless of TERM.
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 
-	plain := highlightRunes("hello", nil)
+	plain := highlightMatches("hello", nil)
 	if plain != "hello" {
-		t.Errorf("highlightRunes with nil hits = %q, want %q", plain, "hello")
+		t.Errorf("highlightMatches with nil hits = %q, want %q", plain, "hello")
 	}
 
-	styled := highlightRunes("hello", []int{0, 2})
+	// For ASCII strings, byte offsets and rune indexes coincide, so [0, 2] hit
+	// the 'h' and 'l' of "hello".
+	styled := highlightMatches("hello", []int{0, 2})
 	if styled == "hello" {
-		t.Errorf("highlightRunes with hits should differ from plain; got %q", styled)
+		t.Errorf("highlightMatches with hits should differ from plain; got %q", styled)
 	}
 	// Stripping the ANSI escapes should yield the original string.
-	if got := stripANSI(styled); got != "hello" {
-		t.Errorf("stripANSI(highlighted) = %q, want %q", got, "hello")
+	if got := ansi.Strip(styled); got != "hello" {
+		t.Errorf("ansi.Strip(highlighted) = %q, want %q", got, "hello")
 	}
 }
 
-func TestSearch_HighlightRunesSkipsOutOfRange(t *testing.T) {
+func TestSearch_HighlightMatchesSkipsOutOfRange(t *testing.T) {
 	// Out-of-range indices must not panic or corrupt output.
-	got := highlightRunes("hi", []int{10, -1})
-	if stripANSI(got) != "hi" {
-		t.Errorf("highlightRunes with out-of-range hits = %q, want plain 'hi'", stripANSI(got))
+	got := highlightMatches("hi", []int{10, -1})
+	if ansi.Strip(got) != "hi" {
+		t.Errorf("highlightMatches with out-of-range hits = %q, want plain 'hi'", ansi.Strip(got))
+	}
+}
+
+// TestSearch_HighlightMatchesMultibyte exercises the byte-offset contract of
+// highlightMatches on a string with multi-byte runes. The earlier rune-index
+// implementation mis-aligned or dropped highlights here because sahilm/fuzzy
+// returns byte offsets. "café" has bytes: c=0, a=1, f=2, é=3..4.
+func TestSearch_HighlightMatchesMultibyte(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	styled := highlightMatches("café", []int{3})
+	if plain := ansi.Strip(styled); plain != "café" {
+		t.Errorf("highlightMatches round-trip on multibyte = %q, want %q", plain, "café")
+	}
+	if styled == "café" {
+		t.Errorf("highlightMatches should apply styling for valid multibyte hit, got unchanged %q", styled)
+	}
+	// A byte offset that lands inside the é rune (offset 4) must not corrupt
+	// output — highlightMatches keys on rune-start byte offsets only.
+	styledBad := highlightMatches("café", []int{4})
+	if plain := ansi.Strip(styledBad); plain != "café" {
+		t.Errorf("highlightMatches with non-rune-start offset corrupted output: %q", plain)
 	}
 }
 
@@ -7074,5 +7186,204 @@ func TestSearch_ResultsWindowKeepsCursorVisible(t *testing.T) {
 					tt.cursor, tt.total, tt.h, gotS, gotE, tt.wantStart, tt.wantEnd)
 			}
 		})
+	}
+}
+
+// TestSearchSplitWidths pins the boundary behavior of searchSplitWidths across
+// the narrow-threshold edge (79/80/81) and verifies the wide-path invariant
+// that the two pane widths plus the 2-col preview border sum to the total.
+func TestSearchSplitWidths(t *testing.T) {
+	tests := []struct {
+		name        string
+		total       int
+		wantResults int
+		wantPreview int
+	}{
+		// Below the narrow threshold: helper returns (total, total) per its
+		// doc; the renderer is expected to branch to the stacked path instead.
+		{"width 60 narrow path", 60, 60, 60},
+		{"width 79 just below threshold", 79, 79, 79},
+		// At/above the threshold: results = total*2/5 (clamped min 20),
+		// preview = total - results - 2 (border, clamped min 20).
+		{"width 80 boundary", 80, 32, 46},   // 80*2/5=32; 80-32-2=46
+		{"width 81 just above", 81, 32, 47}, // 81*2/5=32; 81-32-2=47
+		{"width 120 wide", 120, 48, 70},     // 120*2/5=48; 120-48-2=70
+		{"width 200 very wide", 200, 80, 118},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotR, gotP := searchSplitWidths(tt.total)
+			if gotR != tt.wantResults || gotP != tt.wantPreview {
+				t.Errorf("searchSplitWidths(%d) = (%d,%d), want (%d,%d)",
+					tt.total, gotR, gotP, tt.wantResults, tt.wantPreview)
+			}
+			// Wide-path invariant: results + preview + 2 (border) must equal
+			// total so the horizontally-joined panes render at exactly total
+			// columns. Skip for narrow (helper returns (total,total) stub).
+			if tt.total >= 80 {
+				if sum := gotR + gotP + 2; sum != tt.total {
+					t.Errorf("wide invariant: results(%d)+preview(%d)+2 = %d, want %d",
+						gotR, gotP, sum, tt.total)
+				}
+			}
+		})
+	}
+}
+
+// TestSearchBodyHeight pins the floor (3) and the wide-path invariant that
+// total render height = bodyHeight + 5 (input+meta+help+border). Small heights
+// (<8) hit the floor, which the compact renderer path handles separately.
+func TestSearchBodyHeight(t *testing.T) {
+	tests := []struct {
+		name  string
+		total int
+		want  int
+	}{
+		{"tiny 1", 1, 3},  // floored
+		{"tiny 3", 3, 3},  // floored
+		{"tiny 7", 7, 3},  // floored (7-5=2, clamped to 3)
+		{"boundary 8", 8, 3}, // 8-5=3
+		{"boundary 9", 9, 4},
+		{"typical 20", 20, 15},
+		{"typical 40", 40, 35},
+		{"tall 100", 100, 95},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := searchBodyHeight(tt.total)
+			if got != tt.want {
+				t.Errorf("searchBodyHeight(%d) = %d, want %d", tt.total, got, tt.want)
+			}
+			if got < 3 {
+				t.Errorf("searchBodyHeight(%d) = %d, violated floor of 3", tt.total, got)
+			}
+		})
+	}
+}
+
+// TestSearch_RenderSearchTinyTerminalFitsBounds guards against the overflow
+// regression where the stacked layout rendered 10 rows on an 8-row terminal.
+// At m.height < searchCompactMinHeight the renderer must drop preview/meta/help
+// and emit at most m.height lines, each no wider than m.width.
+func TestSearch_RenderSearchTinyTerminalFitsBounds(t *testing.T) {
+	sizes := []struct {
+		name string
+		w, h int
+	}{
+		{"8x60 stacked-path-would-overflow", 60, 8},
+		{"9x60 stacked-path-would-overflow", 60, 9},
+		{"5x120 wide-path-would-overflow", 120, 5},
+		{"3x80 extreme", 80, 3},
+	}
+	for _, tc := range sizes {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t,
+				model.Task{ID: "01A", Title: "alpha task", Body: "body text", Status: "open",
+					Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+					UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+				model.Task{ID: "01B", Title: "beta task", Status: "open",
+					Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+					UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+			)
+			m.width = tc.w
+			m.height = tc.h
+			m.recomputeLayout()
+			m, _ = key(t, m, "/")
+
+			out := m.renderSearch()
+			if out == "" {
+				t.Fatal("renderSearch() returned empty string")
+			}
+			for i, line := range strings.Split(out, "\n") {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+				}
+			}
+			if lines := strings.Count(out, "\n") + 1; lines > m.height {
+				t.Errorf("rendered %d lines, want <= %d", lines, m.height)
+			}
+			// Input prompt must still be visible.
+			if !strings.Contains(ansi.Strip(out), ">") {
+				t.Errorf("compact render missing input prompt '>': %q", out)
+			}
+		})
+	}
+}
+
+// TestSearch_CommitAfterAsyncAllTasksMutation simulates a taskSavedMsg arriving
+// while the search overlay is open. The overlay's haystack snapshot must
+// survive the reload, and committing the selection must still focus the task
+// via the search-time snapshot (not the mutated allTasks). The focus target
+// is the task as it exists *after* reload, via focusTaskByID.
+func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "beta target", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+	)
+	m.activeTab = findTabByLabel(t, m, "Today")
+
+	// Open search, narrow to the target, take snapshot.
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "beta")
+	if len(m.search.results) == 0 {
+		t.Fatalf("precondition: results empty after typing 'beta'")
+	}
+	snapshotSize := len(m.search.haystack)
+
+	// Simulate an unrelated async mutation completing (e.g. a prior 'c' that
+	// created a new task resolves while modeSearch is open). The taskSavedMsg
+	// reloads allTasks and tab lists but must not touch the search haystack.
+	id, err := model.NewID()
+	if err != nil {
+		t.Fatalf("model.NewID: %v", err)
+	}
+	added := model.Task{
+		ID: id, Title: "gamma late addition", Status: "open",
+		Schedule:  expectSchedule(t, schedule.Today),
+		Position:  3000,
+		CreatedAt: "2026-04-13T00:00:02Z",
+		UpdatedAt: "2026-04-13T00:00:02Z",
+	}
+	if err := m.store.Create(added); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	next, _ := m.Update(taskSavedMsg{status: "Added: gamma", focusID: id})
+	m = next.(*Model)
+
+	// Search mode should still be open (taskSavedMsg does not close it).
+	if m.mode != modeSearch {
+		t.Errorf("mode after taskSavedMsg = %v, want modeSearch (still open)", m.mode)
+	}
+	// Haystack is a snapshot from openSearch and must not have grown.
+	if got := len(m.search.haystack); got != snapshotSize {
+		t.Errorf("haystack len after async save = %d, want %d (snapshot invariant)", got, snapshotSize)
+	}
+	// allTasks, on the other hand, reflects the newly-created task.
+	if got := len(m.allTasks); got != 3 {
+		t.Errorf("allTasks len after async save = %d, want 3", got)
+	}
+
+	// Commit the selection — Enter on the "beta" match must still focus the
+	// target task via the stable haystack snapshot.
+	m, _ = key(t, m, "enter")
+	if m.mode != modeNormal {
+		t.Errorf("mode after commit = %v, want modeNormal", m.mode)
+	}
+	todayIdx := findTabByLabel(t, m, "Today")
+	if m.activeTab != todayIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Today)", m.activeTab, todayIdx)
+	}
+	items := m.lists[todayIdx].Items()
+	sel := m.lists[todayIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01B" {
+		t.Errorf("selected task after async-mutated commit = %+v, want ID 01B", selItem.task)
 	}
 }
