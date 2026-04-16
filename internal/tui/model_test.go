@@ -6906,3 +6906,125 @@ func TestSearch_EnterWithEmptyResultsIsNoOp(t *testing.T) {
 		t.Errorf("activeTab changed to %d on empty-result Enter, want %d", m.activeTab, originalTab)
 	}
 }
+
+// --- renderSearch layout (Task 6) ------------------------------------------
+
+func TestSearch_RenderSearchWideSplitPane(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Body: "the preview body text", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "write docs", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.width = 120
+	m.height = 40
+	m.recomputeLayout()
+	m, _ = key(t, m, "/")
+
+	out := m.renderSearch()
+	if out == "" {
+		t.Fatal("renderSearch() returned empty string")
+	}
+	if !strings.Contains(out, ">") {
+		t.Errorf("renderSearch output missing input prompt '>': %q", out)
+	}
+	// The counter is rendered as "N/M" where N=visible and M=total.
+	if !strings.Contains(out, "2/2") {
+		t.Errorf("renderSearch output missing counter '2/2': %q", out)
+	}
+}
+
+func TestSearch_RenderSearchNarrowStacked(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Body: "body", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.width = 60
+	m.height = 30
+	m.recomputeLayout()
+	m, _ = key(t, m, "/")
+
+	out := m.renderSearch()
+	if out == "" {
+		t.Fatal("renderSearch() returned empty string in narrow layout")
+	}
+	if !strings.Contains(out, ">") {
+		t.Errorf("renderSearch narrow output missing input prompt '>': %q", out)
+	}
+}
+
+func TestSearch_RenderSearchEmptyResults(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "hello", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.width = 120
+	m.height = 40
+	m.recomputeLayout()
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "zzzzznomatch")
+	out := m.renderSearch()
+	if out == "" {
+		t.Fatal("renderSearch() returned empty with empty results")
+	}
+	if !strings.Contains(out, "no matches") {
+		t.Errorf("renderSearch empty-results output missing '(no matches)': %q", out)
+	}
+}
+
+func TestSearch_HighlightRunesBoldsMatches(t *testing.T) {
+	// Reset style profile so ANSI output is deterministic regardless of TERM.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	plain := highlightRunes("hello", nil)
+	if plain != "hello" {
+		t.Errorf("highlightRunes with nil hits = %q, want %q", plain, "hello")
+	}
+
+	styled := highlightRunes("hello", []int{0, 2})
+	if styled == "hello" {
+		t.Errorf("highlightRunes with hits should differ from plain; got %q", styled)
+	}
+	// Stripping the ANSI escapes should yield the original string.
+	if got := stripANSI(styled); got != "hello" {
+		t.Errorf("stripANSI(highlighted) = %q, want %q", got, "hello")
+	}
+}
+
+func TestSearch_HighlightRunesSkipsOutOfRange(t *testing.T) {
+	// Out-of-range indices must not panic or corrupt output.
+	got := highlightRunes("hi", []int{10, -1})
+	if stripANSI(got) != "hi" {
+		t.Errorf("highlightRunes with out-of-range hits = %q, want plain 'hi'", stripANSI(got))
+	}
+}
+
+func TestSearch_ResultsWindowKeepsCursorVisible(t *testing.T) {
+	tests := []struct {
+		name              string
+		cursor, total, h  int
+		wantStart, wantEnd int
+	}{
+		{"all fit", 0, 5, 10, 0, 5},
+		{"cursor at top", 0, 20, 10, 0, 10},
+		{"cursor centered", 10, 20, 10, 5, 15},
+		{"cursor at bottom", 19, 20, 10, 10, 20},
+		{"zero total", 0, 0, 10, 0, 0},
+		{"zero height", 0, 5, 0, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotS, gotE := resultsWindow(tt.cursor, tt.total, tt.h)
+			if gotS != tt.wantStart || gotE != tt.wantEnd {
+				t.Errorf("resultsWindow(%d,%d,%d) = (%d,%d), want (%d,%d)",
+					tt.cursor, tt.total, tt.h, gotS, gotE, tt.wantStart, tt.wantEnd)
+			}
+		})
+	}
+}

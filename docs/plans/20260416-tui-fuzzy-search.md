@@ -269,19 +269,19 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 **Files:**
 - Modify: `internal/tui/search.go`
 
-- [ ] define lipgloss styles for: selected row, match highlight (bold), dim done rows, `✓` prefix, preview pane border, meta line, help line
-- [ ] implement `renderSearch(m *Model) string`:
+- [x] define lipgloss styles for: selected row, match highlight (bold), dim done rows, `✓` prefix, preview pane border, meta line, help line
+- [x] implement `renderSearch(m *Model) string`:
   - input bar: `> ` + `m.search.input.View()` + right-aligned `{visibleCount}/{totalCount}`
   - results list: iterate `m.search.results`, render each task with highlight using `titleHit` rune indices; dim + `✓` prefix for done; green for active; selected row gets reversed background
   - preview pane: title as heading, body as wrapped text (use `lipgloss.NewStyle().Width(w).Render`); show `(no body)` dim if empty
   - meta line: schedule bucket name, status (`open`/`done`), `created {date}`
   - help line: `renderHelpBar` with the in-search key hints
   - width branch: `if m.width < 80` → stacked join; else split horizontal for results+preview
-- [ ] hook into `View()`: the branch added in Task 3 now returns a real rendering
-- [ ] manually verify by running `./monolog` in wide terminal (120+ cols) and narrow terminal (60 cols); no automated test for rendering since the project doesn't use snapshot tests
-- [ ] add a light assertion test: call `m.renderSearch()` with `m.width = 120, m.height = 40` and assert the returned string is non-empty and contains the input prompt `">"` — guards against nil pointer / panic regressions
-- [ ] add a second assertion test with `m.width = 60` to exercise the stacked branch
-- [ ] run `go test ./internal/tui/...` — must pass before Task 7
+- [x] hook into `View()`: the branch added in Task 3 now returns a real rendering
+- [x] manual test (skipped - not automatable): manually verify by running `./monolog` in wide terminal (120+ cols) and narrow terminal (60 cols); no automated test for rendering since the project doesn't use snapshot tests
+- [x] add a light assertion test: call `m.renderSearch()` with `m.width = 120, m.height = 40` and assert the returned string is non-empty and contains the input prompt `">"` — guards against nil pointer / panic regressions
+- [x] add a second assertion test with `m.width = 60` to exercise the stacked branch
+- [x] run `go test ./internal/tui/...` — must pass before Task 7
 
 ### Task 7: Help-line hints + existing help modal
 

@@ -1147,15 +1147,8 @@ func (m *Model) submitNote() tea.Cmd {
 
 // --- search overlay --------------------------------------------------------
 //
-// openSearch / closeSearch / updateSearch live in search.go so the mode logic
-// stays close to the ranker. renderSearch remains a stub here until Task 6
-// replaces it with the split-pane / stacked layout.
-
-// renderSearch is the stub renderer for modeSearch. Task 6 replaces this
-// with the split-pane / stacked layout.
-func (m *Model) renderSearch() string {
-	return ""
-}
+// openSearch / closeSearch / updateSearch / renderSearch live in search.go so
+// the mode logic stays close to the ranker.
 
 // --- done action -----------------------------------------------------------
 

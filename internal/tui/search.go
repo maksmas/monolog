@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -230,4 +232,314 @@ func (m *Model) tagTabForTask(task model.Task) int {
 		}
 	}
 	return -1
+}
+
+// --- rendering -------------------------------------------------------------
+
+// searchNarrowThreshold is the terminal width below which the split pane
+// (results │ preview) collapses to a stacked layout. 80 columns is the
+// historical "narrow terminal" cutoff and matches what most users mean by
+// "small window".
+const searchNarrowThreshold = 80
+
+// searchHelpHint describes the in-search key set shown on the footer line.
+// Kept as a small function so tests can assert its content without depending
+// on rendering output.
+func searchHelpHint() string {
+	return renderHelpBar(
+		[2]string{"type", "filter"},
+		[2]string{"↑/↓", "move"},
+		[2]string{"enter", "jump"},
+		[2]string{"esc", "cancel"},
+	)
+}
+
+// renderSearch builds the full-screen fuzzy search overlay. Layout:
+//
+//	input bar (1 line, counter on the right)
+//	┌ results list ─┐ ┌ preview ─┐
+//	│               │ │          │
+//	└───────────────┘ └──────────┘
+//	meta line (1 line: schedule · status · created)
+//	help line (1 line)
+//
+// When m.width < searchNarrowThreshold, results and preview stack vertically.
+// The renderer never mutates state — it reads from m.search and computes a
+// string. Safe to call repeatedly per frame.
+func (m *Model) renderSearch() string {
+	// Input bar: `> ` + value with a right-aligned "visible/total" counter.
+	total := len(m.search.haystack)
+	visible := len(m.search.results)
+	counter := searchCountStyle.Render(fmt.Sprintf("%d/%d", visible, total))
+	input := m.search.input.View()
+	inputLine := joinInputAndCounter(input, counter, m.width)
+
+	// Results panel.
+	resultsWidth, previewWidth := searchSplitWidths(m.width)
+	bodyHeight := searchBodyHeight(m.height)
+
+	resultsBody := m.renderSearchResults(resultsWidth, bodyHeight)
+	previewBody := m.renderSearchPreview(previewWidth, bodyHeight)
+
+	var body string
+	if m.width < searchNarrowThreshold {
+		// Stacked layout: split bodyHeight between results (top) and preview
+		// (bottom). Give results a little more room since navigation needs it.
+		stackedResultsH := bodyHeight * 2 / 3
+		if stackedResultsH < 3 {
+			stackedResultsH = 3
+		}
+		stackedPreviewH := bodyHeight - stackedResultsH
+		if stackedPreviewH < 2 {
+			stackedPreviewH = 2
+		}
+		resultsBody = m.renderSearchResults(m.width, stackedResultsH)
+		previewBody = m.renderSearchPreview(m.width, stackedPreviewH)
+		body = lipgloss.JoinVertical(lipgloss.Left, resultsBody, previewBody)
+	} else {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, resultsBody, previewBody)
+	}
+
+	meta := m.renderSearchMeta()
+	help := searchHelpHint()
+
+	return lipgloss.JoinVertical(lipgloss.Left, inputLine, body, meta, help)
+}
+
+// joinInputAndCounter right-aligns the counter after the input. If the
+// terminal width can't accommodate the counter, it is dropped rather than
+// wrapped onto a second line — keeping the input bar a single row matters for
+// layout stability.
+func joinInputAndCounter(input, counter string, totalWidth int) string {
+	iw := lipgloss.Width(input)
+	cw := lipgloss.Width(counter)
+	if totalWidth <= 0 || iw+cw+1 > totalWidth {
+		return input
+	}
+	pad := totalWidth - iw - cw
+	if pad < 1 {
+		pad = 1
+	}
+	return input + strings.Repeat(" ", pad) + counter
+}
+
+// searchSplitWidths returns (resultsWidth, previewWidth) for the wide layout.
+// Results get ~40% of the width and preview gets the rest.
+func searchSplitWidths(total int) (int, int) {
+	if total < searchNarrowThreshold {
+		// Caller is expected to switch to stacked layout; return same defaults
+		// here so unit tests of this helper remain stable.
+		return total, total
+	}
+	results := total * 2 / 5
+	if results < 20 {
+		results = 20
+	}
+	preview := total - results
+	if preview < 20 {
+		preview = 20
+	}
+	return results, preview
+}
+
+// searchBodyHeight carves out vertical space for the results+preview region.
+// Reserves rows for input bar, meta line, and help line.
+func searchBodyHeight(total int) int {
+	h := total - 3 // input + meta + help
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// renderSearchResults formats the visible result rows inside a bordered box.
+// The returned string has a stable height (rendered with lipgloss .Height()).
+func (m *Model) renderSearchResults(width, height int) string {
+	innerWidth := width - 2 // padding
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
+
+	var lines []string
+	if len(m.search.results) == 0 {
+		placeholder := searchPreviewDimStyle.Render("(no matches)")
+		lines = append(lines, placeholder)
+	} else {
+		// Determine which slice of results to render so the cursor stays visible.
+		start, end := resultsWindow(m.search.cursor, len(m.search.results), height)
+		for i := start; i < end; i++ {
+			lines = append(lines, m.renderSearchResultRow(i, innerWidth))
+		}
+	}
+
+	body := strings.Join(lines, "\n")
+	return searchResultsStyle.Width(width).Height(height).Render(body)
+}
+
+// resultsWindow picks a [start, end) slice of results to render so the cursor
+// stays inside the visible region. Simple scroll-to-cursor logic — no
+// animation, no smooth scrolling.
+func resultsWindow(cursor, total, height int) (int, int) {
+	if height <= 0 || total == 0 {
+		return 0, 0
+	}
+	if total <= height {
+		return 0, total
+	}
+	start := cursor - height/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + height
+	if end > total {
+		end = total
+		start = end - height
+	}
+	return start, end
+}
+
+// renderSearchResultRow formats a single result row: optional "✓" prefix for
+// done tasks, bolded matched runes, and a reverse-video wash when selected.
+func (m *Model) renderSearchResultRow(resultIdx, width int) string {
+	res := m.search.results[resultIdx]
+	doc := m.search.haystack[res.docIdx]
+	task := doc.task
+
+	prefix := "  "
+	if task.Status == "done" {
+		prefix = "✓ "
+	}
+
+	title := highlightRunes(task.Title, res.titleHit)
+	// Truncate after highlighting to keep the rune indices aligned with the
+	// original title. We budget the styled prefix width out of the total.
+	available := width - lipgloss.Width(prefix)
+	if available < 1 {
+		available = 1
+	}
+	title = truncateStyledTitle(title, available)
+
+	row := prefix + title
+	switch {
+	case task.IsActive():
+		row = searchActiveStyle.Render(row)
+	case task.Status == "done":
+		row = searchDoneStyle.Render(row)
+	}
+	if resultIdx == m.search.cursor {
+		row = searchSelectedStyle.Render(row)
+	}
+	return row
+}
+
+// highlightRunes bolds the runes at the given indices in s. Indices out of
+// range are skipped defensively.
+func highlightRunes(s string, hits []int) string {
+	if len(hits) == 0 {
+		return s
+	}
+	runes := []rune(s)
+	hitSet := make(map[int]struct{}, len(hits))
+	for _, h := range hits {
+		if h >= 0 && h < len(runes) {
+			hitSet[h] = struct{}{}
+		}
+	}
+	if len(hitSet) == 0 {
+		return s
+	}
+	var b strings.Builder
+	for i, r := range runes {
+		if _, ok := hitSet[i]; ok {
+			b.WriteString(searchMatchStyle.Render(string(r)))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// truncateStyledTitle trims a possibly-styled string to at most width display
+// columns, appending "…" when truncated. Uses lipgloss.Width for measurement
+// so ANSI escape sequences are not counted.
+func truncateStyledTitle(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	// Best-effort: strip styling by re-constructing from the plain runes. We
+	// lose highlights in the truncated portion, which is an acceptable
+	// tradeoff since only very long titles hit this branch.
+	plain := stripANSI(s)
+	return truncateTitle(plain, width)
+}
+
+// stripANSI removes CSI escape sequences from s. The search overlay only uses
+// simple SGR sequences (ESC [ ... m) and this covers them all.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if r == 'm' {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b { // ESC
+			inEsc = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// renderSearchPreview renders the body of the currently-selected task inside a
+// bordered pane. Shows "(no body)" when the task has no body; empty results
+// shows a placeholder.
+func (m *Model) renderSearchPreview(width, height int) string {
+	innerWidth := width - 4 // border (2) + padding (2)
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
+	innerHeight := height - 2 // border top/bottom
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+
+	if len(m.search.results) == 0 {
+		ph := searchPreviewDimStyle.Render("(no task selected)")
+		return searchPreviewBorderStyle.Width(width).Height(height).Render(ph)
+	}
+
+	res := m.search.results[m.search.cursor]
+	task := m.search.haystack[res.docIdx].task
+
+	title := searchPreviewTitleStyle.Render(truncateTitle(task.Title, innerWidth))
+	var body string
+	if strings.TrimSpace(task.Body) == "" {
+		body = searchPreviewDimStyle.Render("(no body)")
+	} else {
+		body = lipgloss.NewStyle().Width(innerWidth).Render(task.Body)
+	}
+
+	content := title + "\n\n" + body
+	return searchPreviewBorderStyle.Width(width).Height(height).Render(content)
+}
+
+// renderSearchMeta formats the meta line: "schedule · status · created {date}".
+// Empty when there is no selection.
+func (m *Model) renderSearchMeta() string {
+	if len(m.search.results) == 0 {
+		return searchMetaStyle.Render(" ")
+	}
+	res := m.search.results[m.search.cursor]
+	task := m.search.haystack[res.docIdx].task
+	bucket := schedule.Bucket(task.Schedule, time.Now())
+	created := display.FormatRelDate(time.Now(), task.CreatedAt)
+	parts := []string{bucket, task.Status}
+	if created != "" {
+		parts = append(parts, "created "+created)
+	}
+	return searchMetaStyle.Render(strings.Join(parts, " · "))
 }
