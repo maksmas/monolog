@@ -6689,3 +6689,220 @@ func TestSearch_RecomputeLayoutSetsInputWidthInSearchMode(t *testing.T) {
 		t.Errorf("search input width after resize = %d, want %d", got, wantW)
 	}
 }
+
+// --- search overlay commit / cross-tab focus (Task 5) ----------------------
+
+func TestSearch_CommitScheduleViewFocusesTargetTab(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "today task", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "tomorrow special", Status: "open",
+			Schedule: expectSchedule(t, schedule.Tomorrow), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+	)
+	// Start from the Today tab.
+	m.activeTab = findTabByLabel(t, m, "Today")
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "tomorrow special")
+	if got := len(m.search.results); got == 0 {
+		t.Fatalf("results empty after typing query")
+	}
+	// The first result should be the Tomorrow task (title match).
+	firstDoc := m.search.haystack[m.search.results[0].docIdx].task
+	if firstDoc.ID != "01B" {
+		t.Fatalf("first result = %q, want 01B (tomorrow special)", firstDoc.ID)
+	}
+	m, _ = key(t, m, "enter")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after enter = %v, want modeNormal", m.mode)
+	}
+	tomorrowIdx := findTabByLabel(t, m, "Tomorrow")
+	if m.activeTab != tomorrowIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Tomorrow)", m.activeTab, tomorrowIdx)
+	}
+	// The cursor should rest on the target task in the Tomorrow tab.
+	items := m.lists[tomorrowIdx].Items()
+	sel := m.lists[tomorrowIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01B" {
+		t.Errorf("selected task = %+v, want ID 01B", selItem.task)
+	}
+}
+
+func TestSearch_CommitDoneTaskSwitchesToDoneTab(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "open thing", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "finished artifact", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+	)
+	m.activeTab = findTabByLabel(t, m, "Today")
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "finished")
+	if got := len(m.search.results); got == 0 {
+		t.Fatalf("no results for 'finished'")
+	}
+	m, _ = key(t, m, "enter")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after enter = %v, want modeNormal", m.mode)
+	}
+	doneIdx := findTabByLabel(t, m, "Done")
+	if m.activeTab != doneIdx {
+		t.Errorf("activeTab after committing done task = %d, want %d (Done)", m.activeTab, doneIdx)
+	}
+	items := m.lists[doneIdx].Items()
+	sel := m.lists[doneIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01B" {
+		t.Errorf("selected task = %+v, want ID 01B", selItem.task)
+	}
+}
+
+func TestSearch_CommitTagViewFocusesCorrectTagTab(t *testing.T) {
+	task1 := makeTask(t, "01WRK", "work refactor", schedule.Today, []string{"work"})
+	task1.CreatedAt = "2026-04-13T00:00:00Z"
+	task2 := makeTask(t, "01HOM", "home errand", schedule.Today, []string{"home"})
+	task2.CreatedAt = "2026-04-13T00:00:01Z"
+	m := newTestModel(t, task1, task2)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// Start from the Active tab (index 0 by construction of tagTabs).
+	m.activeTab = 0
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "home errand")
+	if got := len(m.search.results); got == 0 {
+		t.Fatalf("no results for 'home errand'")
+	}
+	m, _ = key(t, m, "enter")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after enter = %v, want modeNormal", m.mode)
+	}
+	homeIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "home" {
+			homeIdx = i
+			break
+		}
+	}
+	if homeIdx < 0 {
+		t.Fatalf("no home tag tab found")
+	}
+	if m.activeTab != homeIdx {
+		t.Errorf("activeTab after commit = %d, want %d (home)", m.activeTab, homeIdx)
+	}
+	items := m.lists[homeIdx].Items()
+	sel := m.lists[homeIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01HOM" {
+		t.Errorf("selected task = %+v, want ID 01HOM", selItem.task)
+	}
+}
+
+func TestSearch_CommitTagViewActiveTakesPriority(t *testing.T) {
+	task := makeTask(t, "01ACT", "active workflow", schedule.Today,
+		[]string{"work", model.ActiveTag})
+	task.CreatedAt = "2026-04-13T00:00:00Z"
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	// Start from a non-Active tab to force the jump.
+	workIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "work" {
+			workIdx = i
+		}
+	}
+	if workIdx < 0 {
+		t.Fatalf("no work tag tab found")
+	}
+	m.activeTab = workIdx
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "active workflow")
+	m, _ = key(t, m, "enter")
+
+	activeIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.isActive {
+			activeIdx = i
+		}
+	}
+	if activeIdx < 0 {
+		t.Fatalf("no Active tag tab found")
+	}
+	if m.activeTab != activeIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Active preferred)", m.activeTab, activeIdx)
+	}
+}
+
+func TestSearch_CommitTagViewUntaggedRoute(t *testing.T) {
+	// One tagged task so tag tabs exist alongside the Untagged tab.
+	task1 := makeTask(t, "01WRK", "work alpha", schedule.Today, []string{"work"})
+	task1.CreatedAt = "2026-04-13T00:00:00Z"
+	task2 := makeTask(t, "01UNT", "loose untagged task", schedule.Today, nil)
+	task2.CreatedAt = "2026-04-13T00:00:01Z"
+	m := newTestModel(t, task1, task2)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	m.activeTab = 0 // Active tab
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "loose untagged")
+	m, _ = key(t, m, "enter")
+
+	untaggedIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.isUntagged {
+			untaggedIdx = i
+		}
+	}
+	if untaggedIdx < 0 {
+		t.Fatalf("no Untagged tag tab found")
+	}
+	if m.activeTab != untaggedIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Untagged)", m.activeTab, untaggedIdx)
+	}
+}
+
+func TestSearch_EnterWithEmptyResultsIsNoOp(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "hello", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	originalTab := m.activeTab
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "zzzzznomatch")
+	if got := len(m.search.results); got != 0 {
+		t.Fatalf("precondition: results should be empty, got %d", got)
+	}
+	m, _ = key(t, m, "enter")
+	if m.mode != modeSearch {
+		t.Errorf("mode after enter with empty results = %v, want modeSearch (no-op)", m.mode)
+	}
+	if m.activeTab != originalTab {
+		t.Errorf("activeTab changed to %d on empty-result Enter, want %d", m.activeTab, originalTab)
+	}
+}

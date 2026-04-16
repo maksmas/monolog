@@ -249,20 +249,20 @@ Single-letter shortcuts (`d`, `e`, `r`, etc.) are **not** bound — they are abs
 - Modify: `internal/tui/search.go`
 - Modify: `internal/tui/model.go`
 
-- [ ] implement `focusTaskAcrossTabs(task model.Task)`:
+- [x] implement `focusTaskAcrossTabs(task model.Task)`:
   - in `viewSchedule`: map `task.Status == "done"` → Done tab index; otherwise classify `task.Schedule` via `schedule.Classify` (or equivalent existing classifier) to the correct bucket tab; set `m.activeTab`
   - in `viewTag`: choose target tag — if `task.IsActive()`, use the Active tab; else first non-active tag; else untagged tab; find the matching `tagTab` index and set `m.activeTab`
   - call `m.focusTaskByID(task.ID)` — reuses existing logic at line 1878
-- [ ] implement `commitSearch`:
+- [x] implement `commitSearch`:
   - early return if `len(m.search.results) == 0` (no-op)
   - resolve target task from `m.search.haystack[results[cursor].docIdx].task`
   - call `m.closeSearch()` FIRST so mode is normal and vlist rendering returns
   - call `m.focusTaskAcrossTabs(task)`
-- [ ] write integration test (schedule view): seed tasks with different buckets, open search, select a "Tomorrow" task → commit → assert `activeTab` points to Tomorrow tab and cursor is on that task
-- [ ] write integration test (tag view): seed tasks with multiple tags, switch to viewTag, open search, select a tagged task → commit → assert correct tag tab is active and cursor is on that task
-- [ ] write integration test: Enter when `len(results) == 0` is a no-op (still in modeSearch, no crash)
-- [ ] write integration test: selecting a done task (schedule view) switches to Done tab and focuses it
-- [ ] run `go test ./internal/tui/...` — must pass before Task 6
+- [x] write integration test (schedule view): seed tasks with different buckets, open search, select a "Tomorrow" task → commit → assert `activeTab` points to Tomorrow tab and cursor is on that task
+- [x] write integration test (tag view): seed tasks with multiple tags, switch to viewTag, open search, select a tagged task → commit → assert correct tag tab is active and cursor is on that task
+- [x] write integration test: Enter when `len(results) == 0` is a no-op (still in modeSearch, no crash)
+- [x] write integration test: selecting a done task (schedule view) switches to Done tab and focuses it
+- [x] run `go test ./internal/tui/...` — must pass before Task 6
 
 ### Task 6: Implement `renderSearch` (split pane + stacked fallback)
 
