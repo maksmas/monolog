@@ -79,10 +79,10 @@ A new `NoteCount int` field (JSON `note_count`, omitempty) tracks the count. Inc
 - Create: `internal/model/note.go`
 - Create: `internal/model/note_test.go`
 
-- [ ] Add `NoteCount int json:"note_count,omitempty"` field to `Task` struct in `task.go`
-- [ ] Create `note.go` with `AppendNote(body, text string, now time.Time) string` — formats separator + note, handles empty body (no leading blank line)
-- [ ] Write tests for `AppendNote`: empty body, existing body, multi-line note text, timestamp formatting
-- [ ] Run tests: `go test ./internal/model/`
+- [x] Add `NoteCount int json:"note_count,omitempty"` field to `Task` struct in `task.go`
+- [x] Create `note.go` with `AppendNote(body, text string, now time.Time) string` — formats separator + note, handles empty body (no leading blank line)
+- [x] Write tests for `AppendNote`: empty body, existing body, multi-line note text, timestamp formatting
+- [x] Run tests: `go test ./internal/model/`
 
 ### Task 2: CLI `note` command
 
