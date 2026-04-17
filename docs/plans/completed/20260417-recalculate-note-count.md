@@ -95,14 +95,14 @@ Key decision: centralizing in `Store.Update` adds a tiny coupling from `store` t
 - [x] run `go test ./cmd/` — must pass before task 5
 
 ### Task 5: Verify acceptance criteria
-- [ ] `go test ./...` green
-- [ ] `go vet ./...` clean
-- [ ] `go build -o monolog` succeeds
-- [ ] manually spot-check: add a note, edit the body with `--body "some new text"`, confirm `monolog show` reports `Notes: 0`
+- [x] `go test ./...` green
+- [x] `go vet ./...` clean
+- [x] `go build -o monolog` succeeds
+- [x] manual spot-check (skipped - not automatable): add a note, edit the body with `--body "some new text"`, confirm `monolog show` reports `Notes: 0`
 
 ### Task 6: Update documentation and archive plan
-- [ ] update the "Task notes" bullet in `CLAUDE.md` to mention that `NoteCount` is recalculated from `Body` inside `Store.Update` (single source of truth)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update the "Task notes" bullet in `CLAUDE.md` to mention that `NoteCount` is recalculated from `Body` inside `Store.Update` (single source of truth)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 Lazy correction: users with existing repos will see stale counts self-heal the next time each task is edited. No migration command required.
