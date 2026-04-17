@@ -271,13 +271,13 @@ Non-spawn case: unchanged — `"done: <title>"`.
 - Modify: `cmd/edit.go`
 - Modify: `cmd/edit_test.go`
 
-- [ ] add `--recur` flag; include `"recur"` in the no-op-check list alongside title/body/schedule/tags/active
-- [ ] on `cmd.Flags().Changed("recur")`: if value non-empty, validate via `recurrence.Parse`; set `task.Recurrence = value` (empty explicitly clears)
-- [ ] write test: `edit --recur weekly:mon` sets the field
-- [ ] write test: `edit --recur ""` clears a previously-set rule
-- [ ] write test: `edit --recur bogus` returns error and does not mutate the task
-- [ ] write test: `edit` without `--recur` preserves existing rule (unchanged behavior)
-- [ ] run `go test ./cmd/...` — all tests must pass
+- [x] add `--recur` flag; include `"recur"` in the no-op-check list alongside title/body/schedule/tags/active
+- [x] on `cmd.Flags().Changed("recur")`: if value non-empty, validate via `recurrence.Parse`; set `task.Recurrence = value` (empty explicitly clears)
+- [x] write test: `edit --recur weekly:mon` sets the field
+- [x] write test: `edit --recur ""` clears a previously-set rule
+- [x] write test: `edit --recur bogus` returns error and does not mutate the task
+- [x] write test: `edit` without `--recur` preserves existing rule (unchanged behavior)
+- [x] run `go test ./cmd/...` — all tests must pass
 
 ### Task 6: Extend TUI add modal with Recurrence input
 
