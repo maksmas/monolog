@@ -311,13 +311,13 @@ Non-spawn case: unchanged — `"done: <title>"`.
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] manual smoke test: in a throwaway `MONOLOG_DIR`, run `monolog add --recur monthly:1 "pay rent"`, `monolog done <id>`, verify a new task is created with next month's first as schedule, body has "Spawned from", old task's body has "Spawned follow-up", and `git log -1 --name-only` shows both files in one commit
-- [ ] manual smoke: edit to clear (`monolog edit <id> --recur ""`), mark done, confirm no new spawn
-- [ ] manual smoke: TUI — open add modal, tab to Recurrence, type `workdays`, create task; confirm it appears in list and completing it spawns the next weekday
-- [ ] manual smoke: CLI alias — `monolog add --recur weekly:Monday "..."` and `monolog add --recur weekly:1 "..."` both succeed and store as `weekly:mon` (verify via `monolog show <id>`)
-- [ ] run `go test ./...` — full suite must pass
-- [ ] run `go vet ./...` — clean
-- [ ] verify no existing test was skipped or weakened to accommodate changes
+- [x] manual smoke test: in a throwaway `MONOLOG_DIR`, run `monolog add --recur monthly:1 "pay rent"`, `monolog done <id>`, verify a new task is created with next month's first as schedule, body has "Spawned from", old task's body has "Spawned follow-up", and `git log -1 --name-only` shows both files in one commit (automated as `TestAcceptance_AddRecurDoneSpawnsAndSingleCommit` in `cmd/recurring_acceptance_test.go`)
+- [x] manual smoke: edit to clear (`monolog edit <id> --recur ""`), mark done, confirm no new spawn (automated as `TestAcceptance_EditClearRecurPreventsSpawn`)
+- [x] manual smoke: TUI — open add modal, tab to Recurrence, type `workdays`, create task; confirm it appears in list and completing it spawns the next weekday (spawn-and-ls portion automated as `TestAcceptance_WorkdaysSpawnsNextWeekday`; TUI keystroke/input plumbing covered by `TestAdd_TabTabSetsRecurrenceOnCreatedTask`, `TestAdd_FocusCyclingTitleTagsRecurTitle`, and siblings in `internal/tui/model_test.go`)
+- [x] manual smoke: CLI alias — `monolog add --recur weekly:Monday "..."` and `monolog add --recur weekly:1 "..."` both succeed and store as `weekly:mon` (verify via `monolog show <id>`) (automated as `TestAcceptance_WeeklyAliasesCanonicalize` with subtests `full_name`, `numeric`, `upper_short`)
+- [x] run `go test ./...` — full suite must pass
+- [x] run `go vet ./...` — clean
+- [x] verify no existing test was skipped or weakened to accommodate changes (reviewed `git diff main -- '**/*_test.go'`: only additions and one rename+retarget of `TestAdd_SuggestionsClearedOnTabToTitle` → `TestAdd_SuggestionsClearedOnTabAwayFromTags` that asserts the same invariants against the new focus target `addFocusRecur`; no deletions of assertions)
 
 ### Task 9: Update CLAUDE.md and finalize plan
 
