@@ -37,7 +37,6 @@ func newNoteCmd() *cobra.Command {
 
 			now := time.Now()
 			task.Body = model.AppendNote(task.Body, text, now)
-			task.NoteCount++
 			task.UpdatedAt = now.UTC().Format(time.RFC3339)
 
 			if err := s.Update(task); err != nil {

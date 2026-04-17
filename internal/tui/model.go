@@ -1105,8 +1105,9 @@ func (m *Model) closeModal() {
 
 // --- note submission -------------------------------------------------------
 
-// submitNote appends the noteArea's text to the selected task's Body, increments
-// NoteCount, saves, and auto-commits. Returns nil (no-op) when the textarea is
+// submitNote appends the noteArea's text to the selected task's Body, saves,
+// and auto-commits. NoteCount is recalculated from Body inside Store.Update,
+// so callers no longer touch it. Returns nil (no-op) when the textarea is
 // empty or no task is selected.
 func (m *Model) submitNote() tea.Cmd {
 	text := strings.TrimSpace(m.noteArea.Value())
@@ -1120,7 +1121,6 @@ func (m *Model) submitNote() tea.Cmd {
 	t := *task
 	nowT := time.Now()
 	t.Body = model.AppendNote(t.Body, text, nowT)
-	t.NoteCount++
 	t.UpdatedAt = nowT.UTC().Format(time.RFC3339)
 	flat := flattenTitle(t.Title)
 

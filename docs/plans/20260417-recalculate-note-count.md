@@ -79,11 +79,11 @@ Key decision: centralizing in `Store.Update` adds a tiny coupling from `store` t
 - Modify: `cmd/note.go`
 - Modify: `internal/tui/model.go`
 
-- [ ] delete `task.NoteCount++` at `cmd/note.go:40`
-- [ ] delete `t.NoteCount++` at `internal/tui/model.go:1123`
-- [ ] verify existing tests in `cmd/note_test.go` (which assert `NoteCount == 1` and `== 2` after adding notes) still pass — they should, because `Update` now recalculates
-- [ ] verify existing TUI note-add tests in `internal/tui/model_test.go` still pass
-- [ ] run `go test ./...` — must pass before task 4
+- [x] delete `task.NoteCount++` at `cmd/note.go:40`
+- [x] delete `t.NoteCount++` at `internal/tui/model.go:1123`
+- [x] verify existing tests in `cmd/note_test.go` (which assert `NoteCount == 1` and `== 2` after adding notes) still pass — they should, because `Update` now recalculates
+- [x] verify existing TUI note-add tests in `internal/tui/model_test.go` still pass
+- [x] run `go test ./...` — must pass before task 4
 
 ### Task 4: Regression test — editing body does not leave count stale
 
