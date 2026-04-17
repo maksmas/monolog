@@ -21,6 +21,7 @@ import (
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
+	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 )
@@ -45,6 +46,7 @@ type addField int
 const (
 	addFocusTitle addField = iota
 	addFocusTags
+	addFocusRecur
 )
 
 // viewMode selects between schedule-based tabs and tag-based tabs.
@@ -137,10 +139,11 @@ type Model struct {
 
 	// Add-modal state. The title uses a textarea so Alt+Enter can insert a
 	// newline while Enter submits; tags remain a single-line textinput.
-	titleArea textarea.Model
-	tagInput  textinput.Model
-	addFocus  addField
-	knownTags []string // cached known tags, populated when add modal opens
+	titleArea  textarea.Model
+	tagInput   textinput.Model
+	recurInput textinput.Model
+	addFocus   addField
+	knownTags  []string // cached known tags, populated when add modal opens
 
 	// Grab-mode state. grabTask is a working copy whose Position is not
 	// mutated until Enter drop; its current visual location is (activeTab,
@@ -336,6 +339,11 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	tagTi.CharLimit = 512
 	tagTi.Prompt = ""
 
+	recurTi := textinput.New()
+	recurTi.Placeholder = "e.g. monthly:1"
+	recurTi.CharLimit = 64
+	recurTi.Prompt = ""
+
 	searchTi := textinput.New()
 	searchTi.Placeholder = "search title or body"
 	searchTi.CharLimit = 512
@@ -372,14 +380,15 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	noteTA.BlurredStyle.Base = lipgloss.NewStyle()
 
 	m := &Model{
-		store:     s,
-		repoPath:  repoPath,
-		tabs:      defaultTabs,
-		input:     ti,
-		tagInput:  tagTi,
-		titleArea: ta,
-		noteArea:  noteTA,
-		search:    searchState{input: searchTi},
+		store:      s,
+		repoPath:   repoPath,
+		tabs:       defaultTabs,
+		input:      ti,
+		tagInput:   tagTi,
+		recurInput: recurTi,
+		titleArea:  ta,
+		noteArea:   noteTA,
+		search:     searchState{input: searchTi},
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
 
@@ -1095,6 +1104,8 @@ func (m *Model) closeModal() {
 	m.input.SetValue("")
 	m.tagInput.Blur()
 	m.tagInput.SetValue("")
+	m.recurInput.Blur()
+	m.recurInput.SetValue("")
 	m.titleArea.Blur()
 	m.titleArea.Reset()
 	m.titleArea.SetHeight(1)
@@ -1327,13 +1338,14 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) openAdd() tea.Cmd {
 	m.mode = modeAdd
-	// "Title: " and "Tags:  " labels are each 7 chars; the textinput also
-	// renders a trailing cursor space (1 char beyond its configured Width), so
-	// subtract 8 total.
+	// "Title: ", "Tags:  ", and "Recur: " labels are each 7 chars; the
+	// textinput also renders a trailing cursor space (1 char beyond its
+	// configured Width), so subtract 8 total.
 	inputW := m.modalInnerWidth() - 8
 	m.titleArea.SetWidth(inputW)
 	m.titleArea.SetHeight(1)
 	m.tagInput.Width = inputW
+	m.recurInput.Width = inputW
 	m.titleArea.Reset()
 	m.titleArea.Focus()
 	// In tag view, prepopulate the tag field with the current tab's tag.
@@ -1348,6 +1360,8 @@ func (m *Model) openAdd() tea.Cmd {
 		m.tagInput.SetValue("")
 	}
 	m.tagInput.Blur()
+	m.recurInput.SetValue("")
+	m.recurInput.Blur()
 	m.addFocus = addFocusTitle
 	// Cache known tags from all loaded list items for instant auto-tag on ":".
 	m.knownTags = model.CollectTags(m.allTasks)
@@ -1358,24 +1372,35 @@ func (m *Model) openAdd() tea.Cmd {
 
 func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	tagsFocused := m.addFocus == addFocusTags
+	recurFocused := m.addFocus == addFocusRecur
 
 	// Delegate suggestion navigation to shared helper when tag field is focused.
 	if tagsFocused && m.handleSuggestionNav(msg, &m.tagInput) {
 		return m, nil
 	}
 
-	// Tab: toggle focus between title and tags.
+	// Tab: cycle focus title -> tags -> recur -> title.
 	if msg.Type == tea.KeyTab {
-		if m.addFocus == addFocusTitle {
+		switch m.addFocus {
+		case addFocusTitle:
 			m.addFocus = addFocusTags
 			m.titleArea.Blur()
 			m.tagInput.Focus()
-		} else {
+			m.recurInput.Blur()
+		case addFocusTags:
+			m.addFocus = addFocusRecur
+			m.tagInput.Blur()
+			m.recurInput.Focus()
+			m.titleArea.Blur()
+			// Clear suggestions when leaving the tag field — they are not
+			// interactable from the recur field.
+			m.suggestions = nil
+			m.suggestionIdx = -1
+		default: // addFocusRecur
 			m.addFocus = addFocusTitle
+			m.recurInput.Blur()
 			m.tagInput.Blur()
 			m.titleArea.Focus()
-			// Clear suggestions when leaving the tag field — they are not
-			// interactable while the title area has focus.
 			m.suggestions = nil
 			m.suggestionIdx = -1
 		}
@@ -1390,14 +1415,23 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeModal()
 			return m, nil
 		}
+		recur := strings.TrimSpace(m.recurInput.Value())
+		if recur != "" {
+			if _, err := recurrence.Parse(recur); err != nil {
+				m.err = fmt.Errorf("recurrence: %w", err)
+				return m, nil
+			}
+		}
 		tags := model.SanitizeTags(m.tagInput.Value())
 		m.closeModal()
-		return m, m.createCmd(title, tags)
+		return m, m.createCmd(title, tags, recur)
 	}
 
 	// Route remaining keys to the focused input only.
 	var cmd tea.Cmd
-	if tagsFocused {
+	if recurFocused {
+		m.recurInput, cmd = m.recurInput.Update(msg)
+	} else if tagsFocused {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 		// Refresh suggestions after every keystroke in the tag field.
 		m.refreshSuggestions(m.tagInput.Value())
@@ -2090,7 +2124,9 @@ func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
 }
 
 // createCmd creates a new task in the current tab's bucket at the bottom.
-func (m *Model) createCmd(title string, tags []string) tea.Cmd {
+// recur is an optional recurrence rule (empty = non-recurring); callers are
+// expected to have already validated it via recurrence.Parse.
+func (m *Model) createCmd(title string, tags []string, recur string) tea.Cmd {
 	// Capture bucket at dispatch time; if user changes tabs while the cmd
 	// is in flight, we still place it in the intended bucket.
 	var bucket string
@@ -2140,15 +2176,16 @@ func (m *Model) createCmd(title string, tags []string) tea.Cmd {
 		}
 		n := now()
 		task := model.Task{
-			ID:        id,
-			Title:     title,
-			Source:    "tui",
-			Status:    "open",
-			Position:  ordering.NextPosition(siblings),
-			Schedule:  scheduleDate,
-			Tags:      tags,
-			CreatedAt: n,
-			UpdatedAt: n,
+			ID:         id,
+			Title:      title,
+			Source:     "tui",
+			Status:     "open",
+			Position:   ordering.NextPosition(siblings),
+			Schedule:   scheduleDate,
+			Tags:       tags,
+			Recurrence: recur,
+			CreatedAt:  n,
+			UpdatedAt:  n,
 		}
 		if err := storeRef.Create(task); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("create: %w", err)}
@@ -2387,6 +2424,7 @@ func (m *Model) recomputeLayout() {
 		inputW := m.modalInnerWidth() - 8
 		m.titleArea.SetWidth(inputW)
 		m.tagInput.Width = inputW
+		m.recurInput.Width = inputW
 	case modeRetag, modeReschedule:
 		m.input.Width = m.modalInnerWidth() - 1
 	case modeSearch:
@@ -2750,8 +2788,8 @@ func (m *Model) modalView() string {
 		// label with its first line so taller boxes still read naturally.
 		titleView := indentContinuation(m.titleArea.View(), "       ")
 		sugLines := m.renderSuggestions()
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\n\n(Alt+Enter = newline, Enter = save)",
-			t.label, titleView, m.tagInput.View(), sugLines), iw)
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View(), sugLines, m.recurInput.View()), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""

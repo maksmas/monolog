@@ -285,19 +285,19 @@ Non-spawn case: unchanged — `"done: <title>"`.
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] add `addFocusRecur addField` to the enum after `addFocusTags`
-- [ ] add `recurInput textinput.Model` field to `Model`
-- [ ] initialize `recurInput` in `newModel` (placeholder "e.g. monthly:1", reasonable width)
-- [ ] reset `recurInput` value and placeholder in the add-modal open path
-- [ ] update Tab/Shift+Tab focus cycling to include recur between tags and title (wrap-around)
-- [ ] update the add-modal render to show the recur input as a third line with label "Recurrence:"
-- [ ] on submit: validate recur value via `recurrence.Parse` if non-empty; on error, show form error and keep modal open
-- [ ] persist `task.Recurrence = m.recurInput.Value()` when building the new task for `Store.Create`
-- [ ] write test: opening add modal → typing title → Tab → Tab → typing "monthly:1" → Enter creates a task with correct Recurrence
-- [ ] write test: invalid recur value on submit shows error and does not create a task
-- [ ] write test: focus cycling order (title → tags → recur → title) via Tab key
-- [ ] run `go test ./internal/tui/...` — all tests must pass
-- [ ] run `go vet ./...` — must pass before Task 7
+- [x] add `addFocusRecur addField` to the enum after `addFocusTags`
+- [x] add `recurInput textinput.Model` field to `Model`
+- [x] initialize `recurInput` in `newModel` (placeholder "e.g. monthly:1", reasonable width)
+- [x] reset `recurInput` value and placeholder in the add-modal open path
+- [x] update Tab/Shift+Tab focus cycling to include recur between tags and title (wrap-around)
+- [x] update the add-modal render to show the recur input as a third line with label "Recurrence:"
+- [x] on submit: validate recur value via `recurrence.Parse` if non-empty; on error, show form error and keep modal open
+- [x] persist `task.Recurrence = m.recurInput.Value()` when building the new task for `Store.Create`
+- [x] write test: opening add modal → typing title → Tab → Tab → typing "monthly:1" → Enter creates a task with correct Recurrence
+- [x] write test: invalid recur value on submit shows error and does not create a task
+- [x] write test: focus cycling order (title → tags → recur → title) via Tab key
+- [x] run `go test ./internal/tui/...` — all tests must pass
+- [x] run `go vet ./...` — must pass before Task 7
 
 ### Task 7: CLI `show` command — display Recurrence
 

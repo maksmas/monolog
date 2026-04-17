@@ -1632,6 +1632,135 @@ func TestAdd_ModalViewShowsBothLabels(t *testing.T) {
 	if !strings.Contains(view, "Tags:") {
 		t.Errorf("modalView should contain 'Tags:', got %q", view)
 	}
+	if !strings.Contains(view, "Recur:") {
+		t.Errorf("modalView should contain 'Recur:', got %q", view)
+	}
+}
+
+// --- recurrence add-modal tests --------------------------------------------
+
+func TestAdd_TabTabSetsRecurrenceOnCreatedTask(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "pay bills")
+	// Tab to tags, Tab to recur, type recurrence rule.
+	m, _ = key(t, m, "tab")
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur after two Tabs", m.addFocus)
+	}
+	m = typeString(t, m, "monthly:1")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Title != "pay bills" {
+		t.Errorf("Title = %q, want %q", task.Title, "pay bills")
+	}
+	if task.Recurrence != "monthly:1" {
+		t.Errorf("Recurrence = %q, want %q", task.Recurrence, "monthly:1")
+	}
+}
+
+func TestAdd_InvalidRecurrenceShowsErrorAndKeepsModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "title")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "bogus")
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Fatal("invalid recurrence should not dispatch a create cmd")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode = %v, want modeAdd (modal stays open on error)", m.mode)
+	}
+	if m.err == nil {
+		t.Fatal("expected m.err to be set on invalid recurrence")
+	}
+	if !strings.Contains(m.err.Error(), "recurrence") {
+		t.Errorf("err = %v, want message containing 'recurrence'", m.err)
+	}
+	// No task was created.
+	if got := len(m.lists[0].Items()); got != 0 {
+		t.Errorf("Today tab should have no items after invalid recur submit, got %d", got)
+	}
+}
+
+func TestAdd_FocusCyclingTitleTagsRecurTitle(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.addFocus != addFocusTitle {
+		t.Fatalf("initial addFocus = %v, want addFocusTitle", m.addFocus)
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTags {
+		t.Errorf("after first Tab: addFocus = %v, want addFocusTags", m.addFocus)
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusRecur {
+		t.Errorf("after second Tab: addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Errorf("after third Tab: addFocus = %v, want addFocusTitle (wrap)", m.addFocus)
+	}
+}
+
+func TestAdd_EmptyRecurCreatesTaskWithoutRecurrence(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "plain task")
+	// Skip through to recur but leave it empty; then Enter.
+	m, _ = key(t, m, "tab")
+	m, _ = key(t, m, "tab")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Recurrence != "" {
+		t.Errorf("Recurrence = %q, want empty", task.Recurrence)
+	}
+}
+
+func TestAdd_RecurrenceClearedOnCloseModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "workdays")
+	if m.recurInput.Value() != "workdays" {
+		t.Fatalf("recurInput = %q, want 'workdays'", m.recurInput.Value())
+	}
+	// Esc closes the modal; reopening must start fresh.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Fatalf("mode after esc = %v, want modeNormal", m.mode)
+	}
+	if got := m.recurInput.Value(); got != "" {
+		t.Errorf("recurInput value after close = %q, want empty", got)
+	}
+	m, _ = key(t, m, "c")
+	if got := m.recurInput.Value(); got != "" {
+		t.Errorf("recurInput value after reopen = %q, want empty", got)
+	}
 }
 
 // --- wrapText tests ----------------------------------------------------------
@@ -2177,7 +2306,7 @@ func TestAdd_UpDownIgnoredWhenTitleFocused(t *testing.T) {
 	}
 }
 
-func TestAdd_SuggestionsClearedOnTabToTitle(t *testing.T) {
+func TestAdd_SuggestionsClearedOnTabAwayFromTags(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -2190,18 +2319,18 @@ func TestAdd_SuggestionsClearedOnTabToTitle(t *testing.T) {
 	m.tagInput.SetValue("wo")
 	m.suggestions = []string{"work"}
 	m.suggestionIdx = -1
-	// Tab should switch focus to title (since idx < 0, handleSuggestionNav
+	// Tab should switch focus to recur (since idx < 0, handleSuggestionNav
 	// does not intercept). Suggestions must be cleared so the dropdown
-	// does not render while the title field is focused.
+	// does not render while the recur field is focused.
 	m, _ = key(t, m, "tab")
-	if m.addFocus != addFocusTitle {
-		t.Fatalf("addFocus = %v, want addFocusTitle", m.addFocus)
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
 	}
 	if len(m.suggestions) != 0 {
-		t.Errorf("suggestions after Tab to title = %v, want empty", m.suggestions)
+		t.Errorf("suggestions after Tab away from tags = %v, want empty", m.suggestions)
 	}
 	if m.suggestionIdx != -1 {
-		t.Errorf("suggestionIdx after Tab to title = %d, want -1", m.suggestionIdx)
+		t.Errorf("suggestionIdx after Tab away from tags = %d, want -1", m.suggestionIdx)
 	}
 }
 
@@ -4972,7 +5101,7 @@ func TestCreateCmd_TagViewDefaultsToToday(t *testing.T) {
 	}
 
 	// Create a task from the tag view tab.
-	cmd := m.createCmd("new task from tag view", nil)
+	cmd := m.createCmd("new task from tag view", nil, "")
 	if cmd == nil {
 		t.Fatal("createCmd returned nil")
 	}
