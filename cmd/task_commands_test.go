@@ -766,6 +766,91 @@ func TestEdit_ActivateAndDeactivate(t *testing.T) {
 	}
 }
 
+// --- Edit --body recalculates NoteCount (regression) ---
+
+func TestEditCommand_ClearBodyResetsNoteCount(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Notes then clear")
+
+	// Add two notes via the note command.
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"note", id[:8], "first note"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("first note error = %v", err)
+	}
+
+	rootCmd2 := NewRootCmd()
+	rootCmd2.SetOut(new(bytes.Buffer))
+	rootCmd2.SetErr(new(bytes.Buffer))
+	rootCmd2.SetArgs([]string{"note", id[:8], "second note"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("second note error = %v", err)
+	}
+
+	// Sanity check: NoteCount should be 2 now.
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after notes")
+	}
+	if task.NoteCount != 2 {
+		t.Fatalf("NoteCount before clear: got %d, want 2", task.NoteCount)
+	}
+
+	// Clear the body with --body "".
+	rootCmd3 := NewRootCmd()
+	rootCmd3.SetOut(new(bytes.Buffer))
+	rootCmd3.SetErr(new(bytes.Buffer))
+	rootCmd3.SetArgs([]string{"edit", id[:8], "--body", ""})
+	if err := rootCmd3.Execute(); err != nil {
+		t.Fatalf("edit --body clear error = %v", err)
+	}
+
+	task, ok = getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after body clear")
+	}
+	if task.Body != "" {
+		t.Errorf("Body: got %q, want empty", task.Body)
+	}
+	if task.NoteCount != 0 {
+		t.Errorf("NoteCount after body clear: got %d, want 0", task.NoteCount)
+	}
+}
+
+func TestEditCommand_BodyWithSeparatorSetsNoteCount(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Manual body separator")
+
+	// Set a body containing a well-formed separator line via --body.
+	body := "some intro\n--- 2026-04-17 10:30:00 ---\nthe note content"
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--body", body})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --body error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after edit")
+	}
+	if task.Body != body {
+		t.Errorf("Body: got %q, want %q", task.Body, body)
+	}
+	if task.NoteCount != 1 {
+		t.Errorf("NoteCount: got %d, want 1 (recalculated from body separator)", task.NoteCount)
+	}
+}
+
 func TestEdit_TagsPreservesActive(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

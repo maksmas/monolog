@@ -131,6 +131,76 @@ func TestUpdateNotFound(t *testing.T) {
 	}
 }
 
+// TestUpdateRecalculatesNoteCount verifies that Store.Update overrides a stale
+// in-memory NoteCount using the count of note separators in Body.
+func TestUpdateRecalculatesNoteCount(t *testing.T) {
+	s := newTestStore(t)
+	task := sampleTask("01AAA", "Task with notes")
+	if err := s.Create(task); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	task.Body = "--- 2026-04-17 10:00:00 ---\nfirst note\n\n--- 2026-04-17 11:00:00 ---\nsecond note"
+	task.NoteCount = 99 // deliberately stale
+	if err := s.Update(task); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	got, err := s.Get("01AAA")
+	if err != nil {
+		t.Fatalf("Get after Update failed: %v", err)
+	}
+	if got.NoteCount != 2 {
+		t.Errorf("NoteCount: got %d, want 2", got.NoteCount)
+	}
+}
+
+// TestUpdateResetsNoteCountWhenBodyHasNone verifies that Store.Update resets
+// NoteCount to 0 when the body contains no note separators, even if the
+// caller-supplied value was non-zero.
+func TestUpdateResetsNoteCountWhenBodyHasNone(t *testing.T) {
+	s := newTestStore(t)
+	task := sampleTask("01AAA", "Task without notes")
+	if err := s.Create(task); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	task.Body = "some body text without separators"
+	task.NoteCount = 5 // deliberately stale
+	if err := s.Update(task); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	got, err := s.Get("01AAA")
+	if err != nil {
+		t.Fatalf("Get after Update failed: %v", err)
+	}
+	if got.NoteCount != 0 {
+		t.Errorf("NoteCount: got %d, want 0", got.NoteCount)
+	}
+}
+
+// TestCreateDoesNotRecalculateNoteCount is a regression guard: Store.Create
+// must not mutate NoteCount. New tasks start with empty bodies and zero
+// counts; recalculation only happens on Update.
+func TestCreateDoesNotRecalculateNoteCount(t *testing.T) {
+	s := newTestStore(t)
+	task := sampleTask("01AAA", "New task")
+	task.Body = ""
+	task.NoteCount = 0
+	if err := s.Create(task); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got, err := s.Get("01AAA")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got.NoteCount != 0 {
+		t.Errorf("NoteCount after Create: got %d, want 0", got.NoteCount)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	s := newTestStore(t)
 	task := sampleTask("01AAA", "Buy milk")
