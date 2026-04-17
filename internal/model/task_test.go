@@ -1,6 +1,8 @@
 package model
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -293,6 +295,60 @@ func TestFilterTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTask_RecurrenceRoundTrip_Empty(t *testing.T) {
+	// A task JSON without a recurrence field should decode to an empty
+	// Recurrence and re-encode without introducing the key (omitempty).
+	original := `{"id":"01ABC","title":"t","source":"cli","status":"open","position":1000,"schedule":"2026-04-17","created_at":"2026-04-17T00:00:00Z","updated_at":"2026-04-17T00:00:00Z"}`
+
+	var task Task
+	if err := json.Unmarshal([]byte(original), &task); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if task.Recurrence != "" {
+		t.Errorf("expected empty Recurrence, got %q", task.Recurrence)
+	}
+
+	out, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(out), "recurrence") {
+		t.Errorf("expected omitempty to omit recurrence key, got %s", string(out))
+	}
+}
+
+func TestTask_RecurrenceRoundTrip_NonEmpty(t *testing.T) {
+	// A task with a non-empty Recurrence should serialize with the field
+	// and deserialize back to the same value.
+	task := Task{
+		ID:         "01ABC",
+		Title:      "pay bills",
+		Source:     "cli",
+		Status:     "open",
+		Position:   1000,
+		Schedule:   "2026-04-17",
+		CreatedAt:  "2026-04-17T00:00:00Z",
+		UpdatedAt:  "2026-04-17T00:00:00Z",
+		Recurrence: "monthly:1",
+	}
+
+	raw, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(raw), `"recurrence":"monthly:1"`) {
+		t.Errorf("expected recurrence field in output, got %s", string(raw))
+	}
+
+	var decoded Task
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if decoded.Recurrence != "monthly:1" {
+		t.Errorf("Recurrence = %q, want %q", decoded.Recurrence, "monthly:1")
 	}
 }
 

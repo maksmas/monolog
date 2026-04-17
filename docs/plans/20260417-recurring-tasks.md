@@ -220,11 +220,11 @@ Non-spawn case: unchanged — `"done: <title>"`.
 - Modify: `internal/model/task.go`
 - Modify: `internal/model/task_test.go` (if exists; otherwise extend closest existing test file for model)
 
-- [ ] add `Recurrence string \`json:"recurrence,omitempty"\`` to `Task` struct between `Tags` and `NoteCount`
-- [ ] write test confirming an existing task JSON without `recurrence` still round-trips (decode → encode) without introducing the key (omitempty semantics)
-- [ ] write test confirming a task with non-empty `Recurrence` serializes and deserializes correctly
-- [ ] run `go test ./internal/model/...` — all tests must pass
-- [ ] run `go test ./...` — full suite must still pass (backward compatibility)
+- [x] add `Recurrence string \`json:"recurrence,omitempty"\`` to `Task` struct between `Tags` and `NoteCount`
+- [x] write test confirming an existing task JSON without `recurrence` still round-trips (decode → encode) without introducing the key (omitempty semantics)
+- [x] write test confirming a task with non-empty `Recurrence` serializes and deserializes correctly
+- [x] run `go test ./internal/model/...` — all tests must pass
+- [x] run `go test ./...` — full suite must still pass (backward compatibility)
 
 ### Task 3: Wire spawn logic into `cmd/done.go`
 
