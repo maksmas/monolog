@@ -36,6 +36,7 @@ const (
 	modeAdd
 	modeConfirmDelete
 	modeHelp
+	modeSearch
 )
 
 // addField tracks which input has focus in the add modal.
@@ -87,6 +88,25 @@ var defaultTabs = []tab{
 	{label: "Someday", bucket: schedule.Someday, status: "open"},
 	{label: "Done", bucket: "", status: "done"},
 }
+
+// searchState holds the per-modal state for the fuzzy-search overlay.
+// haystack is captured once at openSearch time along with parallel titles/
+// bodies slices that sahilm/fuzzy consumes, so the ranker does not re-allocate
+// on every keystroke. results is re-ranked on every keystroke. cursor is the
+// currently-highlighted index into results.
+type searchState struct {
+	input    textinput.Model
+	haystack []searchDoc
+	titles   []string
+	bodies   []string
+	results  []searchResult
+	cursor   int
+}
+
+// searchInputReserve is the column budget taken out of the total width for the
+// search input bar's prompt and right-aligned counter. A single constant keeps
+// recomputeLayout and renderSearch in sync.
+const searchInputReserve = 14
 
 // Model is the top-level Bubble Tea model for the TUI.
 type Model struct {
@@ -153,6 +173,9 @@ type Model struct {
 	// Used for computing global stats.
 	allTasks []model.Task
 	stats    model.Stats
+
+	// search holds the fuzzy-search overlay state (modeSearch).
+	search searchState
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
@@ -313,6 +336,11 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	tagTi.CharLimit = 512
 	tagTi.Prompt = ""
 
+	searchTi := textinput.New()
+	searchTi.Placeholder = "search title or body"
+	searchTi.CharLimit = 512
+	searchTi.Prompt = "> "
+
 	ta := textarea.New()
 	ta.Placeholder = "task title"
 	ta.CharLimit = 512
@@ -351,6 +379,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		tagInput:  tagTi,
 		titleArea: ta,
 		noteArea:  noteTA,
+		search:    searchState{input: searchTi},
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
 
@@ -856,6 +885,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeHelp:
 			m.mode = modeNormal
 			return m, nil
+		case modeSearch:
+			return m.updateSearch(msg)
 		default:
 			return m.updateModal(msg)
 		}
@@ -989,6 +1020,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "h":
 		m.mode = modeHelp
 		return m, nil
+	case "/":
+		m.openSearch()
+		return m, nil
 	}
 
 	// Cursor navigation — handled by vlist directly.
@@ -1119,6 +1153,11 @@ func (m *Model) submitNote() tea.Cmd {
 
 	return m.saveCmd(t, fmt.Sprintf("note: %s", flat), fmt.Sprintf("Note added: %s", flat))
 }
+
+// --- search overlay --------------------------------------------------------
+//
+// openSearch / closeSearch / updateSearch / renderSearch live in search.go so
+// the mode logic stays close to the ranker.
 
 // --- done action -----------------------------------------------------------
 
@@ -2371,6 +2410,14 @@ func (m *Model) recomputeLayout() {
 		m.tagInput.Width = inputW
 	case modeRetag, modeReschedule:
 		m.input.Width = m.modalInnerWidth() - 1
+	case modeSearch:
+		// Leave room for the "> " prompt (2) plus a few columns for the
+		// right-aligned count counter added by renderSearch in Task 6.
+		w := m.width - searchInputReserve
+		if w < 10 {
+			w = 10
+		}
+		m.search.input.Width = w
 	}
 }
 
@@ -2494,6 +2541,12 @@ func (m *Model) detailPanelView() string {
 }
 
 func (m *Model) View() string {
+	// Search overlay owns the full screen: render and return before computing
+	// anything specific to the normal-mode layout (tab bar, panels, etc).
+	if m.mode == modeSearch {
+		return m.renderSearch()
+	}
+
 	var tabBar []string
 	for i, t := range m.tabs {
 		if i == m.activeTab {
@@ -2581,6 +2634,7 @@ func (m *Model) helpLine() string {
 				[2]string{"x", "del"},
 				[2]string{"m", "grab"},
 				[2]string{"a", "active"},
+				[2]string{"/", "search"},
 				[2]string{"v", "schedule"},
 				[2]string{"s", "sync"},
 				[2]string{"h", "help"},
@@ -2599,6 +2653,7 @@ func (m *Model) helpLine() string {
 			[2]string{"x", "del"},
 			[2]string{"m", "grab"},
 			[2]string{"a", "active"},
+			[2]string{"/", "search"},
 			[2]string{"v", "tags"},
 			[2]string{"s", "sync"},
 			[2]string{"h", "help"},
@@ -2675,11 +2730,20 @@ func helpModalContent() string {
 		"  " + k("x") + "    delete\n" +
 		"  " + k("m") + "    grab / reorder\n" +
 		"  " + k("a") + "    toggle active\n" +
+		"  " + k("/") + "    search\n" +
 		"  " + k("v") + "    toggle view\n" +
 		"  " + k("↵") + "    notes panel\n" +
 		"  " + k("s") + "    sync\n" +
 		"  " + k("h") + "    this help\n" +
-		"  " + k("q") + "    quit"
+		"  " + k("q") + "    quit\n\n" +
+		"Search:\n\n" +
+		"  " + k("/") + "              open fuzzy search\n" +
+		"  " + k("↑/↓") + "            move selection\n" +
+		"  " + k("ctrl+j/k") + "       move selection\n" +
+		"  " + k("ctrl+n/p") + "       move selection\n" +
+		"  " + k("pgdn/pgup") + "      page selection\n" +
+		"  " + k("enter") + "          jump to task\n" +
+		"  " + k("esc") + "            cancel"
 }
 
 func (m *Model) modalView() string {
