@@ -245,6 +245,13 @@ func TestAcceptance_WorkdaysSpawnsNextWeekday(t *testing.T) {
 		t.Errorf("workdays spawn landed on weekend: schedule=%s weekday=%s",
 			spawn.Schedule, wd)
 	}
+	// Must be strictly after today so a bug like returning today on a
+	// weekday would be caught.
+	now := time.Now().UTC()
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if !ts.After(todayMidnight) {
+		t.Errorf("workdays spawn %s should be strictly after today %s", spawn.Schedule, todayMidnight.Format("2006-01-02"))
+	}
 	if spawn.Recurrence != "workdays" {
 		t.Errorf("spawn Recurrence: got %q, want 'workdays'", spawn.Recurrence)
 	}
@@ -293,8 +300,8 @@ func TestAcceptance_WeeklyAliasesCanonicalize(t *testing.T) {
 				t.Fatalf("show error = %v", err)
 			}
 			output := showBuf.String()
-			if !strings.Contains(output, "Recurrence: weekly:mon") {
-				t.Errorf("show output missing canonical 'Recurrence: weekly:mon' for input %q, got:\n%s",
+			if !strings.Contains(output, "Recur:     weekly:mon") {
+				t.Errorf("show output missing canonical 'Recur:     weekly:mon' for input %q, got:\n%s",
 					tc.input, output)
 			}
 		})

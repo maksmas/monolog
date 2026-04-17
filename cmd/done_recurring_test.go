@@ -100,9 +100,19 @@ func TestDone_Recurring_SpawnsNewTask(t *testing.T) {
 	if spawn.Recurrence != "monthly:1" {
 		t.Errorf("spawn Recurrence: got %q, want %q", spawn.Recurrence, "monthly:1")
 	}
-	// Schedule should parse as a valid ISO date.
-	if _, err := time.Parse("2006-01-02", spawn.Schedule); err != nil {
-		t.Errorf("spawn Schedule %q is not an ISO date: %v", spawn.Schedule, err)
+	// Schedule must parse as ISO and land on the 1st of a future month so a
+	// bug like "rule.Next swapped for time.Now()" would be caught.
+	spawnDate, err := time.Parse("2006-01-02", spawn.Schedule)
+	if err != nil {
+		t.Fatalf("spawn Schedule %q is not an ISO date: %v", spawn.Schedule, err)
+	}
+	if spawnDate.Day() != 1 {
+		t.Errorf("monthly:1 spawn should land on day 1 of a month, got %s", spawn.Schedule)
+	}
+	now := time.Now().UTC()
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if !spawnDate.After(todayMidnight) {
+		t.Errorf("monthly:1 spawn %s should be strictly after today %s", spawn.Schedule, todayMidnight.Format("2006-01-02"))
 	}
 	// Body should contain the spawned-from note.
 	if !strings.Contains(spawn.Body, "Spawned from "+id) {
@@ -159,10 +169,10 @@ func TestDone_InvalidRecurrence_SkipsSpawnWithWarning(t *testing.T) {
 		t.Fatalf("done command should succeed even with invalid recurrence, got err=%v\nstderr: %s", err, errBuf.String())
 	}
 
-	// Stderr should carry a warning.
+	// Stderr should carry a warning naming the actual offending rule.
 	stderr := errBuf.String()
-	if !strings.Contains(stderr, "recurrence") || !strings.Contains(stderr, "invalid") {
-		t.Errorf("expected warning about invalid recurrence on stderr, got: %q", stderr)
+	if !strings.Contains(stderr, "recurrence") || !strings.Contains(stderr, "invalid") || !strings.Contains(stderr, "bogus") {
+		t.Errorf("expected warning about invalid recurrence value 'bogus' on stderr, got: %q", stderr)
 	}
 
 	// Old task still marked done.
@@ -382,6 +392,86 @@ func TestDone_Recurring_NoteCountRecalculated(t *testing.T) {
 	}
 	if spawn.NoteCount != 1 {
 		t.Errorf("spawn NoteCount: got %d, want 1 (one spawned-from note)", spawn.NoteCount)
+	}
+}
+
+// TestDone_Recurring_ChainedSpawn verifies that completing a spawned task
+// produces a second spawn with the same recurrence rule — the core design
+// promise for recurring chores.
+func TestDone_Recurring_ChainedSpawn(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id1 := seedRecurringTask(t, dir, "Chained chore", "days:1", nil)
+
+	// Complete the first occurrence → spawn #1.
+	doneCmd1 := NewRootCmd()
+	doneCmd1.SetOut(new(bytes.Buffer))
+	doneCmd1.SetErr(new(bytes.Buffer))
+	doneCmd1.SetArgs([]string{"done", id1[:8]})
+	if err := doneCmd1.Execute(); err != nil {
+		t.Fatalf("first done error = %v", err)
+	}
+
+	// Find spawn #1.
+	tasks := readTasks(t, dir)
+	var spawn1 model.Task
+	for _, task := range tasks {
+		if task.ID != id1 && task.Title == "Chained chore" {
+			spawn1 = task
+			break
+		}
+	}
+	if spawn1.ID == "" {
+		t.Fatal("spawn #1 not found after first done")
+	}
+	if spawn1.Recurrence != "days:1" {
+		t.Fatalf("spawn #1 Recurrence: got %q, want 'days:1'", spawn1.Recurrence)
+	}
+
+	// Complete spawn #1 → spawn #2. Use the full spawn ID so the prefix
+	// is unambiguous even if the two tasks were created in the same
+	// millisecond and share a leading 8-char prefix.
+	doneCmd2 := NewRootCmd()
+	doneCmd2.SetOut(new(bytes.Buffer))
+	doneCmd2.SetErr(new(bytes.Buffer))
+	doneCmd2.SetArgs([]string{"done", spawn1.ID})
+	if err := doneCmd2.Execute(); err != nil {
+		t.Fatalf("second done error = %v", err)
+	}
+
+	// There should now be three tasks total: original + spawn #1 + spawn #2.
+	tasks = readTasks(t, dir)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks after chained done, got %d", len(tasks))
+	}
+	var spawn2 model.Task
+	for _, task := range tasks {
+		if task.ID != id1 && task.ID != spawn1.ID && task.Title == "Chained chore" {
+			spawn2 = task
+			break
+		}
+	}
+	if spawn2.ID == "" {
+		t.Fatal("spawn #2 not found after second done")
+	}
+	if spawn2.Recurrence != "days:1" {
+		t.Errorf("spawn #2 Recurrence: got %q, want 'days:1' (chain continues)", spawn2.Recurrence)
+	}
+	if spawn2.Status != "open" {
+		t.Errorf("spawn #2 Status: got %q, want open", spawn2.Status)
+	}
+	// Spawn #2 should reference spawn #1 in its Body.
+	if !strings.Contains(spawn2.Body, "Spawned from "+spawn1.ID) {
+		t.Errorf("spawn #2 Body missing 'Spawned from %s':\n%s", spawn1.ID, spawn2.Body)
+	}
+	// Spawn #1 should now be done and carry a follow-up pointer to spawn #2.
+	spawn1Reloaded, _ := getTaskByID(t, dir, spawn1.ID)
+	if spawn1Reloaded.Status != "done" {
+		t.Errorf("spawn #1 Status: got %q, want done", spawn1Reloaded.Status)
+	}
+	if !strings.Contains(spawn1Reloaded.Body, "Spawned follow-up: "+spawn2.ID) {
+		t.Errorf("spawn #1 Body missing 'Spawned follow-up: %s':\n%s", spawn2.ID, spawn1Reloaded.Body)
 	}
 }
 

@@ -1158,12 +1158,30 @@ func (m *Model) doneSelected() tea.Cmd {
 		return nil
 	}
 	t := *task
-	t.Status = "done"
-	t.SetActive(false)
-	t.UpdatedAt = now()
-	t.CompletedAt = now()
 	flat := flattenTitle(t.Title)
-	return m.saveCmd(t, fmt.Sprintf("done: %s", flat), fmt.Sprintf("Completed: %s", flat))
+	storeRef := m.store
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		// warnBuf collects any recurrence warnings surfaced through the
+		// status bar (stderr has no natural home in the TUI).
+		var warnBuf strings.Builder
+		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf)
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("done: %w", err)}
+		}
+		if err := git.AutoCommit(repoPath, commitMsg, commitFiles...); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		status := fmt.Sprintf("Completed: %s", flat)
+		if w := strings.TrimSpace(warnBuf.String()); w != "" {
+			status = fmt.Sprintf("Completed: %s (%s)", flat, w)
+		} else if len(commitFiles) > 1 {
+			// Spawn happened — surface the next-occurrence date in the
+			// status line so the user sees the recurrence worked.
+			status = fmt.Sprintf("Completed: %s (next occurrence spawned)", flat)
+		}
+		return taskSavedMsg{status: status}
+	}
 }
 
 // --- active toggle ---------------------------------------------------------
@@ -1415,12 +1433,10 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeModal()
 			return m, nil
 		}
-		recur := strings.TrimSpace(m.recurInput.Value())
-		if recur != "" {
-			if _, err := recurrence.Parse(recur); err != nil {
-				m.err = fmt.Errorf("recurrence: %w", err)
-				return m, nil
-			}
+		recur, err := recurrence.Canonicalize(strings.TrimSpace(m.recurInput.Value()))
+		if err != nil {
+			m.err = fmt.Errorf("recurrence: %w", err)
+			return m, nil
 		}
 		tags := model.SanitizeTags(m.tagInput.Value())
 		m.closeModal()
@@ -1600,10 +1616,11 @@ func (m *Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // editableFields is the subset of a Task that's exposed to the user in the
 // YAML edit buffer. ID, Status, Position, and timestamps are not shown.
 type editableFields struct {
-	Title    string   `yaml:"title"`
-	Body     string   `yaml:"body,omitempty"`
-	Schedule string   `yaml:"schedule"`
-	Tags     []string `yaml:"tags,omitempty"`
+	Title      string   `yaml:"title"`
+	Body       string   `yaml:"body,omitempty"`
+	Schedule   string   `yaml:"schedule"`
+	Tags       []string `yaml:"tags,omitempty"`
+	Recurrence string   `yaml:"recurrence,omitempty"`
 }
 
 // marshalTaskForEdit renders a task into the YAML shown in the editor.
@@ -1611,17 +1628,20 @@ type editableFields struct {
 // tags; active state is preserved separately in applyEditedYAML.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
 	return yaml.Marshal(editableFields{
-		Title:    t.Title,
-		Body:     t.Body,
-		Schedule: t.Schedule,
-		Tags:     display.VisibleTags(t.Tags),
+		Title:      t.Title,
+		Body:       t.Body,
+		Schedule:   t.Schedule,
+		Tags:       display.VisibleTags(t.Tags),
+		Recurrence: t.Recurrence,
 	})
 }
 
 // applyEditedYAML parses the user's edited YAML and returns an updated task.
-// Returns an error if the YAML is invalid, the title is empty, or the
-// schedule is not parseable. Bucket-name schedules are converted to ISO
-// dates so the on-disk file always stores a concrete date.
+// Returns an error if the YAML is invalid, the title is empty, the schedule
+// is not parseable, or the recurrence rule is not parseable. Bucket-name
+// schedules are converted to ISO dates so the on-disk file always stores a
+// concrete date; the recurrence rule is canonicalized (e.g. weekly:Monday ->
+// weekly:mon) so edit round-trips always produce a normalized value.
 func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, error) {
 	var edit editableFields
 	if err := yaml.Unmarshal(data, &edit); err != nil {
@@ -1629,10 +1649,15 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 	}
 	edit.Title = strings.TrimSpace(edit.Title)
 	edit.Schedule = strings.TrimSpace(edit.Schedule)
+	edit.Recurrence = strings.TrimSpace(edit.Recurrence)
 	if edit.Title == "" {
 		return model.Task{}, fmt.Errorf("title cannot be empty")
 	}
 	scheduleDate, err := schedule.Parse(edit.Schedule, now)
+	if err != nil {
+		return model.Task{}, err
+	}
+	recurCanonical, err := recurrence.Canonicalize(edit.Recurrence)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -1642,6 +1667,7 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 	out.Body = edit.Body
 	out.Schedule = scheduleDate
 	out.Tags = edit.Tags
+	out.Recurrence = recurCanonical
 	out.SetActive(wasActive)
 	out.UpdatedAt = now.UTC().Format(time.RFC3339)
 	return out, nil

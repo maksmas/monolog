@@ -47,7 +47,7 @@ func newShowCmd() *cobra.Command {
 
 			// Recurrence (only when set)
 			if task.Recurrence != "" {
-				fmt.Fprintf(w, "Recurrence: %s\n", task.Recurrence)
+				fmt.Fprintf(w, "Recur:     %s\n", task.Recurrence)
 			}
 
 			// Tags

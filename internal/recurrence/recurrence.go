@@ -34,6 +34,21 @@ type Rule interface {
 	String() string
 }
 
+// Canonicalize parses s and returns its canonical grammar form. An empty
+// input returns ("", nil). Invalid input returns ("", err). Callers that
+// both validate and store the rule should prefer this over Parse — it
+// collapses the common "parse, then call rule.String()" pattern.
+func Canonicalize(s string) (string, error) {
+	rule, err := Parse(s)
+	if err != nil {
+		return "", err
+	}
+	if rule == nil {
+		return "", nil
+	}
+	return rule.String(), nil
+}
+
 // Parse validates the grammar and returns a Rule. Empty string returns
 // (nil, nil) — callers treat nil Rule as "not recurring".
 func Parse(s string) (Rule, error) {
@@ -92,47 +107,39 @@ func Parse(s string) (Rule, error) {
 	}
 }
 
-// parseWeekday normalizes a lowercased weekday token. Returns the parsed
+// weekdayShortNames maps time.Weekday (Sun=0..Sat=6) to the canonical
+// three-letter lowercase form used by Rule.String().
+var weekdayShortNames = [7]string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+
+// weekdayFullNames maps time.Weekday to its full lowercase name.
+var weekdayFullNames = [7]string{"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"}
+
+// parseWeekday normalizes a lowercased weekday token (three-letter, full
+// name, or ISO-8601 numeric 1..7 with Mon=1..Sun=7). Returns the parsed
 // time.Weekday and true on success.
 func parseWeekday(arg string) (time.Weekday, bool) {
-	switch arg {
-	case "mon", "monday", "1":
-		return time.Monday, true
-	case "tue", "tuesday", "2":
-		return time.Tuesday, true
-	case "wed", "wednesday", "3":
-		return time.Wednesday, true
-	case "thu", "thursday", "4":
-		return time.Thursday, true
-	case "fri", "friday", "5":
-		return time.Friday, true
-	case "sat", "saturday", "6":
-		return time.Saturday, true
-	case "sun", "sunday", "7":
-		return time.Sunday, true
+	// ISO-8601 numeric: 1=Mon..7=Sun.
+	if len(arg) == 1 && arg[0] >= '1' && arg[0] <= '7' {
+		n := int(arg[0] - '0')
+		if n == 7 {
+			return time.Sunday, true
+		}
+		return time.Weekday(n), true
+	}
+	for i := range weekdayShortNames {
+		if arg == weekdayShortNames[i] || arg == weekdayFullNames[i] {
+			return time.Weekday(i), true
+		}
 	}
 	return 0, false
 }
 
 // weekdayShort returns the three-letter lowercase canonical name.
 func weekdayShort(wd time.Weekday) string {
-	switch wd {
-	case time.Monday:
-		return "mon"
-	case time.Tuesday:
-		return "tue"
-	case time.Wednesday:
-		return "wed"
-	case time.Thursday:
-		return "thu"
-	case time.Friday:
-		return "fri"
-	case time.Saturday:
-		return "sat"
-	case time.Sunday:
-		return "sun"
+	if wd < 0 || int(wd) >= len(weekdayShortNames) {
+		return ""
 	}
-	return ""
+	return weekdayShortNames[wd]
 }
 
 // midnightUTC rounds t to midnight UTC on the same calendar date as its UTC
@@ -214,16 +221,15 @@ type workdaysRule struct{}
 func (workdaysRule) String() string { return "workdays" }
 
 func (workdaysRule) Next(completedAt time.Time) time.Time {
-	today := midnightUTC(completedAt)
-	for i := 1; i <= 7; i++ {
-		cand := today.AddDate(0, 0, i)
-		wd := cand.Weekday()
-		if wd != time.Saturday && wd != time.Sunday {
-			return cand
-		}
+	// Start from tomorrow, then skip weekend days.
+	cand := midnightUTC(completedAt).AddDate(0, 0, 1)
+	switch cand.Weekday() {
+	case time.Saturday:
+		return cand.AddDate(0, 0, 2)
+	case time.Sunday:
+		return cand.AddDate(0, 0, 1)
 	}
-	// Unreachable: at least one weekday lies within any 7-day span.
-	return today
+	return cand
 }
 
 // ---- daysRule ----

@@ -743,6 +743,93 @@ func TestApplyEditedYAML_UpdatesUpdatedAt(t *testing.T) {
 	}
 }
 
+// TestMarshalTaskForEdit_IncludesRecurrence ensures the YAML edit buffer
+// exposes the Recurrence field so users can set/clear it via $EDITOR.
+func TestMarshalTaskForEdit_IncludesRecurrence(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "pay bills", Status: "open", Schedule: "2026-04-13",
+		Recurrence: "monthly:1",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "recurrence: monthly:1") {
+		t.Errorf("YAML should contain recurrence line, got:\n%s", string(data))
+	}
+}
+
+// TestMarshalTaskForEdit_OmitsEmptyRecurrence keeps the YAML clean for
+// non-recurring tasks.
+func TestMarshalTaskForEdit_OmitsEmptyRecurrence(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "one-shot", Status: "open", Schedule: "2026-04-13",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "recurrence:") {
+		t.Errorf("empty Recurrence should be omitted, got:\n%s", string(data))
+	}
+}
+
+// TestApplyEditedYAML_SetsRecurrence verifies the YAML editor can add a
+// recurrence rule, and canonicalizes aliases so weekly:Monday -> weekly:mon.
+func TestApplyEditedYAML_SetsRecurrence(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: today\nrecurrence: weekly:Monday\n"), time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Recurrence != "weekly:mon" {
+		t.Errorf("Recurrence = %q, want weekly:mon (canonical)", got.Recurrence)
+	}
+}
+
+// TestApplyEditedYAML_ClearsRecurrence verifies removing the recurrence
+// line in the YAML clears the rule on disk — the stop semantics.
+func TestApplyEditedYAML_ClearsRecurrence(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today", Recurrence: "monthly:1"}
+	got, err := applyEditedYAML(orig, []byte("title: old\nschedule: today\n"), time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Recurrence != "" {
+		t.Errorf("Recurrence = %q, want empty (cleared via YAML)", got.Recurrence)
+	}
+}
+
+// TestApplyEditedYAML_RejectsInvalidRecurrence surfaces the parse error
+// instead of silently storing garbage.
+func TestApplyEditedYAML_RejectsInvalidRecurrence(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	_, err := applyEditedYAML(orig, []byte("title: new\nschedule: today\nrecurrence: bogus\n"), time.Now())
+	if err == nil {
+		t.Error("expected error for invalid recurrence rule")
+	}
+}
+
+// TestMarshalApplyRoundTrip_RecurrencePreserved ensures a marshal → apply
+// cycle with no user edits leaves Recurrence intact.
+func TestMarshalApplyRoundTrip_RecurrencePreserved(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "chore", Status: "open", Schedule: "2026-04-13",
+		Recurrence: "days:3",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := applyEditedYAML(orig, data, time.Now())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Recurrence != "days:3" {
+		t.Errorf("Recurrence after round-trip: got %q, want %q", got.Recurrence, "days:3")
+	}
+}
+
 func TestResolveEditor(t *testing.T) {
 	t.Setenv("VISUAL", "emacs")
 	t.Setenv("EDITOR", "nano")
@@ -1737,6 +1824,32 @@ func TestAdd_EmptyRecurCreatesTaskWithoutRecurrence(t *testing.T) {
 	task := items[0].(item).task
 	if task.Recurrence != "" {
 		t.Errorf("Recurrence = %q, want empty", task.Recurrence)
+	}
+}
+
+// TestAdd_RecurrenceAliasCanonicalizesOnSubmit verifies the TUI add modal
+// stores the canonical form of a recurrence alias (e.g. weekly:Monday ->
+// weekly:mon), matching the CLI's canonicalization so round-trips through
+// show/edit see a normalized value.
+func TestAdd_RecurrenceAliasCanonicalizesOnSubmit(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "weekly task")
+	m, _ = key(t, m, "tab") // tags
+	m, _ = key(t, m, "tab") // recur
+	m = typeString(t, m, "weekly:Monday")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Recurrence != "weekly:mon" {
+		t.Errorf("Recurrence: got %q, want %q (canonical form)", task.Recurrence, "weekly:mon")
 	}
 }
 
@@ -5330,6 +5443,93 @@ func TestDone_SetsCompletedAt(t *testing.T) {
 	// CompletedAt should be a valid RFC3339 timestamp.
 	if _, err := time.Parse(time.RFC3339, task.CompletedAt); err != nil {
 		t.Errorf("CompletedAt %q is not valid RFC3339: %v", task.CompletedAt, err)
+	}
+}
+
+// TestDone_RecurringSpawnsNewTaskInTUI pins the behavior that pressing 'd'
+// on a task with a recurrence rule spawns a next-occurrence task, matching
+// the CLI `monolog done` behavior. Without this, TUI users completing
+// recurring chores would silently get no spawn.
+func TestDone_RecurringSpawnsNewTaskInTUI(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "weekly chore", Status: "open", Schedule: "today",
+			Recurrence: "days:1", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+
+	// Original task is now done.
+	orig, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get original: %v", err)
+	}
+	if orig.Status != "done" {
+		t.Errorf("original Status: got %q, want done", orig.Status)
+	}
+	if !strings.Contains(orig.Body, "Spawned follow-up:") {
+		t.Errorf("original Body missing 'Spawned follow-up:' back-reference:\n%s", orig.Body)
+	}
+
+	// A new task exists with the same recurrence rule.
+	all, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks after TUI done on recurring, got %d", len(all))
+	}
+	var spawn model.Task
+	for _, tk := range all {
+		if tk.ID != orig.ID {
+			spawn = tk
+			break
+		}
+	}
+	if spawn.ID == "" {
+		t.Fatal("spawn not found")
+	}
+	if spawn.Status != "open" {
+		t.Errorf("spawn Status: got %q, want open", spawn.Status)
+	}
+	if spawn.Recurrence != "days:1" {
+		t.Errorf("spawn Recurrence: got %q, want 'days:1'", spawn.Recurrence)
+	}
+	if spawn.Title != "weekly chore" {
+		t.Errorf("spawn Title: got %q, want 'weekly chore'", spawn.Title)
+	}
+	if !strings.Contains(spawn.Body, "Spawned from "+orig.ID) {
+		t.Errorf("spawn Body missing 'Spawned from %s':\n%s", orig.ID, spawn.Body)
+	}
+}
+
+// TestDone_NonRecurringInTUI is the negative counterpart — a plain task
+// completes without spawning. Guards against the spawn logic accidentally
+// firing for non-recurring tasks.
+func TestDone_NonRecurringInTUI(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "one-shot", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+	all, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 task (no spawn for non-recurring), got %d", len(all))
 	}
 }
 

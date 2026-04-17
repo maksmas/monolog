@@ -316,7 +316,7 @@ func TestShowCommand_DisplaysRecurrence(t *testing.T) {
 
 	output := buf.String()
 
-	if !strings.Contains(output, "Recurrence: monthly:1") {
+	if !strings.Contains(output, "Recur:     monthly:1") {
 		t.Errorf("output should contain recurrence line, got:\n%s", output)
 	}
 }
@@ -339,9 +339,9 @@ func TestShowCommand_OmitsRecurrenceWhenEmpty(t *testing.T) {
 
 	output := buf.String()
 
-	// Recurrence is empty, so "Recurrence:" should not appear in output.
-	if strings.Contains(output, "Recurrence:") {
-		t.Errorf("output should not contain Recurrence: when empty, got:\n%s", output)
+	// Recurrence is empty, so "Recur:" should not appear in output.
+	if strings.Contains(output, "Recur:") {
+		t.Errorf("output should not contain Recur: when empty, got:\n%s", output)
 	}
 }
 

@@ -37,15 +37,9 @@ func newAddCmd() *cobra.Command {
 			// Validate recurrence rule (if provided) and normalize to canonical
 			// grammar form, so aliases like "weekly:Monday" or "weekly:1" store
 			// as "weekly:mon".
-			recurCanonical := ""
-			if recur != "" {
-				rule, err := recurrence.Parse(recur)
-				if err != nil {
-					return err
-				}
-				if rule != nil {
-					recurCanonical = rule.String()
-				}
+			recurCanonical, err := recurrence.Canonicalize(recur)
+			if err != nil {
+				return err
 			}
 
 			s, repoPath, err := openStore()

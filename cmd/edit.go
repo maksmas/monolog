@@ -50,15 +50,11 @@ func newEditCmd() *cobra.Command {
 			// An explicitly-set empty string clears the rule.
 			var newRecur string
 			if cmd.Flags().Changed("recur") {
-				if recur != "" {
-					rule, err := recurrence.Parse(recur)
-					if err != nil {
-						return err
-					}
-					if rule != nil {
-						newRecur = rule.String()
-					}
+				canonical, err := recurrence.Canonicalize(recur)
+				if err != nil {
+					return err
 				}
+				newRecur = canonical
 			}
 
 			s, repoPath, err := openStore()
