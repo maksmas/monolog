@@ -118,52 +118,60 @@ All `Next()` methods return the first matching date **strictly after** `complete
 - `days:N` — N must be >= 1; reject `days:0`, negative, non-numeric.
 - Anything else: return error.
 
-### Spawn flow pseudocode (in `cmd/done.go`)
+### Spawn flow pseudocode
+
+Shipped implementation lives in `internal/recurrence/spawn.go` as
+`recurrence.CompleteAndSpawn`, reused by both `cmd/done.go` and the TUI
+`doneSelected()` path so there is a single source of truth. Sketch:
 
 ```
+// mutate the old task in-memory to its done state first
 task.Status = "done"
 task.SetActive(false)
 task.UpdatedAt = now
-task.CompletedAt = now  // (already set today; confirm)
-s.Update(task)          // OLD task committed to disk with done state
+if task.CompletedAt == "" { task.CompletedAt = now }
 
+// optional spawn — never blocks completion; warnings route through the
+// warn io.Writer the caller passed in
 if task.Recurrence != "" {
     rule, err := recurrence.Parse(task.Recurrence)
     if err != nil {
-        warn(stderr, "recurrence %q invalid: %v; skipping spawn", task.Recurrence, err)
-        // fall through to commit old-file-only
+        warn("recurrence %q invalid: %v; skipping spawn", task.Recurrence, err)
     } else {
-        nextDate := rule.Next(now).Format(schedule.IsoLayout)
-        newID := model.NewID()
-        newTask := model.Task{
-            ID:         newID,
-            Title:      task.Title,
-            Body:       task.Body,  // full body, notes and all (per design decision)
-            Source:     task.Source,
-            Status:     "open",
-            Position:   ordering.NextPosition(existing),  // via fresh s.List
-            Schedule:   nextDate,
-            Recurrence: task.Recurrence,
-            Tags:       tagsWithoutActive(task.Tags),
-            CreatedAt:  now,
-            UpdatedAt:  now,
+        res, err := spawn(store, *task, rule, now)   // writes the new file
+        if err != nil {
+            warn("recurrence %q spawn failed: %v; skipping spawn", task.Recurrence, err)
+        } else {
+            task.Body = AppendNote(task.Body,
+                "Spawned follow-up: <new-id> (scheduled <date>)", now)
+            commitFiles = append(commitFiles, newFile)
+            commitMsg = "done: <title> (recurring, next <date>)"
+            spawnedID = res.newID
         }
-        newTask.Body = model.AppendNote(newTask.Body,
-            fmt.Sprintf("Spawned from %s", task.ID), now)
-        s.Create(newTask)
-
-        // back-reference on OLD task
-        task.Body = model.AppendNote(task.Body,
-            fmt.Sprintf("Spawned follow-up: %s (scheduled %s)", newID, nextDate), now)
-        s.Update(task)  // second update to persist the back-reference
     }
 }
 
-// commit: include both files if spawned, else just the old one
-git.AutoCommit(repoPath, msg, oldFile, newFileOrEmpty...)
+// single Update combines the done transition AND the back-ref note.
+// NoteCount is recalculated inside Store.Update.
+if err := store.Update(*task); err != nil {
+    // rollback: spawn file is on disk but nothing was committed yet
+    if spawnedID != "" { store.Delete(spawnedID) }
+    return err
+}
+
+git.AutoCommit(repoPath, commitMsg, commitFiles...)   // 1 or 2 files
 ```
 
-Note: two `s.Update` calls on the old task in the spawn path are simpler than holding the write and doing both notes at once, and `NoteCount` stays consistent because `Store.Update` recalculates it each time.
+Key invariants:
+- Exactly one `Store.Update` on the old task (iteration 1 consolidated
+  the earlier two-phase flow), so `NoteCount` stays consistent through a
+  single write.
+- On post-spawn Update failure, the newly written spawn file is deleted
+  best-effort so the repo is never left with an orphan that never made
+  it into a commit (iteration 2 fix).
+- Recurrence anchoring uses `midnightLocal` (completedAt's own zone) to
+  avoid an off-by-one for users west of UTC completing tasks late in
+  the evening (iteration 2 fix).
 
 ### Git commit message
 
@@ -231,6 +239,12 @@ Non-spawn case: unchanged — `"done: <title>"`.
 **Files:**
 - Modify: `cmd/done.go`
 - Create: `cmd/done_recurring_test.go`
+- Create (during review iteration 1): `internal/recurrence/spawn.go` — the
+  spawn-and-complete flow was extracted out of `cmd/done.go` into the
+  `recurrence` package so the TUI could share it. Unexported `spawn`
+  helper plus public `CompleteAndSpawn` entrypoint.
+- Create (during review iteration 1): `internal/recurrence/spawn_test.go`
+  — direct tests for the `tagsWithoutActive` helper.
 
 - [x] add spawn branch in `cmd/done.go` after the existing `s.Update(task)` call, gated on non-empty `Recurrence`
 - [x] on `recurrence.Parse` error: write warning to `cmd.ErrOrStderr()`, skip spawn, keep the done result; commit only the old file

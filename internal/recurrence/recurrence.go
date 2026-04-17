@@ -11,8 +11,10 @@
 //
 // Parse validates the grammar and returns a Rule whose Next method returns
 // the first matching date strictly after the given completion date (date-only
-// comparison; time-of-day is ignored — completion is rounded to midnight UTC).
-// Empty string parses to (nil, nil) — callers treat nil Rule as "not recurring".
+// comparison; time-of-day is ignored — completion is rounded to midnight in
+// its own zone so users west of UTC do not skip a day when completing late
+// in the evening). Empty string parses to (nil, nil) — callers treat nil
+// Rule as "not recurring".
 package recurrence
 
 import (
@@ -25,8 +27,9 @@ import (
 // Rule is a parsed recurrence spec. Implementations are immutable and safe
 // to share.
 type Rule interface {
-	// Next returns the date (midnight UTC) of the next occurrence strictly
-	// after completedAt. Time-of-day on completedAt is ignored.
+	// Next returns the date (midnight in completedAt's location) of the next
+	// occurrence strictly after completedAt. Time-of-day on completedAt is
+	// ignored.
 	Next(completedAt time.Time) time.Time
 	// String returns the canonical grammar form of the rule. Round-trips
 	// through Parse land on the same canonical spelling regardless of input
@@ -134,19 +137,14 @@ func parseWeekday(arg string) (time.Weekday, bool) {
 	return 0, false
 }
 
-// weekdayShort returns the three-letter lowercase canonical name.
-func weekdayShort(wd time.Weekday) string {
-	if wd < 0 || int(wd) >= len(weekdayShortNames) {
-		return ""
-	}
-	return weekdayShortNames[wd]
-}
-
-// midnightUTC rounds t to midnight UTC on the same calendar date as its UTC
-// representation.
-func midnightUTC(t time.Time) time.Time {
-	u := t.UTC()
-	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+// midnightLocal rounds t to midnight on its own calendar date, preserving
+// the input's location. Using the input's zone avoids an off-by-one for
+// users west of UTC: a late-evening completion in a negative-offset zone
+// lives on "yesterday" relative to UTC, and we want Next() to anchor on
+// the user's local day, not the UTC day.
+func midnightLocal(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
 }
 
 // daysInMonth returns the number of days in the given (year, month).
@@ -166,11 +164,12 @@ func (r monthlyRule) String() string {
 }
 
 func (r monthlyRule) Next(completedAt time.Time) time.Time {
-	today := midnightUTC(completedAt)
+	today := midnightLocal(completedAt)
 	y, m, _ := today.Date()
+	loc := today.Location()
 
 	// Try this month's anchor day first.
-	candidate := monthlyAnchor(y, m, r.day)
+	candidate := monthlyAnchor(y, m, r.day, loc)
 	if candidate.After(today) {
 		return candidate
 	}
@@ -181,18 +180,18 @@ func (r monthlyRule) Next(completedAt time.Time) time.Time {
 		m2 = 1
 		y2 = y + 1
 	}
-	return monthlyAnchor(y2, m2, r.day)
+	return monthlyAnchor(y2, m2, r.day, loc)
 }
 
-// monthlyAnchor returns the day-th of (y, m), clamped to the last day of the
-// month when day exceeds days-in-month.
-func monthlyAnchor(y int, m time.Month, day int) time.Time {
+// monthlyAnchor returns the day-th of (y, m) in loc, clamped to the last day
+// of the month when day exceeds days-in-month.
+func monthlyAnchor(y int, m time.Month, day int, loc *time.Location) time.Time {
 	last := daysInMonth(y, m)
 	d := day
 	if d > last {
 		d = last
 	}
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	return time.Date(y, m, d, 0, 0, 0, 0, loc)
 }
 
 // ---- weeklyRule ----
@@ -202,11 +201,11 @@ type weeklyRule struct {
 }
 
 func (r weeklyRule) String() string {
-	return "weekly:" + weekdayShort(r.weekday)
+	return "weekly:" + weekdayShortNames[r.weekday]
 }
 
 func (r weeklyRule) Next(completedAt time.Time) time.Time {
-	today := midnightUTC(completedAt)
+	today := midnightLocal(completedAt)
 	diff := int(r.weekday - today.Weekday())
 	if diff <= 0 {
 		diff += 7
@@ -222,7 +221,7 @@ func (workdaysRule) String() string { return "workdays" }
 
 func (workdaysRule) Next(completedAt time.Time) time.Time {
 	// Start from tomorrow, then skip weekend days.
-	cand := midnightUTC(completedAt).AddDate(0, 0, 1)
+	cand := midnightLocal(completedAt).AddDate(0, 0, 1)
 	switch cand.Weekday() {
 	case time.Saturday:
 		return cand.AddDate(0, 0, 2)
@@ -243,5 +242,5 @@ func (r daysRule) String() string {
 }
 
 func (r daysRule) Next(completedAt time.Time) time.Time {
-	return midnightUTC(completedAt).AddDate(0, 0, r.n)
+	return midnightLocal(completedAt).AddDate(0, 0, r.n)
 }

@@ -12,34 +12,31 @@ import (
 	"github.com/mmaksmas/monolog/internal/store"
 )
 
-// SpawnResult describes the outcome of a recurring-task spawn.
-type SpawnResult struct {
-	// NewID is the ULID of the newly created spawn task.
-	NewID string
-	// NextDate is the ISO-formatted next-occurrence date (e.g. "2026-05-01").
-	NextDate string
-	// BackRefNote is the note text to append to the old task's Body so it
-	// cross-references the spawn (e.g. "Spawned follow-up: <id> (scheduled ...)").
-	BackRefNote string
+// spawnResult describes the outcome of a recurring-task spawn.
+type spawnResult struct {
+	// newID is the ULID of the newly created spawn task.
+	newID string
+	// nextDate is the ISO-formatted next-occurrence date (e.g. "2026-05-01").
+	nextDate string
 }
 
-// Spawn creates the next-occurrence task for a completed recurring old task.
-// It does NOT update the old task — the caller is expected to append
-// result.BackRefNote to old.Body and persist the old task (typically as a
-// single Update combining the done-state transition with the back-reference).
+// spawn creates the next-occurrence task for a completed recurring old task.
+// It does NOT update the old task — the caller composes the cross-reference
+// note from the returned newID and nextDate and persists the old task via a
+// single Update that combines the done transition with the back-reference.
 //
 // On Create failure, the new task is not written and the returned error
 // should be warned-and-skipped so the underlying completion still goes
 // through.
-func Spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (SpawnResult, error) {
+func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResult, error) {
 	newID, err := model.NewID()
 	if err != nil {
-		return SpawnResult{}, fmt.Errorf("generate ID: %w", err)
+		return spawnResult{}, fmt.Errorf("generate ID: %w", err)
 	}
 
 	existing, err := s.List(store.ListOptions{})
 	if err != nil {
-		return SpawnResult{}, fmt.Errorf("list tasks: %w", err)
+		return spawnResult{}, fmt.Errorf("list tasks: %w", err)
 	}
 
 	nowStr := now.UTC().Format(time.RFC3339)
@@ -61,14 +58,10 @@ func Spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (SpawnResul
 	newTask.Body = model.AppendNote(newTask.Body, fmt.Sprintf("Spawned from %s", old.ID), now)
 
 	if err := s.Create(newTask); err != nil {
-		return SpawnResult{}, fmt.Errorf("create spawned task: %w", err)
+		return spawnResult{}, fmt.Errorf("create spawned task: %w", err)
 	}
 
-	return SpawnResult{
-		NewID:       newID,
-		NextDate:    nextDate,
-		BackRefNote: fmt.Sprintf("Spawned follow-up: %s (scheduled %s)", newID, nextDate),
-	}, nil
+	return spawnResult{newID: newID, nextDate: nextDate}, nil
 }
 
 // CompleteAndSpawn transitions a task to done and, when the task has a
@@ -83,6 +76,10 @@ func Spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (SpawnResul
 // committed state. The function performs exactly one Store.Update on the
 // old task: the done-state transition plus any back-reference note are
 // carried in a single write.
+//
+// If the old-task Update fails after a successful spawn Create, the newly
+// written spawn file is removed (best-effort) so the repo is not left with
+// an orphaned uncommitted spawn.
 //
 // Callers pass the task by pointer because the function mutates it (status,
 // timestamps, body) so the post-call view reflects persisted state.
@@ -103,26 +100,33 @@ func CompleteAndSpawn(s *store.Store, task *model.Task, now time.Time, warn io.W
 	// skipped: we never want a broken spawn to eat the user's completion,
 	// and we never want to leave the repo with the spawn partially written
 	// but not committed.
+	var spawnedID string
 	if task.Recurrence != "" {
 		rule, parseErr := Parse(task.Recurrence)
-		switch {
-		case parseErr != nil:
+		if parseErr != nil {
 			fmt.Fprintf(warn, "warning: recurrence %q invalid: %v; skipping spawn\n", task.Recurrence, parseErr)
-		case rule == nil:
-			// empty after trim — treat as non-recurring
-		default:
-			res, spawnErr := Spawn(s, *task, rule, now)
+		} else {
+			// Parse with non-empty input returns (rule, nil) on success — rule
+			// is never nil here; the empty-input path cannot reach this block.
+			res, spawnErr := spawn(s, *task, rule, now)
 			if spawnErr != nil {
 				fmt.Fprintf(warn, "warning: recurrence %q spawn failed: %v; skipping spawn\n", task.Recurrence, spawnErr)
 			} else {
-				task.Body = model.AppendNote(task.Body, res.BackRefNote, now)
-				commitMsg = fmt.Sprintf("done: %s (recurring, next %s)", task.Title, res.NextDate)
-				commitFiles = append(commitFiles, filepath.Join(".monolog", "tasks", res.NewID+".json"))
+				backRef := fmt.Sprintf("Spawned follow-up: %s (scheduled %s)", res.newID, res.nextDate)
+				task.Body = model.AppendNote(task.Body, backRef, now)
+				commitMsg = fmt.Sprintf("done: %s (recurring, next %s)", task.Title, res.nextDate)
+				commitFiles = append(commitFiles, filepath.Join(".monolog", "tasks", res.newID+".json"))
+				spawnedID = res.newID
 			}
 		}
 	}
 
 	if err := s.Update(*task); err != nil {
+		// Roll back the spawn file so we don't leave an orphan that never
+		// gets committed to git.
+		if spawnedID != "" {
+			_ = s.Delete(spawnedID)
+		}
 		return "", nil, fmt.Errorf("update task: %w", err)
 	}
 

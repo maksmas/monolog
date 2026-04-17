@@ -264,6 +264,49 @@ func TestDaysNext(t *testing.T) {
 	}
 }
 
+// TestNext_WesternTimezoneNoOffByOne guards against the off-by-one bug
+// where a completion late in the evening in a negative-offset zone would
+// fall on the next UTC date and cause Next() to return a date one too far.
+// The user's local day must win, not the UTC day.
+func TestNext_WesternTimezoneNoOffByOne(t *testing.T) {
+	pdt := time.FixedZone("PDT", -7*3600)
+	// 2026-04-30 23:00 PDT == 2026-05-01 06:00 UTC. With UTC-rounded
+	// midnight the old code treated "today" as May 1 and returned May 2.
+	// With zone-preserving midnight we anchor on April 30 and return May 1.
+	completed := time.Date(2026, 4, 30, 23, 0, 0, 0, pdt)
+
+	r, err := Parse("days:1")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := r.Next(completed).Format("2006-01-02")
+	if got != "2026-05-01" {
+		t.Fatalf("days:1 Next from 2026-04-30 23:00 PDT = %s, want 2026-05-01", got)
+	}
+
+	// Also verify monthly and workdays don't skip under the same conditions.
+	// 2026-04-30 is a Thursday, so workdays should yield Friday May 1.
+	rw, err := Parse("workdays")
+	if err != nil {
+		t.Fatalf("Parse workdays: %v", err)
+	}
+	gotWd := rw.Next(completed).Format("2006-01-02")
+	if gotWd != "2026-05-01" {
+		t.Fatalf("workdays Next from 2026-04-30 23:00 PDT = %s, want 2026-05-01", gotWd)
+	}
+
+	// monthly:1 from April 30 evening local must land on May 1 local, not
+	// May 1 then June 1 due to UTC already being May 1.
+	rm, err := Parse("monthly:1")
+	if err != nil {
+		t.Fatalf("Parse monthly:1: %v", err)
+	}
+	gotM := rm.Next(completed).Format("2006-01-02")
+	if gotM != "2026-05-01" {
+		t.Fatalf("monthly:1 Next from 2026-04-30 23:00 PDT = %s, want 2026-05-01", gotM)
+	}
+}
+
 func TestNext_IgnoresTimeOfDay(t *testing.T) {
 	r, err := Parse("days:1")
 	if err != nil {

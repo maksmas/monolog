@@ -180,14 +180,16 @@ func TestUpdateResetsNoteCountWhenBodyHasNone(t *testing.T) {
 	}
 }
 
-// TestCreateDoesNotRecalculateNoteCount is a regression guard: Store.Create
-// must not mutate NoteCount. New tasks start with empty bodies and zero
-// counts; recalculation only happens on Update.
-func TestCreateDoesNotRecalculateNoteCount(t *testing.T) {
+// TestCreateRecalculatesNoteCount is a regression guard: Store.Create must
+// recalculate NoteCount from Body so callers (like the recurrence spawn
+// path) cannot accidentally persist a stale count. A deliberately-wrong
+// NoteCount on the input must be corrected on disk.
+func TestCreateRecalculatesNoteCount(t *testing.T) {
 	s := newTestStore(t)
 	task := sampleTask("01AAA", "New task")
-	task.Body = ""
-	task.NoteCount = 0
+	task.Body = "first line\n--- 2026-04-17 10:00:00 ---\nfirst note\n" +
+		"--- 2026-04-17 11:00:00 ---\nsecond note"
+	task.NoteCount = 99 // stale; Create must overwrite
 	if err := s.Create(task); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -196,8 +198,8 @@ func TestCreateDoesNotRecalculateNoteCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	if got.NoteCount != 0 {
-		t.Errorf("NoteCount after Create: got %d, want 0", got.NoteCount)
+	if got.NoteCount != 2 {
+		t.Errorf("NoteCount after Create: got %d, want 2 (body has two note separators)", got.NoteCount)
 	}
 }
 

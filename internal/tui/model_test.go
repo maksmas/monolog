@@ -5511,6 +5511,46 @@ func TestDone_RecurringSpawnsNewTaskInTUI(t *testing.T) {
 // TestDone_NonRecurringInTUI is the negative counterpart — a plain task
 // completes without spawning. Guards against the spawn logic accidentally
 // firing for non-recurring tasks.
+// TestDone_InvalidRecurrenceInTUI_SurfacesWarning verifies that when a
+// task's stored Recurrence does not parse (hand-edited JSON, schema
+// regression, etc.), the TUI still completes the task but surfaces a
+// warning through the status bar. Completion must never be blocked.
+func TestDone_InvalidRecurrenceInTUI_SurfacesWarning(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "bogus recur", Status: "open", Schedule: "today",
+			Recurrence: "bogus", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error (invalid recurrence must not block done): %v", m.err)
+	}
+
+	// Task is still completed.
+	got, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "done" {
+		t.Errorf("Status: got %q, want done", got.Status)
+	}
+	// No spawn happened.
+	all, _ := m.store.List(store.ListOptions{})
+	if len(all) != 1 {
+		t.Errorf("expected 1 task (no spawn for invalid recurrence), got %d", len(all))
+	}
+	// Warning surfaced in the status bar.
+	if !strings.Contains(m.statusMsg, "warning") {
+		t.Errorf("statusMsg should contain the spawn warning, got: %q", m.statusMsg)
+	}
+	if !strings.Contains(m.statusMsg, "bogus") {
+		t.Errorf("statusMsg should mention the invalid rule value, got: %q", m.statusMsg)
+	}
+}
+
 func TestDone_NonRecurringInTUI(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "one-shot", Status: "open", Schedule: "today",

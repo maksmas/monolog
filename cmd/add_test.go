@@ -551,29 +551,6 @@ func TestAddCommand_AutoTagNoDuplicate(t *testing.T) {
 	}
 }
 
-func TestAddCommand_WithRecurrence(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "monolog")
-	initTestRepo(t, dir)
-
-	rootCmd := NewRootCmd()
-	buf := new(bytes.Buffer)
-	rootCmd.SetOut(buf)
-	rootCmd.SetErr(buf)
-	rootCmd.SetArgs([]string{"add", "pay bills", "--recur", "monthly:1"})
-
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
-	}
-
-	tasks := readTasks(t, dir)
-	if len(tasks) != 1 {
-		t.Fatalf("expected 1 task, got %d", len(tasks))
-	}
-	if tasks[0].Recurrence != "monthly:1" {
-		t.Errorf("Recurrence: got %q, want %q", tasks[0].Recurrence, "monthly:1")
-	}
-}
-
 func TestAddCommand_RecurrenceValidGrammar(t *testing.T) {
 	cases := []struct {
 		name  string

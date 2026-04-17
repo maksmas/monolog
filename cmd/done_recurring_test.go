@@ -461,6 +461,27 @@ func TestDone_Recurring_ChainedSpawn(t *testing.T) {
 	if spawn2.Status != "open" {
 		t.Errorf("spawn #2 Status: got %q, want open", spawn2.Status)
 	}
+	// Both spawn schedules must parse as ISO dates, and spawn #2 must be
+	// anchored on or after spawn #1 (both are "today + 1 day" in this test
+	// because both completions fire at essentially the same wall-clock
+	// moment — but we also assert strictly-after the seed task's own
+	// Schedule so we know the rule is actually advancing time, not looping).
+	seed, _ := getTaskByID(t, dir, id1)
+	seedDate, errSeed := time.Parse("2006-01-02", seed.Schedule)
+	s1Date, err1 := time.Parse("2006-01-02", spawn1.Schedule)
+	s2Date, err2 := time.Parse("2006-01-02", spawn2.Schedule)
+	if errSeed != nil || err1 != nil || err2 != nil {
+		t.Fatalf("parse schedules: seed=%q errSeed=%v; spawn1=%q err1=%v; spawn2=%q err2=%v",
+			seed.Schedule, errSeed, spawn1.Schedule, err1, spawn2.Schedule, err2)
+	}
+	if !s1Date.After(seedDate) {
+		t.Errorf("spawn #1 schedule %q must be strictly after seed schedule %q",
+			spawn1.Schedule, seed.Schedule)
+	}
+	if !s2Date.After(seedDate) {
+		t.Errorf("spawn #2 schedule %q must be strictly after seed schedule %q (chain must move forward)",
+			spawn2.Schedule, seed.Schedule)
+	}
 	// Spawn #2 should reference spawn #1 in its Body.
 	if !strings.Contains(spawn2.Body, "Spawned from "+spawn1.ID) {
 		t.Errorf("spawn #2 Body missing 'Spawned from %s':\n%s", spawn1.ID, spawn2.Body)

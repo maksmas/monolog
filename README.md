@@ -153,11 +153,11 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `↑`/`↓` | Move within list |
 | `Enter` | Toggle detail/notes panel for the focused task |
 | `c` | Open the add-task modal (title + tags + recur fields, Tab to cycle) |
-| `d` | Mark focused task as done |
+| `d` | Mark focused task as done (if it has a recurrence rule, auto-spawns the next occurrence — see [Recurring tasks](#recurring-tasks)) |
 | `a` | Toggle active on the focused task |
 | `r` | Reschedule (modal with 1–5 presets or 6 for custom date) |
 | `t` | Retag focused task |
-| `e` | Edit in `$EDITOR` (YAML round-trip) |
+| `e` | Edit in `$EDITOR` (YAML round-trip; the YAML includes a `recurrence:` field you can set or clear) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
 | `v` | Toggle between schedule view and tag view |
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
