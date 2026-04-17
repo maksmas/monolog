@@ -341,7 +341,7 @@ Non-spawn case: unchanged — `"done: <title>"`.
 
 - [x] add a bullet under "Key Design Decisions" in CLAUDE.md summarizing: grammar (four forms: `monthly:N`, `weekly:<day>` with three-letter/full-name/numeric aliases case-insensitive, `workdays`, `days:N`), canonical round-trip via `Rule.String()`, spawn-on-done semantics, bidirectional note cross-refs, edit-to-stop, month-end clamp, no SeriesID (Model A), no auto-spawn when recurrence is invalid (warn-and-skip)
 - [x] ensure all checkboxes in this plan are marked `[x]`
-- [x] deferred to finalize step (review phases need plan path intact) — `mkdir -p docs/plans/completed` (already exists) and `git mv docs/plans/20260417-recurring-tasks.md docs/plans/completed/`
+- [x] moved during finalize step — `git mv docs/plans/20260417-recurring-tasks.md docs/plans/completed/` (review phases kept plan path intact until finalize)
 
 ## Post-Completion
 
