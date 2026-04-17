@@ -90,9 +90,9 @@ Key decision: centralizing in `Store.Update` adds a tiny coupling from `store` t
 **Files:**
 - Modify: `cmd/task_commands_test.go` (or add to `cmd/edit_test.go` if it exists; check first)
 
-- [ ] add a test: create a task, add two notes via `monolog note`, then run `monolog edit --body ""` to clear the body, assert reloaded task has `NoteCount == 0`
-- [ ] add a test: create a task, manually set a body containing a well-formed separator line via `edit --body`, assert `NoteCount == 1` after save
-- [ ] run `go test ./cmd/` — must pass before task 5
+- [x] add a test: create a task, add two notes via `monolog note`, then run `monolog edit --body ""` to clear the body, assert reloaded task has `NoteCount == 0`
+- [x] add a test: create a task, manually set a body containing a well-formed separator line via `edit --body`, assert `NoteCount == 1` after save
+- [x] run `go test ./cmd/` — must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 - [ ] `go test ./...` green
