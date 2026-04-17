@@ -898,57 +898,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = ""
 
-	// When the detail panel is open and noteArea is focused, route key events
-	// through the textarea first. Esc always closes the panel; Enter submits
-	// the note. Single-character action keys (d/r/t/c/x/m/a/e/s/v/h/q) and
-	// navigation keys fall through to their normal handlers below.
+	// When the detail panel is open, the note textarea owns the keyboard so
+	// notes can start with any letter (including action-key shortcuts like
+	// d/q/t). Esc closes the panel; Enter submits; Alt+Enter inserts a
+	// newline. Non-rune keys (arrows, Home/End, PgUp/PgDn, Tab) fall through
+	// for task/tab navigation. [/] still scroll the detail body.
 	if m.detailOpen {
 		switch msg.Type {
 		case tea.KeyEsc:
 			m.closeDetailPanel()
 			return m, nil
 		case tea.KeyEnter:
-			// Alt+Enter inserts a newline via the textarea's own keymap.
 			if msg.Alt {
 				var cmd tea.Cmd
 				m.noteArea, cmd = m.noteArea.Update(msg)
 				return m, cmd
 			}
-			// Enter submits the note if textarea has content.
 			return m, m.submitNote()
 		}
 
-		// When the textarea is empty, let single-char action and navigation
-		// keys fall through to their normal handlers so the user can mark
-		// done, retag, reschedule, etc. without closing the panel first.
-		// Once the user starts typing (non-empty textarea), all printable
-		// input goes to the textarea; only [/] for body scroll still falls
-		// through.
 		if msg.Type == tea.KeyRunes {
-			s := string(msg.Runes)
-			noteEmpty := strings.TrimSpace(m.noteArea.Value()) == ""
-			if noteEmpty {
-				switch s {
-				case "d", "r", "t", "c", "x", "m", "a", "e", "s", "v", "h", "q",
-					"j", "k", "g", "G",
-					"1", "2", "3", "4", "5", "6",
-					"[", "]":
-					// Fall through to normal handlers below.
-				default:
-					var cmd tea.Cmd
-					m.noteArea, cmd = m.noteArea.Update(msg)
-					return m, cmd
-				}
-			} else {
-				// Textarea has content — route everything except scroll keys.
-				switch s {
-				case "[", "]":
-					// Fall through for body scroll.
-				default:
-					var cmd tea.Cmd
-					m.noteArea, cmd = m.noteArea.Update(msg)
-					return m, cmd
-				}
+			switch string(msg.Runes) {
+			case "[", "]":
+				// Fall through for body scroll.
+			default:
+				var cmd tea.Cmd
+				m.noteArea, cmd = m.noteArea.Update(msg)
+				return m, cmd
 			}
 		}
 		if msg.Type == tea.KeySpace || msg.Type == tea.KeyBackspace {

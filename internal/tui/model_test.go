@@ -5661,7 +5661,11 @@ func TestDetailPanel_EscClearsNoteArea(t *testing.T) {
 	}
 }
 
-func TestDetailPanel_ActionKeysStillWorkWhenOpen(t *testing.T) {
+func TestDetailPanel_PrintableKeysAlwaysGoToTextarea(t *testing.T) {
+	// When the detail panel is open, printable keys (including shortcut
+	// letters like d/q/t) must go to the textarea so notes can begin with
+	// any letter. Action shortcuts are intentionally unavailable while the
+	// panel is focused — users press Esc first.
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -5669,63 +5673,28 @@ func TestDetailPanel_ActionKeysStillWorkWhenOpen(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
 
-	// Open panel — textarea should be empty.
 	m, _ = key(t, m, "enter")
 	if !m.detailOpen {
 		t.Fatal("panel should be open")
 	}
-	if strings.TrimSpace(m.noteArea.Value()) != "" {
-		t.Fatal("textarea should be empty after opening panel")
-	}
 
-	// 'd' (done) should work because textarea is empty — produces a save
-	// command and marks the task done when the command completes.
-	m, cmd := key(t, m, "d")
-	if cmd == nil {
-		t.Fatal("'d' should return a command when detail panel is open with empty textarea")
+	// Every action-shortcut letter must land in the textarea, not trigger
+	// its shortcut. Type them one at a time starting from empty.
+	for _, ch := range []string{"d", "q", "t", "c", "a", "e", "r", "h"} {
+		m.noteArea.Reset()
+		m, cmd := key(t, m, ch)
+		if got := m.noteArea.Value(); got != ch {
+			t.Errorf("key %q: noteArea.Value() = %q, want %q", ch, got, ch)
+		}
+		if m.mode != modeNormal {
+			t.Errorf("key %q: mode changed to %d, expected modeNormal", ch, m.mode)
+		}
+		// Task should still be open (not marked done by 'd').
+		if got := len(m.lists[0].Items()); got != 1 {
+			t.Errorf("key %q: Today tab should still have 1 item, got %d", ch, got)
+		}
+		_ = cmd
 	}
-	m = runCmd(t, m, cmd)
-	if m.err != nil {
-		t.Fatalf("save error: %v", m.err)
-	}
-	// Verify the task actually moved to the Done tab (index 5).
-	if got := len(m.lists[0].Items()); got != 0 {
-		t.Errorf("Today tab should be empty after done, got %d items", got)
-	}
-	if got := len(m.lists[5].Items()); got != 1 {
-		t.Errorf("Done tab should have 1 item, got %d", got)
-	}
-
-	// Also verify 'h' opens help mode when textarea is empty.
-	m2 := newTestModel(t,
-		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
-			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
-	)
-	next2, _ := m2.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
-	m2 = next2.(*Model)
-	m2, _ = key(t, m2, "enter")
-	m2, _ = key(t, m2, "h")
-	if m2.mode != modeHelp {
-		t.Errorf("'h' with panel open (empty textarea) should switch to help mode, got mode=%d", m2.mode)
-	}
-
-	// Verify action keys are captured by textarea when it has content.
-	m3 := newTestModel(t,
-		model.Task{ID: "01C", Title: "task three", Status: "open", Schedule: "today",
-			Position: 3000, UpdatedAt: "2026-04-13T00:00:00Z"},
-	)
-	next3, _ := m3.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
-	m3 = next3.(*Model)
-	m3, _ = key(t, m3, "enter")
-	m3 = typeString(t, m3, "some text")
-	// Now 'd' should go to textarea, not trigger done.
-	m3, cmd3 := key(t, m3, "d")
-	// The cmd should be nil (textarea internal cursor blink) or at least not a done save.
-	// The textarea value should contain 'd'.
-	if !strings.Contains(m3.noteArea.Value(), "d") {
-		t.Errorf("'d' with non-empty textarea should go to textarea, got value=%q", m3.noteArea.Value())
-	}
-	_ = cmd3
 }
 
 func TestDetailPanel_TabSwitchResetsScroll(t *testing.T) {
