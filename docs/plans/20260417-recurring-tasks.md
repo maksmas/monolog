@@ -197,22 +197,22 @@ Non-spawn case: unchanged — `"done: <title>"`.
 - Create: `internal/recurrence/recurrence.go`
 - Create: `internal/recurrence/recurrence_test.go`
 
-- [ ] create `internal/recurrence/recurrence.go` with `Rule` interface, `Parse(string)`, and four concrete private types (`monthlyRule`, `weeklyRule`, `workdaysRule`, `daysRule`)
-- [ ] implement `monthlyRule.Next` with month-end clamping via `time.Date` normalization (e.g., `Date(y, m+1, day, ...)` — if day overflows, recompute to last day of target month)
-- [ ] implement `weeklyRule.Next`, `workdaysRule.Next`, `daysRule.Next` — all returning first matching date strictly after `completedAt` date
-- [ ] in `Parse`: normalize the `weekly:` argument by lowercasing and matching against three-letter, full-name, and numeric (1-7) alias tables; normalize `workdays` by lowercasing before the exact-literal compare
-- [ ] implement `Rule.String()` on each type returning the original grammar form (round-trip fidelity)
-- [ ] write tests: `TestParse_Valid` table-driven covering every valid form
-- [ ] write tests: `TestParse_Invalid` table-driven covering empty string returns (nil, nil), `monthly:0`, `monthly:32`, `days:0`, `days:-1`, `weekly:xyz`, unknown rules, missing colons, extra colons
-- [ ] write tests: `TestMonthlyNext` covering normal case, Feb 28 clamp (non-leap year, `monthly:31` completed Jan 15 → Feb 28; completed Feb 15 → Feb 28 then next call Mar 31), Feb 29 leap-year case (2028), completion on target date → next month
-- [ ] write tests: `TestWeeklyNext` — same weekday completion → next week; mid-week completion → upcoming target
-- [ ] write tests: `TestWorkdaysNext` — Friday completion → Monday; Saturday/Sunday completion → Monday; Mon-Thu → next day
-- [ ] write tests: `TestParse_WeeklyAliases` — table-driven covering `mon`, `MON`, `Mon`, `monday`, `MONDAY`, `Monday`, `1` all parse to the same Rule (Monday); same for each other weekday; all return `weekly:<3-letter-lowercase>` via `Rule.String()`
-- [ ] write tests: `TestParse_WorkdaysAliases` — `workdays`, `Workdays`, `WORKDAYS` all parse; `Rule.String()` returns `workdays`
-- [ ] write tests: `TestParse_WeeklyInvalidAliases` — `weekly:0`, `weekly:8`, `weekly:xyz`, `weekly:monda`, `weekly:` rejected
-- [ ] write tests: `TestDaysNext` — simple N-day add
-- [ ] run `go test ./internal/recurrence/` — all tests must pass
-- [ ] run `go vet ./...` — must pass before Task 2
+- [x] create `internal/recurrence/recurrence.go` with `Rule` interface, `Parse(string)`, and four concrete private types (`monthlyRule`, `weeklyRule`, `workdaysRule`, `daysRule`)
+- [x] implement `monthlyRule.Next` with month-end clamping via `time.Date` normalization (e.g., `Date(y, m+1, day, ...)` — if day overflows, recompute to last day of target month)
+- [x] implement `weeklyRule.Next`, `workdaysRule.Next`, `daysRule.Next` — all returning first matching date strictly after `completedAt` date
+- [x] in `Parse`: normalize the `weekly:` argument by lowercasing and matching against three-letter, full-name, and numeric (1-7) alias tables; normalize `workdays` by lowercasing before the exact-literal compare
+- [x] implement `Rule.String()` on each type returning the original grammar form (round-trip fidelity)
+- [x] write tests: `TestParse_Valid` table-driven covering every valid form
+- [x] write tests: `TestParse_Invalid` table-driven covering empty string returns (nil, nil), `monthly:0`, `monthly:32`, `days:0`, `days:-1`, `weekly:xyz`, unknown rules, missing colons, extra colons
+- [x] write tests: `TestMonthlyNext` covering normal case, Feb 28 clamp (non-leap year, `monthly:31` completed Jan 15 → Feb 28; completed Feb 15 → Feb 28 then next call Mar 31), Feb 29 leap-year case (2028), completion on target date → next month
+- [x] write tests: `TestWeeklyNext` — same weekday completion → next week; mid-week completion → upcoming target
+- [x] write tests: `TestWorkdaysNext` — Friday completion → Monday; Saturday/Sunday completion → Monday; Mon-Thu → next day
+- [x] write tests: `TestParse_WeeklyAliases` — table-driven covering `mon`, `MON`, `Mon`, `monday`, `MONDAY`, `Monday`, `1` all parse to the same Rule (Monday); same for each other weekday; all return `weekly:<3-letter-lowercase>` via `Rule.String()`
+- [x] write tests: `TestParse_WorkdaysAliases` — `workdays`, `Workdays`, `WORKDAYS` all parse; `Rule.String()` returns `workdays`
+- [x] write tests: `TestParse_WeeklyInvalidAliases` — `weekly:0`, `weekly:8`, `weekly:xyz`, `weekly:monda`, `weekly:` rejected
+- [x] write tests: `TestDaysNext` — simple N-day add
+- [x] run `go test ./internal/recurrence/` — all tests must pass
+- [x] run `go vet ./...` — must pass before Task 2
 
 ### Task 2: Add `Recurrence` field to `model.Task`
 
