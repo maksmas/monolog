@@ -67,11 +67,11 @@ Key decision: centralizing in `Store.Update` adds a tiny coupling from `store` t
 - Modify: `internal/store/store.go`
 - Modify: `internal/store/store_test.go`
 
-- [ ] in `Store.Update`, set `task.NoteCount = model.CountNotes(task.Body)` before calling `writeTask`
-- [ ] write a test: create a task with `NoteCount: 99` and a `Body` containing two note separators, call `Update`, read back, assert `NoteCount == 2`
-- [ ] write a test: update a task whose body has no notes — `NoteCount` ends at 0 even if the in-memory value was non-zero
-- [ ] write a test: `Create` is NOT affected — creating a task with `NoteCount: 0` and empty body stays at 0 (regression guard)
-- [ ] run `go test ./internal/store/` — must pass before task 3
+- [x] in `Store.Update`, set `task.NoteCount = model.CountNotes(task.Body)` before calling `writeTask`
+- [x] write a test: create a task with `NoteCount: 99` and a `Body` containing two note separators, call `Update`, read back, assert `NoteCount == 2`
+- [x] write a test: update a task whose body has no notes — `NoteCount` ends at 0 even if the in-memory value was non-zero
+- [x] write a test: `Create` is NOT affected — creating a task with `NoteCount: 0` and empty body stays at 0 (regression guard)
+- [x] run `go test ./internal/store/` — must pass before task 3
 
 ### Task 3: Remove redundant increments at add-note sites
 

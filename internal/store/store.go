@@ -58,12 +58,15 @@ func (s *Store) Get(id string) (model.Task, error) {
 	return s.readTask(s.taskPath(id))
 }
 
-// Update overwrites an existing task file.
+// Update overwrites an existing task file. It recalculates NoteCount from
+// the task's Body so that callers cannot accidentally leave the field stale
+// after mutating Body through any code path.
 func (s *Store) Update(task model.Task) error {
 	path := s.taskPath(task.ID)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return ErrNotFound
 	}
+	task.NoteCount = model.CountNotes(task.Body)
 	return s.writeTask(path, task)
 }
 
