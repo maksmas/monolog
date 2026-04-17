@@ -256,14 +256,14 @@ Non-spawn case: unchanged — `"done: <title>"`.
 - Modify: `cmd/add.go`
 - Modify: `cmd/add_test.go`
 
-- [ ] add `var recur string` and `cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: monthly:N, weekly:<day>, workdays, days:N")`
-- [ ] on non-empty `recur`: call `recurrence.Parse(recur)` before building the task; return error on invalid grammar
-- [ ] assign `task.Recurrence = recur` in the task-build block
-- [ ] write test: `monolog add --recur monthly:1 "pay bills"` creates task with Recurrence = "monthly:1"
-- [ ] write test: each valid grammar form accepted (table-driven)
-- [ ] write test: invalid grammar rejected with non-zero exit and useful error message (table-driven)
-- [ ] write test: empty `--recur` (omitted) creates task with empty Recurrence (unchanged behavior)
-- [ ] run `go test ./cmd/...` — all tests must pass
+- [x] add `var recur string` and `cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: monthly:N, weekly:<day>, workdays, days:N")`
+- [x] on non-empty `recur`: call `recurrence.Parse(recur)` before building the task; return error on invalid grammar
+- [x] assign `task.Recurrence = recur` in the task-build block
+- [x] write test: `monolog add --recur monthly:1 "pay bills"` creates task with Recurrence = "monthly:1"
+- [x] write test: each valid grammar form accepted (table-driven)
+- [x] write test: invalid grammar rejected with non-zero exit and useful error message (table-driven)
+- [x] write test: empty `--recur` (omitted) creates task with empty Recurrence (unchanged behavior)
+- [x] run `go test ./cmd/...` — all tests must pass
 
 ### Task 5: Add `--recur` flag to `cmd/edit.go`
 
