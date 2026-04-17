@@ -57,9 +57,9 @@ Key decision: centralizing in `Store.Update` adds a tiny coupling from `store` t
 - Modify: `internal/model/note.go`
 - Modify: `internal/model/note_test.go`
 
-- [ ] add `CountNotes(body string) int` in `internal/model/note.go` using a package-level compiled regex
-- [ ] write tests: empty body → 0; one note → 1; multiple notes → N; body with unrelated `---` lines → unchanged count; body with near-match but wrong date format → 0
-- [ ] run `go test ./internal/model/` — must pass before task 2
+- [x] add `CountNotes(body string) int` in `internal/model/note.go` using a package-level compiled regex
+- [x] write tests: empty body → 0; one note → 1; multiple notes → N; body with unrelated `---` lines → unchanged count; body with near-match but wrong date format → 0
+- [x] run `go test ./internal/model/` — must pass before task 2
 
 ### Task 2: Recalculate `NoteCount` in `Store.Update`
 
