@@ -12,19 +12,19 @@ import (
 
 // Task represents a single backlog item stored as a JSON file.
 type Task struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Body      string   `json:"body,omitempty"`
-	Source    string   `json:"source"`
-	Status    string   `json:"status"`
-	Position  float64  `json:"position"`
-	Schedule  string   `json:"schedule"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-	CompletedAt string `json:"completed_at,omitempty"`
-	Tags       []string `json:"tags,omitempty"`
-	Recurrence string   `json:"recurrence,omitempty"`
-	NoteCount  int      `json:"note_count,omitempty"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body,omitempty"`
+	Source      string   `json:"source"`
+	Status      string   `json:"status"`
+	Position    float64  `json:"position"`
+	Schedule    string   `json:"schedule"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+	CompletedAt string   `json:"completed_at,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Recurrence  string   `json:"recurrence,omitempty"`
+	NoteCount   int      `json:"note_count,omitempty"`
 }
 
 // ActiveTag is the reserved tag name used to mark a task as currently being worked on.

@@ -3,9 +3,9 @@
 // Four grammar forms are supported:
 //   - monthly:N        (N=1..31, clamped to month-end for short months)
 //   - weekly:<day>     (<day>: mon|tue|wed|thu|fri|sat|sun, full names like
-//                       monday|tuesday|..., or numeric 1..7 ISO-8601 Mon=1.
-//                       Case-insensitive on input; canonical three-letter
-//                       lowercase form emitted by Rule.String().)
+//     monday|tuesday|..., or numeric 1..7 ISO-8601 Mon=1.
+//     Case-insensitive on input; canonical three-letter
+//     lowercase form emitted by Rule.String().)
 //   - workdays         (exact literal, case-insensitive on input)
 //   - days:N           (N>=1, every N days from completion)
 //
@@ -217,9 +217,9 @@ func (r weeklyRule) Next(completedAt time.Time) time.Time {
 
 type workdaysRule struct{}
 
-func (workdaysRule) String() string { return "workdays" }
+func (r workdaysRule) String() string { return "workdays" }
 
-func (workdaysRule) Next(completedAt time.Time) time.Time {
+func (r workdaysRule) Next(completedAt time.Time) time.Time {
 	// Start from tomorrow, then skip weekend days.
 	cand := midnightLocal(completedAt).AddDate(0, 0, 1)
 	switch cand.Weekday() {

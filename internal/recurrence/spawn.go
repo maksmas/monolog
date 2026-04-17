@@ -45,7 +45,7 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 	newTask := model.Task{
 		ID:         newID,
 		Title:      old.Title,
-		Body:       old.Body,
+		Body:       model.AppendNote(old.Body, fmt.Sprintf("Spawned from %s", old.ID), now),
 		Source:     old.Source,
 		Status:     "open",
 		Position:   ordering.NextPosition(existing),
@@ -55,7 +55,6 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 		CreatedAt:  nowStr,
 		UpdatedAt:  nowStr,
 	}
-	newTask.Body = model.AppendNote(newTask.Body, fmt.Sprintf("Spawned from %s", old.ID), now)
 
 	if err := s.Create(newTask); err != nil {
 		return spawnResult{}, fmt.Errorf("create spawned task: %w", err)
@@ -71,7 +70,7 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 // commit — old task alone for non-recurring, or old and new for recurring.
 //
 // Any recurrence-spawn failure (invalid rule, list error, create error) is
-// downgraded to a warning on warn — the task's own completion is never
+// downgraded to a warning on w — the task's own completion is never
 // blocked by spawn trouble, and the repo is never left in a partially-
 // committed state. The function performs exactly one Store.Update on the
 // old task: the done-state transition plus any back-reference note are
@@ -83,7 +82,7 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 //
 // Callers pass the task by pointer because the function mutates it (status,
 // timestamps, body) so the post-call view reflects persisted state.
-func CompleteAndSpawn(s *store.Store, task *model.Task, now time.Time, warn io.Writer) (commitMsg string, commitFiles []string, err error) {
+func CompleteAndSpawn(s *store.Store, task *model.Task, now time.Time, w io.Writer) (commitMsg string, commitFiles []string, err error) {
 	nowStr := now.UTC().Format(time.RFC3339)
 	task.Status = "done"
 	task.SetActive(false)
@@ -104,13 +103,13 @@ func CompleteAndSpawn(s *store.Store, task *model.Task, now time.Time, warn io.W
 	if task.Recurrence != "" {
 		rule, parseErr := Parse(task.Recurrence)
 		if parseErr != nil {
-			fmt.Fprintf(warn, "warning: recurrence %q invalid: %v; skipping spawn\n", task.Recurrence, parseErr)
+			fmt.Fprintf(w, "warning: recurrence %q invalid: %v; skipping spawn\n", task.Recurrence, parseErr)
 		} else {
 			// Parse with non-empty input returns (rule, nil) on success — rule
 			// is never nil here; the empty-input path cannot reach this block.
 			res, spawnErr := spawn(s, *task, rule, now)
 			if spawnErr != nil {
-				fmt.Fprintf(warn, "warning: recurrence %q spawn failed: %v; skipping spawn\n", task.Recurrence, spawnErr)
+				fmt.Fprintf(w, "warning: recurrence %q spawn failed: %v; skipping spawn\n", task.Recurrence, spawnErr)
 			} else {
 				backRef := fmt.Sprintf("Spawned follow-up: %s (scheduled %s)", res.newID, res.nextDate)
 				task.Body = model.AppendNote(task.Body, backRef, now)

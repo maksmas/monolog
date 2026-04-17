@@ -641,4 +641,3 @@ func TestAutoCommit_DeletedFile(t *testing.T) {
 		t.Errorf("commit log should contain 'rm: del task', got: %s", got)
 	}
 }
-

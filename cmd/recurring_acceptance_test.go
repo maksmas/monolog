@@ -307,4 +307,3 @@ func TestAcceptance_WeeklyAliasesCanonicalize(t *testing.T) {
 		})
 	}
 }
-

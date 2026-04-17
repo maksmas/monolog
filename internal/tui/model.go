@@ -2536,7 +2536,7 @@ func (m *Model) detailPanelView() string {
 		panelContentH = 5
 	}
 	headerLines := len(header)
-	noteAreaH := m.noteArea.Height() + 1 // +1 for the separator line above
+	noteAreaH := m.noteArea.Height() + 1                 // +1 for the separator line above
 	bodyH := panelContentH - headerLines - 1 - noteAreaH // -1 for blank line between header and body
 	if bodyH < 1 {
 		bodyH = 1

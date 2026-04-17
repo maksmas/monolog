@@ -26,8 +26,8 @@ func TestParse_EmptyReturnsNil(t *testing.T) {
 
 func TestParse_Valid(t *testing.T) {
 	cases := []struct {
-		in       string
-		wantStr  string
+		in      string
+		wantStr string
 	}{
 		{"monthly:1", "monthly:1"},
 		{"monthly:15", "monthly:15"},
@@ -153,10 +153,10 @@ func TestParse_WeeklyInvalidAliases(t *testing.T) {
 
 func TestMonthlyNext(t *testing.T) {
 	cases := []struct {
-		name     string
-		rule     string
-		from     string
-		want     string
+		name string
+		rule string
+		from string
+		want string
 	}{
 		{"normal mid-month to same-anchor next month", "monthly:15", "2026-04-10", "2026-04-15"},
 		{"completion on anchor date jumps to next month", "monthly:1", "2026-04-01", "2026-05-01"},

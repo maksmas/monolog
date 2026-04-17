@@ -2059,7 +2059,7 @@ func TestAdd_AutoTagNoDuplicate(t *testing.T) {
 	// Open add modal, type title with known prefix, Tab to tags, type "jean", Enter.
 	m, _ = key(t, m, "c")
 	m = typeString(t, m, "jean: do thing")
-	m, _ = key(t, m, "tab")   // switch to tags field
+	m, _ = key(t, m, "tab") // switch to tags field
 	m = typeString(t, m, "jean")
 	m, cmd := key(t, m, "enter")
 	if cmd == nil {
@@ -2151,7 +2151,7 @@ func TestAdd_SuggestionsAppearWhenTypingPrefix(t *testing.T) {
 		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"work", "personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
-	m, _ = key(t, m, "c") // open add
+	m, _ = key(t, m, "c")   // open add
 	m, _ = key(t, m, "tab") // focus tags
 	m = typeString(t, m, "wo")
 	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
@@ -4912,7 +4912,7 @@ func TestFindBucketAbove_GrabAtZero(t *testing.T) {
 	task1 := model.Task{
 		ID: "01FBZ1", Title: "task1", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -4939,8 +4939,8 @@ func TestFindBucketAbove_NoSeparators(t *testing.T) {
 	// Build a model in schedule view (no separators in schedule view lists).
 	task1 := model.Task{
 		ID: "01FBN1", Title: "task1", Status: "open",
-		Position: 1000,
-		Schedule: expectSchedule(t, schedule.Today),
+		Position:  1000,
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -4961,7 +4961,7 @@ func TestReloadTagTab_OutOfBounds(t *testing.T) {
 	task := model.Task{
 		ID: "01RTB1", Title: "task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task)
@@ -4988,7 +4988,7 @@ func TestGrabTagView_CommitNoSeparator(t *testing.T) {
 	task := model.Task{
 		ID: "01CNS1", Title: "task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task)
@@ -5026,7 +5026,7 @@ func TestReloadAll_RebuildTagTabs(t *testing.T) {
 	task1 := model.Task{
 		ID: "01RTA1", Title: "task1", Status: "open",
 		Position: 1000, Tags: []string{"alpha"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -5043,7 +5043,7 @@ func TestReloadAll_RebuildTagTabs(t *testing.T) {
 	task2 := model.Task{
 		ID: "01RTA2", Title: "task2", Status: "open",
 		Position: 2000, Tags: []string{"beta"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	if err := m.store.Create(task2); err != nil {
@@ -5068,13 +5068,13 @@ func TestSkipSeparator_CursorSkipsPastSeparator(t *testing.T) {
 	task1 := model.Task{
 		ID: "01SKP1", Title: "today task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	task2 := model.Task{
 		ID: "01SKP2", Title: "week task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Week),
+		Schedule:  expectSchedule(t, schedule.Week),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1, task2)
@@ -5124,13 +5124,13 @@ func TestTagView_TabSwitchSkipsSeparator(t *testing.T) {
 	task1 := model.Task{
 		ID: "01TSS1", Title: "work task", Status: "open",
 		Schedule: expectSchedule(t, schedule.Today),
-		Tags: []string{"work"}, Position: 1000,
+		Tags:     []string{"work"}, Position: 1000,
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	task2 := model.Task{
 		ID: "01TSS2", Title: "hobby task", Status: "open",
 		Schedule: expectSchedule(t, schedule.Today),
-		Tags: []string{"hobby"}, Position: 1000,
+		Tags:     []string{"hobby"}, Position: 1000,
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1, task2)
@@ -5191,7 +5191,7 @@ func TestCreateCmd_TagViewDefaultsToToday(t *testing.T) {
 	task1 := model.Task{
 		ID: "01CTV1", Title: "existing task", Status: "open",
 		Schedule: expectSchedule(t, schedule.Today),
-		Tags: []string{"work"}, Position: 1000,
+		Tags:     []string{"work"}, Position: 1000,
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -5508,9 +5508,6 @@ func TestDone_RecurringSpawnsNewTaskInTUI(t *testing.T) {
 	}
 }
 
-// TestDone_NonRecurringInTUI is the negative counterpart — a plain task
-// completes without spawning. Guards against the spawn logic accidentally
-// firing for non-recurring tasks.
 // TestDone_InvalidRecurrenceInTUI_SurfacesWarning verifies that when a
 // task's stored Recurrence does not parse (hand-edited JSON, schema
 // regression, etc.), the TUI still completes the task but surfaces a
@@ -5551,6 +5548,9 @@ func TestDone_InvalidRecurrenceInTUI_SurfacesWarning(t *testing.T) {
 	}
 }
 
+// TestDone_NonRecurringInTUI is the negative counterpart — a plain task
+// completes without spawning. Guards against the spawn logic accidentally
+// firing for non-recurring tasks.
 func TestDone_NonRecurringInTUI(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "one-shot", Status: "open", Schedule: "today",
@@ -6157,7 +6157,7 @@ func TestDetailPanelView_ShowsTaskMetadata(t *testing.T) {
 func TestDetailPanelView_ShowsCompletedDate(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01DONE", Title: "done task", Status: "done",
-			Schedule:    expectSchedule(t, "today"), Position: 1000,
+			Schedule: expectSchedule(t, "today"), Position: 1000,
 			CreatedAt:   "2026-04-10T10:00:00Z",
 			UpdatedAt:   "2026-04-15T10:00:00Z",
 			CompletedAt: "2026-04-15T10:00:00Z"},
@@ -6564,7 +6564,7 @@ func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
 	// Task already has a note (NoteCount=1, body with separator).
 	m := newTestModel(t,
 		model.Task{ID: "01INC", Title: "has notes", Status: "open",
-			Schedule:  expectSchedule(t, "today"), Position: 1000,
+			Schedule: expectSchedule(t, "today"), Position: 1000,
 			Body:      "--- 2026-04-15 10:00:00 ---\nexisting note",
 			NoteCount: 1,
 			UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -7509,8 +7509,8 @@ func TestSearch_HighlightMatchesMultibyte(t *testing.T) {
 
 func TestSearch_ResultsWindowKeepsCursorVisible(t *testing.T) {
 	tests := []struct {
-		name              string
-		cursor, total, h  int
+		name               string
+		cursor, total, h   int
 		wantStart, wantEnd int
 	}{
 		{"all fit", 0, 5, 10, 0, 5},
@@ -7581,9 +7581,9 @@ func TestSearchBodyHeight(t *testing.T) {
 		total int
 		want  int
 	}{
-		{"tiny 1", 1, 3},  // floored
-		{"tiny 3", 3, 3},  // floored
-		{"tiny 7", 7, 3},  // floored (7-5=2, clamped to 3)
+		{"tiny 1", 1, 3},     // floored
+		{"tiny 3", 3, 3},     // floored
+		{"tiny 7", 7, 3},     // floored (7-5=2, clamped to 3)
 		{"boundary 8", 8, 3}, // 8-5=3
 		{"boundary 9", 9, 4},
 		{"typical 20", 20, 15},

@@ -66,9 +66,9 @@ func TestBucket_FromISODate(t *testing.T) {
 		schedule string
 		want     string
 	}{
-		{"2020-01-01", Today},   // far past
-		{"2026-04-12", Today},   // yesterday
-		{"2026-04-13", Today},   // today
+		{"2020-01-01", Today}, // far past
+		{"2026-04-12", Today}, // yesterday
+		{"2026-04-13", Today}, // today
 		{"2026-04-14", Tomorrow},
 		{"2026-04-15", Week},    // today+2
 		{"2026-04-20", Week},    // today+7 boundary
