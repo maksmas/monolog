@@ -305,9 +305,9 @@ Non-spawn case: unchanged — `"done: <title>"`.
 - Modify: `cmd/show.go`
 - Modify: `cmd/show_test.go`
 
-- [ ] add a "Recurrence:" line to the `show <id>` output when `task.Recurrence` is non-empty (placed between Schedule and Tags)
-- [ ] write test confirming the line appears when set, is omitted when empty
-- [ ] run `go test ./cmd/...` — all tests must pass
+- [x] add a "Recurrence:" line to the `show <id>` output when `task.Recurrence` is non-empty (placed between Schedule and Tags)
+- [x] write test confirming the line appears when set, is omitted when empty
+- [x] run `go test ./cmd/...` — all tests must pass
 
 ### Task 8: Verify acceptance criteria
 

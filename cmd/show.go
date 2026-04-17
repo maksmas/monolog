@@ -45,6 +45,11 @@ func newShowCmd() *cobra.Command {
 			bucket := schedule.Bucket(task.Schedule, now)
 			fmt.Fprintf(w, "Schedule:  %s (%s)\n", bucket, task.Schedule)
 
+			// Recurrence (only when set)
+			if task.Recurrence != "" {
+				fmt.Fprintf(w, "Recurrence: %s\n", task.Recurrence)
+			}
+
 			// Tags
 			if vt := display.VisibleTags(task.Tags); len(vt) > 0 {
 				fmt.Fprintf(w, "Tags:      %s\n", strings.Join(vt, ", "))

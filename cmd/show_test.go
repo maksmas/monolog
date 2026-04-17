@@ -289,6 +289,62 @@ func TestShowCommand_OmitsNotesWhenZero(t *testing.T) {
 	}
 }
 
+func TestShowCommand_DisplaysRecurrence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Recurring task")
+
+	// Set recurrence via edit
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--recur", "monthly:1"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit recur error = %v", err)
+	}
+
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"show", id[:8]})
+
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("show command error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+
+	if !strings.Contains(output, "Recurrence: monthly:1") {
+		t.Errorf("output should contain recurrence line, got:\n%s", output)
+	}
+}
+
+func TestShowCommand_OmitsRecurrenceWhenEmpty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Non-recurring task")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"show", id[:8]})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("show command error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+
+	// Recurrence is empty, so "Recurrence:" should not appear in output.
+	if strings.Contains(output, "Recurrence:") {
+		t.Errorf("output should not contain Recurrence: when empty, got:\n%s", output)
+	}
+}
+
 func TestShowCommand_ScheduleDisplay(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
