@@ -232,23 +232,23 @@ Non-spawn case: unchanged — `"done: <title>"`.
 - Modify: `cmd/done.go`
 - Create: `cmd/done_recurring_test.go`
 
-- [ ] add spawn branch in `cmd/done.go` after the existing `s.Update(task)` call, gated on non-empty `Recurrence`
-- [ ] on `recurrence.Parse` error: write warning to `cmd.ErrOrStderr()`, skip spawn, keep the done result; commit only the old file
-- [ ] on parse success: build new `model.Task` (fresh ULID via `model.NewID`, copy Title/Body/Source/Recurrence, tags minus `active` via a small helper, Schedule from `rule.Next(now).Format(schedule.IsoLayout)`, Position from `ordering.NextPosition` over fresh `s.List()`, CreatedAt/UpdatedAt = now, Status = "open")
-- [ ] append `"Spawned from <old-ULID>"` note to new task body via `model.AppendNote` before `s.Create`
-- [ ] after `s.Create(newTask)`: append `"Spawned follow-up: <new-ULID> (scheduled YYYY-MM-DD)"` note to old task body, call `s.Update(task)` again
-- [ ] commit message: `"done: <title> (recurring, next YYYY-MM-DD)"` for spawn case; unchanged otherwise
-- [ ] pass both file paths to `git.AutoCommit` when spawn succeeds
-- [ ] extract `tagsWithoutActive(tags []string) []string` helper (either inline in `cmd/done.go` or in `internal/model/` if it'd be reused elsewhere — default to inline since nothing else needs it)
-- [ ] write test: spawn happy path — create a task with `Recurrence: "monthly:1"`, mark done, assert new task file exists, has expected Schedule, Body contains "Spawned from", Tags don't include `active`, has fresh ULID, same Recurrence
-- [ ] write test: non-recurring — no new file, behavior unchanged
-- [ ] write test: invalid recurrence (hand-craft a task JSON with `"recurrence":"bogus"`) — task still marked done, stderr contains warning, no new file created
-- [ ] write test: bidirectional notes — old task body ends with "Spawned follow-up: \<new-ULID\> (scheduled ...)", new task body ends with "Spawned from \<old-ULID\>"
-- [ ] write test: `active` tag is stripped on the spawned task even when the original had it (note: the original's active is already cleared by existing SetActive(false) path)
-- [ ] write test: single git commit contains both files (assert via `git log --name-only` on the test repo, or by checking the commit SHA diff)
-- [ ] write test: `NoteCount` on both old and new task reflects appended notes after Store.Update recalculation
-- [ ] run `go test ./cmd/...` — all tests must pass
-- [ ] run `go test ./...` — full suite must pass before Task 4
+- [x] add spawn branch in `cmd/done.go` after the existing `s.Update(task)` call, gated on non-empty `Recurrence`
+- [x] on `recurrence.Parse` error: write warning to `cmd.ErrOrStderr()`, skip spawn, keep the done result; commit only the old file
+- [x] on parse success: build new `model.Task` (fresh ULID via `model.NewID`, copy Title/Body/Source/Recurrence, tags minus `active` via a small helper, Schedule from `rule.Next(now).Format(schedule.IsoLayout)`, Position from `ordering.NextPosition` over fresh `s.List()`, CreatedAt/UpdatedAt = now, Status = "open")
+- [x] append `"Spawned from <old-ULID>"` note to new task body via `model.AppendNote` before `s.Create`
+- [x] after `s.Create(newTask)`: append `"Spawned follow-up: <new-ULID> (scheduled YYYY-MM-DD)"` note to old task body, call `s.Update(task)` again
+- [x] commit message: `"done: <title> (recurring, next YYYY-MM-DD)"` for spawn case; unchanged otherwise
+- [x] pass both file paths to `git.AutoCommit` when spawn succeeds
+- [x] extract `tagsWithoutActive(tags []string) []string` helper (either inline in `cmd/done.go` or in `internal/model/` if it'd be reused elsewhere — default to inline since nothing else needs it)
+- [x] write test: spawn happy path — create a task with `Recurrence: "monthly:1"`, mark done, assert new task file exists, has expected Schedule, Body contains "Spawned from", Tags don't include `active`, has fresh ULID, same Recurrence
+- [x] write test: non-recurring — no new file, behavior unchanged
+- [x] write test: invalid recurrence (hand-craft a task JSON with `"recurrence":"bogus"`) — task still marked done, stderr contains warning, no new file created
+- [x] write test: bidirectional notes — old task body ends with "Spawned follow-up: \<new-ULID\> (scheduled ...)", new task body ends with "Spawned from \<old-ULID\>"
+- [x] write test: `active` tag is stripped on the spawned task even when the original had it (note: the original's active is already cleared by existing SetActive(false) path)
+- [x] write test: single git commit contains both files (assert via `git log --name-only` on the test repo, or by checking the commit SHA diff)
+- [x] write test: `NoteCount` on both old and new task reflects appended notes after Store.Update recalculation
+- [x] run `go test ./cmd/...` — all tests must pass
+- [x] run `go test ./...` — full suite must pass before Task 4
 
 ### Task 4: Add `--recur` flag to `cmd/add.go`
 
