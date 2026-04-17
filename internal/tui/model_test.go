@@ -552,7 +552,8 @@ func TestGrab_RightIntoDoneSetsStatusDone(t *testing.T) {
 func TestGrab_LeftOutOfDoneSetsStatusOpen(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "uncomplete", Status: "done", Schedule: "today",
-			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z",
+			CompletedAt: "2026-04-13T00:00:00Z"},
 	)
 	// Jump to Done tab, grab, press left (-> Someday).
 	m, _ = key(t, m, "6")
@@ -567,6 +568,9 @@ func TestGrab_LeftOutOfDoneSetsStatusOpen(t *testing.T) {
 	task, _ := m.store.GetByPrefix("01A")
 	if task.Status != "open" {
 		t.Errorf("Status = %q, want open", task.Status)
+	}
+	if task.CompletedAt != "" {
+		t.Errorf("CompletedAt = %q, want empty after reopening", task.CompletedAt)
 	}
 	if want := expectSchedule(t, "someday"); task.Schedule != want {
 		t.Errorf("Schedule = %q, want %q", task.Schedule, want)

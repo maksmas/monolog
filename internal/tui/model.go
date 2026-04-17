@@ -1970,6 +1970,9 @@ func (m *Model) commitGrab() tea.Cmd {
 			t.SetActive(false)
 		}
 	}
+	if t.Status == "open" {
+		t.CompletedAt = ""
+	}
 	t.UpdatedAt = now()
 
 	// Compute the new Position from the grabbed task's in-memory neighbors
