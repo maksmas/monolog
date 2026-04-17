@@ -76,10 +76,10 @@ func TestComputeStats_OnlyDone(t *testing.T) {
 func TestComputeStats_Mixed(t *testing.T) {
 	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
 	tasks := []Task{
-		{Status: "open", CreatedAt: "2026-04-10T12:00:00Z"},  // 5 days open
-		{Status: "open", CreatedAt: "2026-04-13T12:00:00Z"},  // 2 days open
+		{Status: "open", CreatedAt: "2026-04-10T12:00:00Z"},                                      // 5 days open
+		{Status: "open", CreatedAt: "2026-04-13T12:00:00Z"},                                      // 2 days open
 		{Status: "done", CreatedAt: "2026-04-01T00:00:00Z", CompletedAt: "2026-04-05T00:00:00Z"}, // 4 days
-		{Status: "done", CreatedAt: "2026-04-01T00:00:00Z"},  // done but no CompletedAt — excluded from avg
+		{Status: "done", CreatedAt: "2026-04-01T00:00:00Z"},                                      // done but no CompletedAt — excluded from avg
 	}
 	s := ComputeStats(tasks, now)
 	if s.Total != 4 {
@@ -134,7 +134,7 @@ func TestFormatDuration(t *testing.T) {
 		want string
 	}{
 		{0, "1h"},
-		{0.04, "1h"},  // ~1h
+		{0.04, "1h"}, // ~1h
 		{0.25, "6h"},
 		{0.5, "12h"},
 		{0.99, "23h"},

@@ -743,6 +743,93 @@ func TestApplyEditedYAML_UpdatesUpdatedAt(t *testing.T) {
 	}
 }
 
+// TestMarshalTaskForEdit_IncludesRecurrence ensures the YAML edit buffer
+// exposes the Recurrence field so users can set/clear it via $EDITOR.
+func TestMarshalTaskForEdit_IncludesRecurrence(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "pay bills", Status: "open", Schedule: "2026-04-13",
+		Recurrence: "monthly:1",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "recurrence: monthly:1") {
+		t.Errorf("YAML should contain recurrence line, got:\n%s", string(data))
+	}
+}
+
+// TestMarshalTaskForEdit_OmitsEmptyRecurrence keeps the YAML clean for
+// non-recurring tasks.
+func TestMarshalTaskForEdit_OmitsEmptyRecurrence(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "one-shot", Status: "open", Schedule: "2026-04-13",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "recurrence:") {
+		t.Errorf("empty Recurrence should be omitted, got:\n%s", string(data))
+	}
+}
+
+// TestApplyEditedYAML_SetsRecurrence verifies the YAML editor can add a
+// recurrence rule, and canonicalizes aliases so weekly:Monday -> weekly:mon.
+func TestApplyEditedYAML_SetsRecurrence(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	got, err := applyEditedYAML(orig, []byte("title: new\nschedule: today\nrecurrence: weekly:Monday\n"), time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Recurrence != "weekly:mon" {
+		t.Errorf("Recurrence = %q, want weekly:mon (canonical)", got.Recurrence)
+	}
+}
+
+// TestApplyEditedYAML_ClearsRecurrence verifies removing the recurrence
+// line in the YAML clears the rule on disk — the stop semantics.
+func TestApplyEditedYAML_ClearsRecurrence(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today", Recurrence: "monthly:1"}
+	got, err := applyEditedYAML(orig, []byte("title: old\nschedule: today\n"), time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Recurrence != "" {
+		t.Errorf("Recurrence = %q, want empty (cleared via YAML)", got.Recurrence)
+	}
+}
+
+// TestApplyEditedYAML_RejectsInvalidRecurrence surfaces the parse error
+// instead of silently storing garbage.
+func TestApplyEditedYAML_RejectsInvalidRecurrence(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	_, err := applyEditedYAML(orig, []byte("title: new\nschedule: today\nrecurrence: bogus\n"), time.Now())
+	if err == nil {
+		t.Error("expected error for invalid recurrence rule")
+	}
+}
+
+// TestMarshalApplyRoundTrip_RecurrencePreserved ensures a marshal → apply
+// cycle with no user edits leaves Recurrence intact.
+func TestMarshalApplyRoundTrip_RecurrencePreserved(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "chore", Status: "open", Schedule: "2026-04-13",
+		Recurrence: "days:3",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := applyEditedYAML(orig, data, time.Now())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Recurrence != "days:3" {
+		t.Errorf("Recurrence after round-trip: got %q, want %q", got.Recurrence, "days:3")
+	}
+}
+
 func TestResolveEditor(t *testing.T) {
 	t.Setenv("VISUAL", "emacs")
 	t.Setenv("EDITOR", "nano")
@@ -1632,6 +1719,161 @@ func TestAdd_ModalViewShowsBothLabels(t *testing.T) {
 	if !strings.Contains(view, "Tags:") {
 		t.Errorf("modalView should contain 'Tags:', got %q", view)
 	}
+	if !strings.Contains(view, "Recur:") {
+		t.Errorf("modalView should contain 'Recur:', got %q", view)
+	}
+}
+
+// --- recurrence add-modal tests --------------------------------------------
+
+func TestAdd_TabTabSetsRecurrenceOnCreatedTask(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "pay bills")
+	// Tab to tags, Tab to recur, type recurrence rule.
+	m, _ = key(t, m, "tab")
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur after two Tabs", m.addFocus)
+	}
+	m = typeString(t, m, "monthly:1")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Title != "pay bills" {
+		t.Errorf("Title = %q, want %q", task.Title, "pay bills")
+	}
+	if task.Recurrence != "monthly:1" {
+		t.Errorf("Recurrence = %q, want %q", task.Recurrence, "monthly:1")
+	}
+}
+
+func TestAdd_InvalidRecurrenceShowsErrorAndKeepsModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "title")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "bogus")
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Fatal("invalid recurrence should not dispatch a create cmd")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode = %v, want modeAdd (modal stays open on error)", m.mode)
+	}
+	if m.err == nil {
+		t.Fatal("expected m.err to be set on invalid recurrence")
+	}
+	if !strings.Contains(m.err.Error(), "recurrence") {
+		t.Errorf("err = %v, want message containing 'recurrence'", m.err)
+	}
+	// No task was created.
+	if got := len(m.lists[0].Items()); got != 0 {
+		t.Errorf("Today tab should have no items after invalid recur submit, got %d", got)
+	}
+}
+
+func TestAdd_FocusCyclingTitleTagsRecurTitle(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.addFocus != addFocusTitle {
+		t.Fatalf("initial addFocus = %v, want addFocusTitle", m.addFocus)
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTags {
+		t.Errorf("after first Tab: addFocus = %v, want addFocusTags", m.addFocus)
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusRecur {
+		t.Errorf("after second Tab: addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Errorf("after third Tab: addFocus = %v, want addFocusTitle (wrap)", m.addFocus)
+	}
+}
+
+func TestAdd_EmptyRecurCreatesTaskWithoutRecurrence(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "plain task")
+	// Skip through to recur but leave it empty; then Enter.
+	m, _ = key(t, m, "tab")
+	m, _ = key(t, m, "tab")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Recurrence != "" {
+		t.Errorf("Recurrence = %q, want empty", task.Recurrence)
+	}
+}
+
+// TestAdd_RecurrenceAliasCanonicalizesOnSubmit verifies the TUI add modal
+// stores the canonical form of a recurrence alias (e.g. weekly:Monday ->
+// weekly:mon), matching the CLI's canonicalization so round-trips through
+// show/edit see a normalized value.
+func TestAdd_RecurrenceAliasCanonicalizesOnSubmit(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "weekly task")
+	m, _ = key(t, m, "tab") // tags
+	m, _ = key(t, m, "tab") // recur
+	m = typeString(t, m, "weekly:Monday")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should create task")
+	}
+	m = runCmd(t, m, cmd)
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Recurrence != "weekly:mon" {
+		t.Errorf("Recurrence: got %q, want %q (canonical form)", task.Recurrence, "weekly:mon")
+	}
+}
+
+func TestAdd_RecurrenceClearedOnCloseModal(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "workdays")
+	if m.recurInput.Value() != "workdays" {
+		t.Fatalf("recurInput = %q, want 'workdays'", m.recurInput.Value())
+	}
+	// Esc closes the modal; reopening must start fresh.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Fatalf("mode after esc = %v, want modeNormal", m.mode)
+	}
+	if got := m.recurInput.Value(); got != "" {
+		t.Errorf("recurInput value after close = %q, want empty", got)
+	}
+	m, _ = key(t, m, "c")
+	if got := m.recurInput.Value(); got != "" {
+		t.Errorf("recurInput value after reopen = %q, want empty", got)
+	}
 }
 
 // --- wrapText tests ----------------------------------------------------------
@@ -1817,7 +2059,7 @@ func TestAdd_AutoTagNoDuplicate(t *testing.T) {
 	// Open add modal, type title with known prefix, Tab to tags, type "jean", Enter.
 	m, _ = key(t, m, "c")
 	m = typeString(t, m, "jean: do thing")
-	m, _ = key(t, m, "tab")   // switch to tags field
+	m, _ = key(t, m, "tab") // switch to tags field
 	m = typeString(t, m, "jean")
 	m, cmd := key(t, m, "enter")
 	if cmd == nil {
@@ -1909,7 +2151,7 @@ func TestAdd_SuggestionsAppearWhenTypingPrefix(t *testing.T) {
 		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"work", "personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
-	m, _ = key(t, m, "c") // open add
+	m, _ = key(t, m, "c")   // open add
 	m, _ = key(t, m, "tab") // focus tags
 	m = typeString(t, m, "wo")
 	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
@@ -2177,7 +2419,7 @@ func TestAdd_UpDownIgnoredWhenTitleFocused(t *testing.T) {
 	}
 }
 
-func TestAdd_SuggestionsClearedOnTabToTitle(t *testing.T) {
+func TestAdd_SuggestionsClearedOnTabAwayFromTags(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -2190,18 +2432,18 @@ func TestAdd_SuggestionsClearedOnTabToTitle(t *testing.T) {
 	m.tagInput.SetValue("wo")
 	m.suggestions = []string{"work"}
 	m.suggestionIdx = -1
-	// Tab should switch focus to title (since idx < 0, handleSuggestionNav
+	// Tab should switch focus to recur (since idx < 0, handleSuggestionNav
 	// does not intercept). Suggestions must be cleared so the dropdown
-	// does not render while the title field is focused.
+	// does not render while the recur field is focused.
 	m, _ = key(t, m, "tab")
-	if m.addFocus != addFocusTitle {
-		t.Fatalf("addFocus = %v, want addFocusTitle", m.addFocus)
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
 	}
 	if len(m.suggestions) != 0 {
-		t.Errorf("suggestions after Tab to title = %v, want empty", m.suggestions)
+		t.Errorf("suggestions after Tab away from tags = %v, want empty", m.suggestions)
 	}
 	if m.suggestionIdx != -1 {
-		t.Errorf("suggestionIdx after Tab to title = %d, want -1", m.suggestionIdx)
+		t.Errorf("suggestionIdx after Tab away from tags = %d, want -1", m.suggestionIdx)
 	}
 }
 
@@ -4670,7 +4912,7 @@ func TestFindBucketAbove_GrabAtZero(t *testing.T) {
 	task1 := model.Task{
 		ID: "01FBZ1", Title: "task1", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -4697,8 +4939,8 @@ func TestFindBucketAbove_NoSeparators(t *testing.T) {
 	// Build a model in schedule view (no separators in schedule view lists).
 	task1 := model.Task{
 		ID: "01FBN1", Title: "task1", Status: "open",
-		Position: 1000,
-		Schedule: expectSchedule(t, schedule.Today),
+		Position:  1000,
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -4719,7 +4961,7 @@ func TestReloadTagTab_OutOfBounds(t *testing.T) {
 	task := model.Task{
 		ID: "01RTB1", Title: "task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task)
@@ -4746,7 +4988,7 @@ func TestGrabTagView_CommitNoSeparator(t *testing.T) {
 	task := model.Task{
 		ID: "01CNS1", Title: "task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task)
@@ -4784,7 +5026,7 @@ func TestReloadAll_RebuildTagTabs(t *testing.T) {
 	task1 := model.Task{
 		ID: "01RTA1", Title: "task1", Status: "open",
 		Position: 1000, Tags: []string{"alpha"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -4801,7 +5043,7 @@ func TestReloadAll_RebuildTagTabs(t *testing.T) {
 	task2 := model.Task{
 		ID: "01RTA2", Title: "task2", Status: "open",
 		Position: 2000, Tags: []string{"beta"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	if err := m.store.Create(task2); err != nil {
@@ -4826,13 +5068,13 @@ func TestSkipSeparator_CursorSkipsPastSeparator(t *testing.T) {
 	task1 := model.Task{
 		ID: "01SKP1", Title: "today task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Today),
+		Schedule:  expectSchedule(t, schedule.Today),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	task2 := model.Task{
 		ID: "01SKP2", Title: "week task", Status: "open",
 		Position: 1000, Tags: []string{"test"},
-		Schedule: expectSchedule(t, schedule.Week),
+		Schedule:  expectSchedule(t, schedule.Week),
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1, task2)
@@ -4882,13 +5124,13 @@ func TestTagView_TabSwitchSkipsSeparator(t *testing.T) {
 	task1 := model.Task{
 		ID: "01TSS1", Title: "work task", Status: "open",
 		Schedule: expectSchedule(t, schedule.Today),
-		Tags: []string{"work"}, Position: 1000,
+		Tags:     []string{"work"}, Position: 1000,
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	task2 := model.Task{
 		ID: "01TSS2", Title: "hobby task", Status: "open",
 		Schedule: expectSchedule(t, schedule.Today),
-		Tags: []string{"hobby"}, Position: 1000,
+		Tags:     []string{"hobby"}, Position: 1000,
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1, task2)
@@ -4949,7 +5191,7 @@ func TestCreateCmd_TagViewDefaultsToToday(t *testing.T) {
 	task1 := model.Task{
 		ID: "01CTV1", Title: "existing task", Status: "open",
 		Schedule: expectSchedule(t, schedule.Today),
-		Tags: []string{"work"}, Position: 1000,
+		Tags:     []string{"work"}, Position: 1000,
 		UpdatedAt: "2026-04-13T00:00:00Z",
 	}
 	m := newTestModel(t, task1)
@@ -4972,7 +5214,7 @@ func TestCreateCmd_TagViewDefaultsToToday(t *testing.T) {
 	}
 
 	// Create a task from the tag view tab.
-	cmd := m.createCmd("new task from tag view", nil)
+	cmd := m.createCmd("new task from tag view", nil, "")
 	if cmd == nil {
 		t.Fatal("createCmd returned nil")
 	}
@@ -5201,6 +5443,133 @@ func TestDone_SetsCompletedAt(t *testing.T) {
 	// CompletedAt should be a valid RFC3339 timestamp.
 	if _, err := time.Parse(time.RFC3339, task.CompletedAt); err != nil {
 		t.Errorf("CompletedAt %q is not valid RFC3339: %v", task.CompletedAt, err)
+	}
+}
+
+// TestDone_RecurringSpawnsNewTaskInTUI pins the behavior that pressing 'd'
+// on a task with a recurrence rule spawns a next-occurrence task, matching
+// the CLI `monolog done` behavior. Without this, TUI users completing
+// recurring chores would silently get no spawn.
+func TestDone_RecurringSpawnsNewTaskInTUI(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "weekly chore", Status: "open", Schedule: "today",
+			Recurrence: "days:1", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+
+	// Original task is now done.
+	orig, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get original: %v", err)
+	}
+	if orig.Status != "done" {
+		t.Errorf("original Status: got %q, want done", orig.Status)
+	}
+	if !strings.Contains(orig.Body, "Spawned follow-up:") {
+		t.Errorf("original Body missing 'Spawned follow-up:' back-reference:\n%s", orig.Body)
+	}
+
+	// A new task exists with the same recurrence rule.
+	all, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks after TUI done on recurring, got %d", len(all))
+	}
+	var spawn model.Task
+	for _, tk := range all {
+		if tk.ID != orig.ID {
+			spawn = tk
+			break
+		}
+	}
+	if spawn.ID == "" {
+		t.Fatal("spawn not found")
+	}
+	if spawn.Status != "open" {
+		t.Errorf("spawn Status: got %q, want open", spawn.Status)
+	}
+	if spawn.Recurrence != "days:1" {
+		t.Errorf("spawn Recurrence: got %q, want 'days:1'", spawn.Recurrence)
+	}
+	if spawn.Title != "weekly chore" {
+		t.Errorf("spawn Title: got %q, want 'weekly chore'", spawn.Title)
+	}
+	if !strings.Contains(spawn.Body, "Spawned from "+orig.ID) {
+		t.Errorf("spawn Body missing 'Spawned from %s':\n%s", orig.ID, spawn.Body)
+	}
+}
+
+// TestDone_InvalidRecurrenceInTUI_SurfacesWarning verifies that when a
+// task's stored Recurrence does not parse (hand-edited JSON, schema
+// regression, etc.), the TUI still completes the task but surfaces a
+// warning through the status bar. Completion must never be blocked.
+func TestDone_InvalidRecurrenceInTUI_SurfacesWarning(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "bogus recur", Status: "open", Schedule: "today",
+			Recurrence: "bogus", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error (invalid recurrence must not block done): %v", m.err)
+	}
+
+	// Task is still completed.
+	got, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "done" {
+		t.Errorf("Status: got %q, want done", got.Status)
+	}
+	// No spawn happened.
+	all, _ := m.store.List(store.ListOptions{})
+	if len(all) != 1 {
+		t.Errorf("expected 1 task (no spawn for invalid recurrence), got %d", len(all))
+	}
+	// Warning surfaced in the status bar.
+	if !strings.Contains(m.statusMsg, "warning") {
+		t.Errorf("statusMsg should contain the spawn warning, got: %q", m.statusMsg)
+	}
+	if !strings.Contains(m.statusMsg, "bogus") {
+		t.Errorf("statusMsg should mention the invalid rule value, got: %q", m.statusMsg)
+	}
+}
+
+// TestDone_NonRecurringInTUI is the negative counterpart — a plain task
+// completes without spawning. Guards against the spawn logic accidentally
+// firing for non-recurring tasks.
+func TestDone_NonRecurringInTUI(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "one-shot", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+	all, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 task (no spawn for non-recurring), got %d", len(all))
 	}
 }
 
@@ -5788,7 +6157,7 @@ func TestDetailPanelView_ShowsTaskMetadata(t *testing.T) {
 func TestDetailPanelView_ShowsCompletedDate(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01DONE", Title: "done task", Status: "done",
-			Schedule:    expectSchedule(t, "today"), Position: 1000,
+			Schedule: expectSchedule(t, "today"), Position: 1000,
 			CreatedAt:   "2026-04-10T10:00:00Z",
 			UpdatedAt:   "2026-04-15T10:00:00Z",
 			CompletedAt: "2026-04-15T10:00:00Z"},
@@ -6195,7 +6564,7 @@ func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
 	// Task already has a note (NoteCount=1, body with separator).
 	m := newTestModel(t,
 		model.Task{ID: "01INC", Title: "has notes", Status: "open",
-			Schedule:  expectSchedule(t, "today"), Position: 1000,
+			Schedule: expectSchedule(t, "today"), Position: 1000,
 			Body:      "--- 2026-04-15 10:00:00 ---\nexisting note",
 			NoteCount: 1,
 			UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -7140,8 +7509,8 @@ func TestSearch_HighlightMatchesMultibyte(t *testing.T) {
 
 func TestSearch_ResultsWindowKeepsCursorVisible(t *testing.T) {
 	tests := []struct {
-		name              string
-		cursor, total, h  int
+		name               string
+		cursor, total, h   int
 		wantStart, wantEnd int
 	}{
 		{"all fit", 0, 5, 10, 0, 5},
@@ -7212,9 +7581,9 @@ func TestSearchBodyHeight(t *testing.T) {
 		total int
 		want  int
 	}{
-		{"tiny 1", 1, 3},  // floored
-		{"tiny 3", 3, 3},  // floored
-		{"tiny 7", 7, 3},  // floored (7-5=2, clamped to 3)
+		{"tiny 1", 1, 3},     // floored
+		{"tiny 3", 3, 3},     // floored
+		{"tiny 7", 7, 3},     // floored (7-5=2, clamped to 3)
 		{"boundary 8", 8, 3}, // 8-5=3
 		{"boundary 9", 9, 4},
 		{"typical 20", 20, 15},

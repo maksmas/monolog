@@ -551,6 +551,173 @@ func TestAddCommand_AutoTagNoDuplicate(t *testing.T) {
 	}
 }
 
+func TestAddCommand_RecurrenceValidGrammar(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string // canonical form stored on disk
+	}{
+		{name: "monthly_first", input: "monthly:1", want: "monthly:1"},
+		{name: "monthly_mid", input: "monthly:15", want: "monthly:15"},
+		{name: "monthly_last", input: "monthly:31", want: "monthly:31"},
+		{name: "weekly_short", input: "weekly:mon", want: "weekly:mon"},
+		{name: "weekly_full", input: "weekly:Monday", want: "weekly:mon"},
+		{name: "weekly_numeric", input: "weekly:1", want: "weekly:mon"},
+		{name: "weekly_numeric_sun", input: "weekly:7", want: "weekly:sun"},
+		{name: "weekly_upper", input: "weekly:FRIDAY", want: "weekly:fri"},
+		{name: "workdays_lower", input: "workdays", want: "workdays"},
+		{name: "workdays_mixed", input: "WorkDays", want: "workdays"},
+		{name: "days_one", input: "days:1", want: "days:1"},
+		{name: "days_seven", input: "days:7", want: "days:7"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "monolog")
+			initTestRepo(t, dir)
+
+			rootCmd := NewRootCmd()
+			buf := new(bytes.Buffer)
+			rootCmd.SetOut(buf)
+			rootCmd.SetErr(buf)
+			rootCmd.SetArgs([]string{"add", "task", "--recur", tc.input})
+
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("add --recur %s error = %v\noutput: %s", tc.input, err, buf.String())
+			}
+
+			tasks := readTasks(t, dir)
+			if len(tasks) != 1 {
+				t.Fatalf("expected 1 task, got %d", len(tasks))
+			}
+			if tasks[0].Recurrence != tc.want {
+				t.Errorf("Recurrence: got %q, want %q", tasks[0].Recurrence, tc.want)
+			}
+		})
+	}
+}
+
+func TestAddCommand_RecurrenceInvalidGrammar(t *testing.T) {
+	cases := []string{
+		"bogus",
+		"monthly:0",
+		"monthly:32",
+		"monthly:-1",
+		"monthly:abc",
+		"weekly:xyz",
+		"weekly:0",
+		"weekly:8",
+		"weekly:",
+		"days:0",
+		"days:-1",
+		"days:abc",
+		"unknown:rule",
+		"monthly",
+		"weekly",
+	}
+
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "monolog")
+			initTestRepo(t, dir)
+
+			rootCmd := NewRootCmd()
+			buf := new(bytes.Buffer)
+			rootCmd.SetOut(buf)
+			rootCmd.SetErr(buf)
+			rootCmd.SetArgs([]string{"add", "task", "--recur", input})
+
+			err := rootCmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for invalid recurrence %q, got nil", input)
+			}
+
+			// No task file should have been created since validation runs
+			// before the store is opened or the task is written.
+			tasksDir := filepath.Join(dir, ".monolog", "tasks")
+			entries, rerr := os.ReadDir(tasksDir)
+			if rerr != nil {
+				t.Fatalf("read tasks dir: %v", rerr)
+			}
+			jsonCount := 0
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+					jsonCount++
+				}
+			}
+			if jsonCount != 0 {
+				t.Errorf("expected 0 task files after invalid --recur, got %d", jsonCount)
+			}
+		})
+	}
+}
+
+func TestAddCommand_EmptyRecurrenceOmitted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"add", "plain task"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Recurrence != "" {
+		t.Errorf("Recurrence: got %q, want empty", tasks[0].Recurrence)
+	}
+
+	// Verify omitempty is respected — raw JSON should not contain "recurrence" key.
+	tasksDir := filepath.Join(dir, ".monolog", "tasks")
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("read tasks dir: %v", err)
+	}
+	var raw []byte
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			raw, err = os.ReadFile(filepath.Join(tasksDir, e.Name()))
+			if err != nil {
+				t.Fatalf("read task file: %v", err)
+			}
+			break
+		}
+	}
+	if strings.Contains(string(raw), "recurrence") {
+		t.Errorf("JSON should not contain 'recurrence' key for empty recurrence, got: %s", string(raw))
+	}
+}
+
+func TestAddCommand_ExplicitEmptyRecurrence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"add", "task", "--recur", ""})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Recurrence != "" {
+		t.Errorf("Recurrence: got %q, want empty", tasks[0].Recurrence)
+	}
+}
+
 func TestAddCommand_MultipleAddsCreateSeparateCommits(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

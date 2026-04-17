@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
+	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/spf13/cobra"
 )
 
@@ -34,16 +34,12 @@ func newDoneCmd() *cobra.Command {
 				return nil
 			}
 
-			task.Status = "done"
-			task.SetActive(false)
-			task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-			if err := s.Update(task); err != nil {
-				return fmt.Errorf("update task: %w", err)
+			commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(s, &task, time.Now(), cmd.ErrOrStderr())
+			if err != nil {
+				return err
 			}
 
-			taskFile := filepath.Join(".monolog", "tasks", task.ID+".json")
-			if err := git.AutoCommit(repoPath, fmt.Sprintf("done: %s", task.Title), taskFile); err != nil {
+			if err := git.AutoCommit(repoPath, commitMsg, commitFiles...); err != nil {
 				return fmt.Errorf("auto-commit: %w", err)
 			}
 

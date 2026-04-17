@@ -37,6 +37,7 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 |------|-------------|
 | `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date |
 | `-t, --tags` | Comma-separated tags |
+| `--recur` | Recurrence rule: `monthly:N`, `weekly:<day>`, `workdays`, or `days:N` (see [Recurring tasks](#recurring-tasks)) |
 
 If the title starts with `tag: ...` and that tag already exists on another task, it is automatically added as a tag. For example, if a task already has the tag `jean`, running `monolog add "jean: create integration"` will auto-tag the new task with `jean`. The title is kept as-is. Duplicate tags are not created if the same tag is also passed via `--tags`.
 
@@ -65,6 +66,7 @@ Mark a task as done.
 | `--schedule` | New schedule |
 | `--tags` | New comma-separated tags |
 | `--active=true\|false` | Mark a task as active or inactive |
+| `--recur` | New recurrence rule (pass `""` to clear — see [Recurring tasks](#recurring-tasks)) |
 
 At least one flag is required.
 
@@ -89,7 +91,7 @@ Append a timestamped note to a task. The note is stored inside the task's body u
 
 ### `monolog show <id-prefix>`
 
-Print full task detail to stdout: title, ID, status, schedule, tags, dates, note count, and body (including notes).
+Print full task detail to stdout: title, ID, status, schedule, recurrence (when set), tags, dates, note count, and body (including notes).
 
 ### `monolog log`
 
@@ -116,6 +118,30 @@ monolog ls --active --schedule week # active tasks scheduled for this week only
 
 Marking a task done automatically deactivates it. Editing tags with `--tags` preserves the active state.
 
+## Recurring tasks
+
+A task can carry a recurrence rule so that completing it auto-spawns the next occurrence. Four grammar forms are supported:
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| `monthly:N` | `monthly:1` | Nth of each month, clamped to month-end for short months (e.g. `monthly:31` in February becomes the 28th or 29th) |
+| `weekly:<day>` | `weekly:mon`, `weekly:Monday`, `weekly:1` | Every given weekday. Accepts three-letter, full name, or numeric (Mon=1..Sun=7), case-insensitive |
+| `workdays` | `workdays` | Every Monday–Friday (skips weekends) |
+| `days:N` | `days:3` | N days after each completion |
+
+Aliases are canonicalized on storage, so `weekly:Monday` and `weekly:1` both end up stored as `weekly:mon`.
+
+```bash
+monolog add "pay rent" --recur monthly:1       # 1st of every month
+monolog add "standup" --recur workdays         # every weekday
+monolog done <id>                              # completes this occurrence AND spawns the next
+monolog edit <id> --recur ""                   # stop the chain (clear the rule)
+```
+
+When a recurring task is completed, monolog creates a new task with a fresh ID, the same title/body/tags (minus `active`)/recurrence, and `schedule` set to the next occurrence date. Bidirectional notes link the pair: the new task carries `Spawned from <old-id>` and the completed one gets `Spawned follow-up: <new-id> (scheduled <date>)`. Both files are committed in a single git commit with message `done: <title> (recurring, next <date>)`.
+
+Stopping the chain is edit-based. Clearing the recurrence with `--recur ""` (or removing the `recurrence:` line in the TUI YAML editor) before completing prevents the next spawn. Deleting the task stops the chain too.
+
 ## TUI (interactive mode)
 
 Running `monolog` with no subcommand launches the interactive TUI. Tabs across the top show `[Today] [Tomorrow] [Week] [Month] [Someday] [Done]`. Use `--tags` / `-T` to start in tag view, where tabs represent tags instead of schedule buckets.
@@ -126,12 +152,12 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `1`–`6` | Jump to tab by number |
 | `↑`/`↓` | Move within list |
 | `Enter` | Toggle detail/notes panel for the focused task |
-| `c` | Open the add-task modal (title + tags fields, Tab to switch) |
-| `d` | Mark focused task as done |
+| `c` | Open the add-task modal (title + tags + recur fields, Tab to cycle) |
+| `d` | Mark focused task as done (if it has a recurrence rule, auto-spawns the next occurrence — see [Recurring tasks](#recurring-tasks)) |
 | `a` | Toggle active on the focused task |
 | `r` | Reschedule (modal with 1–5 presets or 6 for custom date) |
 | `t` | Retag focused task |
-| `e` | Edit in `$EDITOR` (YAML round-trip) |
+| `e` | Edit in `$EDITOR` (YAML round-trip; the YAML includes a `recurrence:` field you can set or clear) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
 | `v` | Toggle between schedule view and tag view |
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |

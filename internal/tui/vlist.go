@@ -18,10 +18,10 @@ type vlist struct {
 
 // --- data access -----------------------------------------------------------
 
-func (vl *vlist) Items() []list.Item     { return vl.items }
-func (vl *vlist) Index() int             { return vl.cursor }
-func (vl *vlist) Width() int             { return vl.width }
-func (vl *vlist) SetSize(w, h int)       { vl.width = w; vl.height = h }
+func (vl *vlist) Items() []list.Item { return vl.items }
+func (vl *vlist) Index() int         { return vl.cursor }
+func (vl *vlist) Width() int         { return vl.width }
+func (vl *vlist) SetSize(w, h int)   { vl.width = w; vl.height = h }
 
 func (vl *vlist) SetItems(items []list.Item) {
 	vl.items = items

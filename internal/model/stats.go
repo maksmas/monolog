@@ -12,7 +12,7 @@ type Stats struct {
 	Done              int
 	AvgDaysOpen       float64 // mean age in days of open tasks; 0 when no open tasks
 	AvgDaysToComplete float64 // mean days from creation to completion for done tasks
-	                          // with CompletedAt set; 0 when no such tasks exist
+	// with CompletedAt set; 0 when no such tasks exist
 }
 
 // ComputeStats derives Stats from a slice of tasks relative to now.

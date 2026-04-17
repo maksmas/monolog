@@ -9,6 +9,7 @@ import (
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
+	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/spf13/cobra"
@@ -17,6 +18,7 @@ import (
 func newAddCmd() *cobra.Command {
 	var scheduleArg string
 	var tags string
+	var recur string
 
 	cmd := &cobra.Command{
 		Use:   "add <title>",
@@ -28,6 +30,14 @@ func newAddCmd() *cobra.Command {
 
 			now := time.Now()
 			scheduleDate, err := schedule.Parse(scheduleArg, now)
+			if err != nil {
+				return err
+			}
+
+			// Validate recurrence rule (if provided) and normalize to canonical
+			// grammar form, so aliases like "weekly:Monday" or "weekly:1" store
+			// as "weekly:mon".
+			recurCanonical, err := recurrence.Canonicalize(recur)
 			if err != nil {
 				return err
 			}
@@ -50,14 +60,15 @@ func newAddCmd() *cobra.Command {
 
 			nowStr := now.UTC().Format(time.RFC3339)
 			task := model.Task{
-				ID:        id,
-				Title:     title,
-				Source:    "manual",
-				Status:    "open",
-				Position:  ordering.NextPosition(existing),
-				Schedule:  scheduleDate,
-				CreatedAt: nowStr,
-				UpdatedAt: nowStr,
+				ID:         id,
+				Title:      title,
+				Source:     "manual",
+				Status:     "open",
+				Position:   ordering.NextPosition(existing),
+				Schedule:   scheduleDate,
+				Recurrence: recurCanonical,
+				CreatedAt:  nowStr,
+				UpdatedAt:  nowStr,
 			}
 
 			// Parse and sanitize tags, then auto-tag from title prefix
@@ -81,6 +92,7 @@ func newAddCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", "Schedule: today, tomorrow, week, month, someday, or ISO date")
 	cmd.Flags().StringVarP(&tags, "tags", "t", "", "Comma-separated tags")
+	cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: monthly:N, weekly:<day>, workdays, days:N")
 
 	return cmd
 }

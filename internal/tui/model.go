@@ -21,6 +21,7 @@ import (
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
+	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 )
@@ -45,6 +46,7 @@ type addField int
 const (
 	addFocusTitle addField = iota
 	addFocusTags
+	addFocusRecur
 )
 
 // viewMode selects between schedule-based tabs and tag-based tabs.
@@ -137,10 +139,11 @@ type Model struct {
 
 	// Add-modal state. The title uses a textarea so Alt+Enter can insert a
 	// newline while Enter submits; tags remain a single-line textinput.
-	titleArea textarea.Model
-	tagInput  textinput.Model
-	addFocus  addField
-	knownTags []string // cached known tags, populated when add modal opens
+	titleArea  textarea.Model
+	tagInput   textinput.Model
+	recurInput textinput.Model
+	addFocus   addField
+	knownTags  []string // cached known tags, populated when add modal opens
 
 	// Grab-mode state. grabTask is a working copy whose Position is not
 	// mutated until Enter drop; its current visual location is (activeTab,
@@ -336,6 +339,11 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	tagTi.CharLimit = 512
 	tagTi.Prompt = ""
 
+	recurTi := textinput.New()
+	recurTi.Placeholder = "e.g. monthly:1"
+	recurTi.CharLimit = 64
+	recurTi.Prompt = ""
+
 	searchTi := textinput.New()
 	searchTi.Placeholder = "search title or body"
 	searchTi.CharLimit = 512
@@ -372,14 +380,15 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	noteTA.BlurredStyle.Base = lipgloss.NewStyle()
 
 	m := &Model{
-		store:     s,
-		repoPath:  repoPath,
-		tabs:      defaultTabs,
-		input:     ti,
-		tagInput:  tagTi,
-		titleArea: ta,
-		noteArea:  noteTA,
-		search:    searchState{input: searchTi},
+		store:      s,
+		repoPath:   repoPath,
+		tabs:       defaultTabs,
+		input:      ti,
+		tagInput:   tagTi,
+		recurInput: recurTi,
+		titleArea:  ta,
+		noteArea:   noteTA,
+		search:     searchState{input: searchTi},
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
 
@@ -1095,6 +1104,8 @@ func (m *Model) closeModal() {
 	m.input.SetValue("")
 	m.tagInput.Blur()
 	m.tagInput.SetValue("")
+	m.recurInput.Blur()
+	m.recurInput.SetValue("")
 	m.titleArea.Blur()
 	m.titleArea.Reset()
 	m.titleArea.SetHeight(1)
@@ -1147,12 +1158,30 @@ func (m *Model) doneSelected() tea.Cmd {
 		return nil
 	}
 	t := *task
-	t.Status = "done"
-	t.SetActive(false)
-	t.UpdatedAt = now()
-	t.CompletedAt = now()
 	flat := flattenTitle(t.Title)
-	return m.saveCmd(t, fmt.Sprintf("done: %s", flat), fmt.Sprintf("Completed: %s", flat))
+	storeRef := m.store
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		// warnBuf collects any recurrence warnings surfaced through the
+		// status bar (stderr has no natural home in the TUI).
+		var warnBuf strings.Builder
+		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf)
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("done: %w", err)}
+		}
+		if err := git.AutoCommit(repoPath, commitMsg, commitFiles...); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		status := fmt.Sprintf("Completed: %s", flat)
+		if w := strings.TrimSpace(warnBuf.String()); w != "" {
+			status = fmt.Sprintf("Completed: %s (%s)", flat, w)
+		} else if len(commitFiles) > 1 {
+			// Spawn happened — surface the next-occurrence date in the
+			// status line so the user sees the recurrence worked.
+			status = fmt.Sprintf("Completed: %s (next occurrence spawned)", flat)
+		}
+		return taskSavedMsg{status: status}
+	}
 }
 
 // --- active toggle ---------------------------------------------------------
@@ -1327,13 +1356,14 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) openAdd() tea.Cmd {
 	m.mode = modeAdd
-	// "Title: " and "Tags:  " labels are each 7 chars; the textinput also
-	// renders a trailing cursor space (1 char beyond its configured Width), so
-	// subtract 8 total.
+	// "Title: ", "Tags:  ", and "Recur: " labels are each 7 chars; the
+	// textinput also renders a trailing cursor space (1 char beyond its
+	// configured Width), so subtract 8 total.
 	inputW := m.modalInnerWidth() - 8
 	m.titleArea.SetWidth(inputW)
 	m.titleArea.SetHeight(1)
 	m.tagInput.Width = inputW
+	m.recurInput.Width = inputW
 	m.titleArea.Reset()
 	m.titleArea.Focus()
 	// In tag view, prepopulate the tag field with the current tab's tag.
@@ -1348,6 +1378,8 @@ func (m *Model) openAdd() tea.Cmd {
 		m.tagInput.SetValue("")
 	}
 	m.tagInput.Blur()
+	m.recurInput.SetValue("")
+	m.recurInput.Blur()
 	m.addFocus = addFocusTitle
 	// Cache known tags from all loaded list items for instant auto-tag on ":".
 	m.knownTags = model.CollectTags(m.allTasks)
@@ -1358,24 +1390,35 @@ func (m *Model) openAdd() tea.Cmd {
 
 func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	tagsFocused := m.addFocus == addFocusTags
+	recurFocused := m.addFocus == addFocusRecur
 
 	// Delegate suggestion navigation to shared helper when tag field is focused.
 	if tagsFocused && m.handleSuggestionNav(msg, &m.tagInput) {
 		return m, nil
 	}
 
-	// Tab: toggle focus between title and tags.
+	// Tab: cycle focus title -> tags -> recur -> title.
 	if msg.Type == tea.KeyTab {
-		if m.addFocus == addFocusTitle {
+		switch m.addFocus {
+		case addFocusTitle:
 			m.addFocus = addFocusTags
 			m.titleArea.Blur()
 			m.tagInput.Focus()
-		} else {
+			m.recurInput.Blur()
+		case addFocusTags:
+			m.addFocus = addFocusRecur
+			m.tagInput.Blur()
+			m.recurInput.Focus()
+			m.titleArea.Blur()
+			// Clear suggestions when leaving the tag field — they are not
+			// interactable from the recur field.
+			m.suggestions = nil
+			m.suggestionIdx = -1
+		default: // addFocusRecur
 			m.addFocus = addFocusTitle
+			m.recurInput.Blur()
 			m.tagInput.Blur()
 			m.titleArea.Focus()
-			// Clear suggestions when leaving the tag field — they are not
-			// interactable while the title area has focus.
 			m.suggestions = nil
 			m.suggestionIdx = -1
 		}
@@ -1390,14 +1433,21 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeModal()
 			return m, nil
 		}
+		recur, err := recurrence.Canonicalize(strings.TrimSpace(m.recurInput.Value()))
+		if err != nil {
+			m.err = fmt.Errorf("recurrence: %w", err)
+			return m, nil
+		}
 		tags := model.SanitizeTags(m.tagInput.Value())
 		m.closeModal()
-		return m, m.createCmd(title, tags)
+		return m, m.createCmd(title, tags, recur)
 	}
 
 	// Route remaining keys to the focused input only.
 	var cmd tea.Cmd
-	if tagsFocused {
+	if recurFocused {
+		m.recurInput, cmd = m.recurInput.Update(msg)
+	} else if tagsFocused {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 		// Refresh suggestions after every keystroke in the tag field.
 		m.refreshSuggestions(m.tagInput.Value())
@@ -1566,10 +1616,11 @@ func (m *Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // editableFields is the subset of a Task that's exposed to the user in the
 // YAML edit buffer. ID, Status, Position, and timestamps are not shown.
 type editableFields struct {
-	Title    string   `yaml:"title"`
-	Body     string   `yaml:"body,omitempty"`
-	Schedule string   `yaml:"schedule"`
-	Tags     []string `yaml:"tags,omitempty"`
+	Title      string   `yaml:"title"`
+	Body       string   `yaml:"body,omitempty"`
+	Schedule   string   `yaml:"schedule"`
+	Tags       []string `yaml:"tags,omitempty"`
+	Recurrence string   `yaml:"recurrence,omitempty"`
 }
 
 // marshalTaskForEdit renders a task into the YAML shown in the editor.
@@ -1577,17 +1628,20 @@ type editableFields struct {
 // tags; active state is preserved separately in applyEditedYAML.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
 	return yaml.Marshal(editableFields{
-		Title:    t.Title,
-		Body:     t.Body,
-		Schedule: t.Schedule,
-		Tags:     display.VisibleTags(t.Tags),
+		Title:      t.Title,
+		Body:       t.Body,
+		Schedule:   t.Schedule,
+		Tags:       display.VisibleTags(t.Tags),
+		Recurrence: t.Recurrence,
 	})
 }
 
 // applyEditedYAML parses the user's edited YAML and returns an updated task.
-// Returns an error if the YAML is invalid, the title is empty, or the
-// schedule is not parseable. Bucket-name schedules are converted to ISO
-// dates so the on-disk file always stores a concrete date.
+// Returns an error if the YAML is invalid, the title is empty, the schedule
+// is not parseable, or the recurrence rule is not parseable. Bucket-name
+// schedules are converted to ISO dates so the on-disk file always stores a
+// concrete date; the recurrence rule is canonicalized (e.g. weekly:Monday ->
+// weekly:mon) so edit round-trips always produce a normalized value.
 func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, error) {
 	var edit editableFields
 	if err := yaml.Unmarshal(data, &edit); err != nil {
@@ -1595,10 +1649,15 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 	}
 	edit.Title = strings.TrimSpace(edit.Title)
 	edit.Schedule = strings.TrimSpace(edit.Schedule)
+	edit.Recurrence = strings.TrimSpace(edit.Recurrence)
 	if edit.Title == "" {
 		return model.Task{}, fmt.Errorf("title cannot be empty")
 	}
 	scheduleDate, err := schedule.Parse(edit.Schedule, now)
+	if err != nil {
+		return model.Task{}, err
+	}
+	recurCanonical, err := recurrence.Canonicalize(edit.Recurrence)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -1608,6 +1667,7 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 	out.Body = edit.Body
 	out.Schedule = scheduleDate
 	out.Tags = edit.Tags
+	out.Recurrence = recurCanonical
 	out.SetActive(wasActive)
 	out.UpdatedAt = now.UTC().Format(time.RFC3339)
 	return out, nil
@@ -2090,7 +2150,9 @@ func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
 }
 
 // createCmd creates a new task in the current tab's bucket at the bottom.
-func (m *Model) createCmd(title string, tags []string) tea.Cmd {
+// recur is an optional recurrence rule (empty = non-recurring); callers are
+// expected to have already validated it via recurrence.Parse.
+func (m *Model) createCmd(title string, tags []string, recur string) tea.Cmd {
 	// Capture bucket at dispatch time; if user changes tabs while the cmd
 	// is in flight, we still place it in the intended bucket.
 	var bucket string
@@ -2140,15 +2202,16 @@ func (m *Model) createCmd(title string, tags []string) tea.Cmd {
 		}
 		n := now()
 		task := model.Task{
-			ID:        id,
-			Title:     title,
-			Source:    "tui",
-			Status:    "open",
-			Position:  ordering.NextPosition(siblings),
-			Schedule:  scheduleDate,
-			Tags:      tags,
-			CreatedAt: n,
-			UpdatedAt: n,
+			ID:         id,
+			Title:      title,
+			Source:     "tui",
+			Status:     "open",
+			Position:   ordering.NextPosition(siblings),
+			Schedule:   scheduleDate,
+			Tags:       tags,
+			Recurrence: recur,
+			CreatedAt:  n,
+			UpdatedAt:  n,
 		}
 		if err := storeRef.Create(task); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("create: %w", err)}
@@ -2387,6 +2450,7 @@ func (m *Model) recomputeLayout() {
 		inputW := m.modalInnerWidth() - 8
 		m.titleArea.SetWidth(inputW)
 		m.tagInput.Width = inputW
+		m.recurInput.Width = inputW
 	case modeRetag, modeReschedule:
 		m.input.Width = m.modalInnerWidth() - 1
 	case modeSearch:
@@ -2472,7 +2536,7 @@ func (m *Model) detailPanelView() string {
 		panelContentH = 5
 	}
 	headerLines := len(header)
-	noteAreaH := m.noteArea.Height() + 1 // +1 for the separator line above
+	noteAreaH := m.noteArea.Height() + 1                 // +1 for the separator line above
 	bodyH := panelContentH - headerLines - 1 - noteAreaH // -1 for blank line between header and body
 	if bodyH < 1 {
 		bodyH = 1
@@ -2750,8 +2814,8 @@ func (m *Model) modalView() string {
 		// label with its first line so taller boxes still read naturally.
 		titleView := indentContinuation(m.titleArea.View(), "       ")
 		sugLines := m.renderSuggestions()
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\n\n(Alt+Enter = newline, Enter = save)",
-			t.label, titleView, m.tagInput.View(), sugLines), iw)
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View(), sugLines, m.recurInput.View()), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""

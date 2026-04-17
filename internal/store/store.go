@@ -45,11 +45,13 @@ func (s *Store) taskPath(id string) string {
 }
 
 // Create writes a new task to disk. The task's ID must already be set.
+// NoteCount is recalculated from Body so callers never need to set it.
 func (s *Store) Create(task model.Task) error {
 	path := s.taskPath(task.ID)
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("task %s already exists", task.ID)
 	}
+	task.NoteCount = model.CountNotes(task.Body)
 	return s.writeTask(path, task)
 }
 

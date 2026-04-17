@@ -178,8 +178,8 @@ func TestShortID(t *testing.T) {
 		want string
 	}{
 		{"01ABCDEFGHIJKLMNOPQRSTUVWX", "01ABCDEF"},
-		{"01AB", "01AB"},    // shorter than 8
-		{"", ""},            // empty
+		{"01AB", "01AB"},         // shorter than 8
+		{"", ""},                 // empty
 		{"12345678", "12345678"}, // exactly 8
 	}
 

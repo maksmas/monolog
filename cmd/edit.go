@@ -8,6 +8,7 @@ import (
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +20,7 @@ func newEditCmd() *cobra.Command {
 		scheduleArg string
 		tags        string
 		active      bool
+		recur       string
 	)
 
 	cmd := &cobra.Command{
@@ -30,8 +32,8 @@ func newEditCmd() *cobra.Command {
 			prefix := args[0]
 
 			// Require at least one edit flag
-			if !cmd.Flags().Changed("title") && !cmd.Flags().Changed("body") && !cmd.Flags().Changed("schedule") && !cmd.Flags().Changed("tags") && !cmd.Flags().Changed("active") {
-				return fmt.Errorf("at least one of --title, --body, --schedule, --tags, or --active is required")
+			if !cmd.Flags().Changed("title") && !cmd.Flags().Changed("body") && !cmd.Flags().Changed("schedule") && !cmd.Flags().Changed("tags") && !cmd.Flags().Changed("active") && !cmd.Flags().Changed("recur") {
+				return fmt.Errorf("at least one of --title, --body, --schedule, --tags, --active, or --recur is required")
 			}
 
 			now := time.Now()
@@ -42,6 +44,17 @@ func newEditCmd() *cobra.Command {
 					return err
 				}
 				newSchedule = ns
+			}
+
+			// Validate recurrence rule if provided; normalize to canonical form.
+			// An explicitly-set empty string clears the rule.
+			var newRecur string
+			if cmd.Flags().Changed("recur") {
+				canonical, err := recurrence.Canonicalize(recur)
+				if err != nil {
+					return err
+				}
+				newRecur = canonical
 			}
 
 			s, repoPath, err := openStore()
@@ -75,6 +88,9 @@ func newEditCmd() *cobra.Command {
 			if cmd.Flags().Changed("active") {
 				task.SetActive(active)
 			}
+			if cmd.Flags().Changed("recur") {
+				task.Recurrence = newRecur
+			}
 
 			task.UpdatedAt = now.UTC().Format(time.RFC3339)
 
@@ -97,6 +113,7 @@ func newEditCmd() *cobra.Command {
 	cmd.Flags().StringVar(&scheduleArg, "schedule", "", "New schedule (today, tomorrow, week, month, someday, or ISO date)")
 	cmd.Flags().StringVar(&tags, "tags", "", "New comma-separated tags")
 	cmd.Flags().BoolVar(&active, "active", false, "Mark as active (use --active=false to deactivate)")
+	cmd.Flags().StringVar(&recur, "recur", "", "New recurrence rule: monthly:N, weekly:<day>, workdays, days:N (pass \"\" to clear)")
 
 	return cmd
 }

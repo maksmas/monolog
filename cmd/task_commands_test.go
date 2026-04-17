@@ -851,6 +851,211 @@ func TestEditCommand_BodyWithSeparatorSetsNoteCount(t *testing.T) {
 	}
 }
 
+// --- Edit --recur tests ---
+
+func TestEditCommand_SetRecurrence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Recurrence target")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--recur", "weekly:mon"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --recur error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after edit")
+	}
+	if task.Recurrence != "weekly:mon" {
+		t.Errorf("Recurrence: got %q, want %q", task.Recurrence, "weekly:mon")
+	}
+}
+
+func TestEditCommand_SetRecurrenceAliasCanonicalizes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Alias target")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--recur", "weekly:Monday"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --recur error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after edit")
+	}
+	if task.Recurrence != "weekly:mon" {
+		t.Errorf("Recurrence: got %q, want %q (canonical form)", task.Recurrence, "weekly:mon")
+	}
+}
+
+func TestEditCommand_ClearRecurrence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Clear recurrence target")
+
+	// Set a recurrence first
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--recur", "monthly:1"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("set recurrence error = %v", err)
+	}
+
+	task, _ := getTaskByID(t, dir, id)
+	if task.Recurrence != "monthly:1" {
+		t.Fatalf("recurrence not set: got %q, want %q", task.Recurrence, "monthly:1")
+	}
+
+	// Now clear it
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--recur", ""})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("clear recurrence error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after clear")
+	}
+	if task.Recurrence != "" {
+		t.Errorf("Recurrence: got %q, want empty (cleared)", task.Recurrence)
+	}
+}
+
+func TestEditCommand_InvalidRecurrenceDoesNotMutate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Keep existing")
+
+	// Set a known-good rule first.
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--recur", "days:7"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("set baseline recurrence error = %v", err)
+	}
+
+	// Capture updated_at before the failed edit.
+	taskBefore, _ := getTaskByID(t, dir, id)
+
+	// Attempt an invalid edit — should return an error and leave the task alone.
+	rootCmd2 := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd2.SetOut(buf)
+	rootCmd2.SetErr(buf)
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--recur", "bogus"})
+	if err := rootCmd2.Execute(); err == nil {
+		t.Fatal("expected error for invalid recurrence, got nil")
+	}
+
+	taskAfter, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after failed edit")
+	}
+	if taskAfter.Recurrence != "days:7" {
+		t.Errorf("Recurrence mutated on failed edit: got %q, want %q", taskAfter.Recurrence, "days:7")
+	}
+	if taskAfter.UpdatedAt != taskBefore.UpdatedAt {
+		t.Errorf("UpdatedAt changed on failed edit: before %q, after %q", taskBefore.UpdatedAt, taskAfter.UpdatedAt)
+	}
+}
+
+func TestEditCommand_OmittedRecurrencePreserved(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Preserve recur")
+
+	// Set a recurrence first
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"edit", id[:8], "--recur", "workdays"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("set recurrence error = %v", err)
+	}
+
+	// Edit something else without passing --recur
+	rootCmd2 := NewRootCmd()
+	rootCmd2.SetOut(new(bytes.Buffer))
+	rootCmd2.SetErr(new(bytes.Buffer))
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--title", "Renamed"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("edit title error = %v", err)
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after title edit")
+	}
+	if task.Title != "Renamed" {
+		t.Errorf("Title: got %q, want %q", task.Title, "Renamed")
+	}
+	if task.Recurrence != "workdays" {
+		t.Errorf("Recurrence should be preserved when --recur omitted: got %q, want %q", task.Recurrence, "workdays")
+	}
+}
+
+func TestEditCommand_InvalidRecurrenceGrammar(t *testing.T) {
+	cases := []string{
+		"bogus",
+		"monthly:0",
+		"monthly:32",
+		"weekly:xyz",
+		"weekly:0",
+		"weekly:8",
+		"days:0",
+		"days:-1",
+		"unknown:rule",
+	}
+
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "monolog")
+			initTestRepo(t, dir)
+
+			id := addTestTask(t, dir, "invalid recur test")
+
+			rootCmd := NewRootCmd()
+			buf := new(bytes.Buffer)
+			rootCmd.SetOut(buf)
+			rootCmd.SetErr(buf)
+			rootCmd.SetArgs([]string{"edit", id[:8], "--recur", input})
+
+			if err := rootCmd.Execute(); err == nil {
+				t.Fatalf("expected error for invalid recurrence %q, got nil", input)
+			}
+
+			task, _ := getTaskByID(t, dir, id)
+			if task.Recurrence != "" {
+				t.Errorf("Recurrence should remain empty after failed edit, got %q", task.Recurrence)
+			}
+		})
+	}
+}
+
 func TestEdit_TagsPreservesActive(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
