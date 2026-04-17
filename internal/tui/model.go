@@ -36,6 +36,7 @@ const (
 	modeAdd
 	modeConfirmDelete
 	modeHelp
+	modeSearch
 )
 
 // addField tracks which input has focus in the add modal.
@@ -88,6 +89,25 @@ var defaultTabs = []tab{
 	{label: "Done", bucket: "", status: "done"},
 }
 
+// searchState holds the per-modal state for the fuzzy-search overlay.
+// haystack is captured once at openSearch time along with parallel titles/
+// bodies slices that sahilm/fuzzy consumes, so the ranker does not re-allocate
+// on every keystroke. results is re-ranked on every keystroke. cursor is the
+// currently-highlighted index into results.
+type searchState struct {
+	input    textinput.Model
+	haystack []searchDoc
+	titles   []string
+	bodies   []string
+	results  []searchResult
+	cursor   int
+}
+
+// searchInputReserve is the column budget taken out of the total width for the
+// search input bar's prompt and right-aligned counter. A single constant keeps
+// recomputeLayout and renderSearch in sync.
+const searchInputReserve = 14
+
 // Model is the top-level Bubble Tea model for the TUI.
 type Model struct {
 	store    *store.Store
@@ -133,6 +153,18 @@ type Model struct {
 	// error or modal close.
 	pendingAction func() tea.Cmd
 
+	// Detail panel state. The detail panel is a right-side panel showing full
+	// task info and notes with an inline textarea for adding new notes.
+	// detailOpen is independent of mode — it's a panel toggle, not a modal.
+	detailOpen   bool
+	detailScroll int
+	noteArea     textarea.Model
+
+	// Tag autocomplete state. Only one modal is open at a time, so a single
+	// pair of fields is shared between add and retag modals.
+	suggestions   []string // current filtered tag suggestions (max 5)
+	suggestionIdx int      // selected suggestion index; -1 = none selected
+
 	// Active tasks panel: tasks that carry the "active" tag, shown in a
 	// persistent panel above the tab bar.
 	activeTasks []model.Task
@@ -141,6 +173,9 @@ type Model struct {
 	// Used for computing global stats.
 	allTasks []model.Task
 	stats    model.Stats
+
+	// search holds the fuzzy-search overlay state (modeSearch).
+	search searchState
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
@@ -173,6 +208,9 @@ func (i item) Title() string { return i.task.Title }
 
 func (i item) Description() string {
 	parts := []string{display.ShortID(i.task.ID)}
+	if i.task.NoteCount > 0 {
+		parts = append(parts, fmt.Sprintf("[%d]", i.task.NoteCount))
+	}
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
 		parts = append(parts, i.task.Schedule)
 	}
@@ -298,6 +336,11 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	tagTi.CharLimit = 512
 	tagTi.Prompt = ""
 
+	searchTi := textinput.New()
+	searchTi.Placeholder = "search title or body"
+	searchTi.CharLimit = 512
+	searchTi.Prompt = "> "
+
 	ta := textarea.New()
 	ta.Placeholder = "task title"
 	ta.CharLimit = 512
@@ -314,6 +357,20 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.Base = lipgloss.NewStyle()
 
+	// Note textarea for the detail panel. Alt+Enter inserts newlines; plain
+	// Enter is handled one level up where it submits the note.
+	noteTA := textarea.New()
+	noteTA.Placeholder = "add a note..."
+	noteTA.CharLimit = 4096
+	noteTA.ShowLineNumbers = false
+	noteTA.Prompt = ""
+	noteTA.KeyMap.InsertNewline.SetKeys("alt+enter")
+	noteTA.SetHeight(3)
+	noteTA.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	noteTA.FocusedStyle.Base = lipgloss.NewStyle()
+	noteTA.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	noteTA.BlurredStyle.Base = lipgloss.NewStyle()
+
 	m := &Model{
 		store:     s,
 		repoPath:  repoPath,
@@ -321,6 +378,8 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		input:     ti,
 		tagInput:  tagTi,
 		titleArea: ta,
+		noteArea:  noteTA,
+		search:    searchState{input: searchTi},
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
 
@@ -826,6 +885,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeHelp:
 			m.mode = modeNormal
 			return m, nil
+		case modeSearch:
+			return m.updateSearch(msg)
 		default:
 			return m.updateModal(msg)
 		}
@@ -837,6 +898,66 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = ""
 
+	// When the detail panel is open and noteArea is focused, route key events
+	// through the textarea first. Esc always closes the panel; Enter submits
+	// the note. Single-character action keys (d/r/t/c/x/m/a/e/s/v/h/q) and
+	// navigation keys fall through to their normal handlers below.
+	if m.detailOpen {
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.closeDetailPanel()
+			return m, nil
+		case tea.KeyEnter:
+			// Alt+Enter inserts a newline via the textarea's own keymap.
+			if msg.Alt {
+				var cmd tea.Cmd
+				m.noteArea, cmd = m.noteArea.Update(msg)
+				return m, cmd
+			}
+			// Enter submits the note if textarea has content.
+			return m, m.submitNote()
+		}
+
+		// When the textarea is empty, let single-char action and navigation
+		// keys fall through to their normal handlers so the user can mark
+		// done, retag, reschedule, etc. without closing the panel first.
+		// Once the user starts typing (non-empty textarea), all printable
+		// input goes to the textarea; only [/] for body scroll still falls
+		// through.
+		if msg.Type == tea.KeyRunes {
+			s := string(msg.Runes)
+			noteEmpty := strings.TrimSpace(m.noteArea.Value()) == ""
+			if noteEmpty {
+				switch s {
+				case "d", "r", "t", "c", "x", "m", "a", "e", "s", "v", "h", "q",
+					"j", "k", "g", "G",
+					"1", "2", "3", "4", "5", "6",
+					"[", "]":
+					// Fall through to normal handlers below.
+				default:
+					var cmd tea.Cmd
+					m.noteArea, cmd = m.noteArea.Update(msg)
+					return m, cmd
+				}
+			} else {
+				// Textarea has content — route everything except scroll keys.
+				switch s {
+				case "[", "]":
+					// Fall through for body scroll.
+				default:
+					var cmd tea.Cmd
+					m.noteArea, cmd = m.noteArea.Update(msg)
+					return m, cmd
+				}
+			}
+		}
+		if msg.Type == tea.KeySpace || msg.Type == tea.KeyBackspace {
+			var cmd tea.Cmd
+			m.noteArea, cmd = m.noteArea.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -846,6 +967,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.viewMode == viewTag {
 			m.skipSeparator(0)
 		}
+		m.detailScroll = 0
 		return m, nil
 	case "right", "tab":
 		m.activeTab = (m.activeTab + 1) % len(m.tabs)
@@ -853,6 +975,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.viewMode == viewTag {
 			m.skipSeparator(0)
 		}
+		m.detailScroll = 0
 		return m, nil
 	case "1", "2", "3", "4", "5", "6":
 		n := int(msg.String()[0] - '1')
@@ -862,6 +985,13 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.viewMode == viewTag {
 				m.skipSeparator(0)
 			}
+			m.detailScroll = 0
+		}
+		return m, nil
+
+	case "enter":
+		if !m.detailOpen {
+			m.openDetailPanel()
 		}
 		return m, nil
 
@@ -890,6 +1020,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "h":
 		m.mode = modeHelp
 		return m, nil
+	case "/":
+		m.openSearch()
+		return m, nil
 	}
 
 	// Cursor navigation — handled by vlist directly.
@@ -897,24 +1030,68 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "j", "down":
 		vl.CursorDown()
+		m.detailScroll = 0 // reset scroll when navigating tasks
 	case "k", "up":
 		vl.CursorUp()
+		m.detailScroll = 0 // reset scroll when navigating tasks
 	case "pgdown":
 		vl.PageDown()
+		m.detailScroll = 0
 	case "pgup":
 		vl.PageUp()
+		m.detailScroll = 0
 	case "g", "home":
 		vl.GoToStart()
+		m.detailScroll = 0
 	case "G", "end":
 		vl.GoToEnd()
+		m.detailScroll = 0
+	case "]":
+		// Scroll detail panel body down.
+		if m.detailOpen {
+			m.detailScroll++
+		}
+	case "[":
+		// Scroll detail panel body up.
+		if m.detailOpen && m.detailScroll > 0 {
+			m.detailScroll--
+		}
 	}
 	return m, nil
 }
 
+// openDetailPanel opens the detail panel and focuses the note textarea.
+func (m *Model) openDetailPanel() {
+	task := m.selectedTask()
+	if task == nil {
+		return
+	}
+	m.detailOpen = true
+	m.detailScroll = 0
+	m.noteArea.Reset()
+	m.noteArea.Focus()
+	m.recomputeLayout()
+}
+
+// closeDetailPanel closes the detail panel and returns focus to the list.
+func (m *Model) closeDetailPanel() {
+	m.detailOpen = false
+	m.detailScroll = 0
+	m.noteArea.Blur()
+	m.noteArea.Reset()
+	m.recomputeLayout()
+}
+
 // updateModal routes keys based on the current modal.
 func (m *Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc always cancels a modal.
+	// Esc: when tag suggestions are visible, clear them instead of closing the
+	// modal. Let the modal handler decide.
 	if msg.Type == tea.KeyEsc {
+		if len(m.suggestions) > 0 && (m.mode == modeAdd || m.mode == modeRetag) {
+			m.suggestions = nil
+			m.suggestionIdx = -1
+			return m, nil
+		}
 		m.closeModal()
 		return m, nil
 	}
@@ -946,7 +1123,41 @@ func (m *Model) closeModal() {
 	m.titleArea.Reset()
 	m.titleArea.SetHeight(1)
 	m.addFocus = addFocusTitle
+	m.suggestions = nil
+	m.suggestionIdx = -1
 }
+
+// --- note submission -------------------------------------------------------
+
+// submitNote appends the noteArea's text to the selected task's Body, increments
+// NoteCount, saves, and auto-commits. Returns nil (no-op) when the textarea is
+// empty or no task is selected.
+func (m *Model) submitNote() tea.Cmd {
+	text := strings.TrimSpace(m.noteArea.Value())
+	if text == "" {
+		return nil
+	}
+	task := m.selectedTask()
+	if task == nil {
+		return nil
+	}
+	t := *task
+	nowT := time.Now()
+	t.Body = model.AppendNote(t.Body, text, nowT)
+	t.NoteCount++
+	t.UpdatedAt = nowT.UTC().Format(time.RFC3339)
+	flat := flattenTitle(t.Title)
+
+	// Clear and reset the textarea immediately so the UI feels responsive.
+	m.noteArea.Reset()
+
+	return m.saveCmd(t, fmt.Sprintf("note: %s", flat), fmt.Sprintf("Note added: %s", flat))
+}
+
+// --- search overlay --------------------------------------------------------
+//
+// openSearch / closeSearch / updateSearch / renderSearch live in search.go so
+// the mode logic stays close to the ranker.
 
 // --- done action -----------------------------------------------------------
 
@@ -1098,10 +1309,20 @@ func (m *Model) openRetag() tea.Cmd {
 	m.input.SetValue(strings.Join(display.VisibleTags(t.Tags), ", "))
 	m.input.CursorEnd()
 	m.input.Focus()
+	// Cache known tags for autocomplete suggestions.
+	m.knownTags = model.CollectTags(m.allTasks)
+	m.suggestions = nil
+	m.suggestionIdx = -1
 	return textinput.Blink
 }
 
 func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Delegate Up/Down/Tab/Enter to shared suggestion navigation.
+	if m.handleSuggestionNav(msg, &m.input) {
+		return m, nil
+	}
+
+	// Enter: submit retag (suggestion case already handled above).
 	if msg.Type == tea.KeyEnter {
 		if m.modalTask == nil {
 			m.closeModal()
@@ -1118,8 +1339,11 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("edit: %s", flat),
 			fmt.Sprintf("Retagged: %s", flat))
 	}
+
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	// Refresh suggestions after every keystroke in the tag field.
+	m.refreshSuggestions(m.input.Value())
 	return m, cmd
 }
 
@@ -1150,22 +1374,21 @@ func (m *Model) openAdd() tea.Cmd {
 	m.tagInput.Blur()
 	m.addFocus = addFocusTitle
 	// Cache known tags from all loaded list items for instant auto-tag on ":".
-	var allTasks []model.Task
-	for i := range m.lists {
-		for _, li := range m.lists[i].Items() {
-			if li.(item).isSeparator {
-				continue
-			}
-			allTasks = append(allTasks, li.(item).task)
-		}
-	}
-	m.knownTags = model.CollectTags(allTasks)
+	m.knownTags = model.CollectTags(m.allTasks)
+	m.suggestions = nil
+	m.suggestionIdx = -1
 	return textinput.Blink
 }
 
 func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Tab toggles focus between title and tags — intercept before the
-	// inputs swallow it.
+	tagsFocused := m.addFocus == addFocusTags
+
+	// Delegate suggestion navigation to shared helper when tag field is focused.
+	if tagsFocused && m.handleSuggestionNav(msg, &m.tagInput) {
+		return m, nil
+	}
+
+	// Tab: toggle focus between title and tags.
 	if msg.Type == tea.KeyTab {
 		if m.addFocus == addFocusTitle {
 			m.addFocus = addFocusTags
@@ -1175,12 +1398,16 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addFocus = addFocusTitle
 			m.tagInput.Blur()
 			m.titleArea.Focus()
+			// Clear suggestions when leaving the tag field — they are not
+			// interactable while the title area has focus.
+			m.suggestions = nil
+			m.suggestionIdx = -1
 		}
 		return m, textinput.Blink
 	}
 
-	// Enter submits; Alt+Enter falls through to the textarea where its
-	// InsertNewline binding (rebound to alt+enter) inserts a line break.
+	// Enter: submit (plain Enter) or insert newline (Alt+Enter).
+	// Suggestion acceptance is handled by handleSuggestionNav above.
 	if msg.Type == tea.KeyEnter && !msg.Alt {
 		title := sanitizeTitle(m.titleArea.Value())
 		if title == "" {
@@ -1194,8 +1421,10 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Route remaining keys to the focused input only.
 	var cmd tea.Cmd
-	if m.addFocus == addFocusTags {
+	if tagsFocused {
 		m.tagInput, cmd = m.tagInput.Update(msg)
+		// Refresh suggestions after every keystroke in the tag field.
+		m.refreshSuggestions(m.tagInput.Value())
 	} else {
 		// Pre-grow the textarea height before the update so the viewport
 		// never needs to scroll. Without this, Update()'s internal
@@ -1218,6 +1447,86 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// handleSuggestionNav handles Up/Down/Tab/Enter keys when suggestions are
+// visible. It returns true when the key was consumed (caller should return
+// early).
+func (m *Model) handleSuggestionNav(msg tea.KeyMsg, ti *textinput.Model) bool {
+	hasSuggestions := len(m.suggestions) > 0
+
+	// Up/Down navigate suggestions.
+	if hasSuggestions && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
+		if msg.Type == tea.KeyUp {
+			if m.suggestionIdx > 0 {
+				m.suggestionIdx--
+			}
+		} else {
+			if m.suggestionIdx < len(m.suggestions)-1 {
+				m.suggestionIdx++
+			}
+		}
+		return true
+	}
+
+	// Tab/Enter: accept suggestion if visible with a selection.
+	if (msg.Type == tea.KeyTab || msg.Type == tea.KeyEnter) && hasSuggestions && m.suggestionIdx >= 0 {
+		m.acceptSuggestion(ti)
+		return true
+	}
+
+	return false
+}
+
+// refreshSuggestions updates m.suggestions from knownTags based on the current
+// tag field value. Resets suggestionIdx to 0 if there are results, -1 otherwise.
+func (m *Model) refreshSuggestions(fieldValue string) {
+	m.suggestions = model.FilterTags(m.knownTags, fieldValue)
+	if len(m.suggestions) > 0 {
+		m.suggestionIdx = 0
+	} else {
+		m.suggestionIdx = -1
+	}
+}
+
+// acceptSuggestion replaces the current fragment in the given textinput with
+// the selected suggestion, appending ", " so the user can continue typing.
+func (m *Model) acceptSuggestion(ti *textinput.Model) {
+	if m.suggestionIdx < 0 || m.suggestionIdx >= len(m.suggestions) {
+		return
+	}
+	selected := m.suggestions[m.suggestionIdx]
+	val := ti.Value()
+	// Find the last comma to locate the fragment being replaced.
+	lastComma := strings.LastIndex(val, ",")
+	var prefix string
+	if lastComma >= 0 {
+		prefix = val[:lastComma+1] + " "
+	}
+	ti.SetValue(prefix + selected + ", ")
+	ti.CursorEnd()
+	// Recompute suggestions (fragment is now empty after ", " so they'll clear).
+	m.refreshSuggestions(ti.Value())
+}
+
+// renderSuggestions returns a string with suggestion lines to embed in a modal
+// view. Returns "" when there are no suggestions. Each suggestion is indented
+// 7 chars to align with the tag value; the highlighted item is prefixed with
+// "> " and styled bold, others are prefixed with "  " and styled dim.
+func (m *Model) renderSuggestions() string {
+	if len(m.suggestions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, s := range m.suggestions {
+		b.WriteByte('\n')
+		if i == m.suggestionIdx {
+			b.WriteString("       " + suggestionBoldStyle.Render("> "+s))
+		} else {
+			b.WriteString("       " + suggestionDimStyle.Render("  "+s))
+		}
+	}
+	return b.String()
 }
 
 // sanitizeTitle trims surrounding whitespace but preserves interior newlines
@@ -2037,6 +2346,41 @@ func (m *Model) statsBarView() string {
 	return helpTextStyle.Padding(0, 1).Render(line)
 }
 
+// detailPanelWidth returns the width allocated to the detail panel when it is
+// open. Returns 0 when the panel is closed. Uses ~45% of terminal width.
+func (m *Model) detailPanelWidth() int {
+	if !m.detailOpen {
+		return 0
+	}
+	w := m.width * 45 / 100
+	if w < 30 {
+		w = 30
+	}
+	if w > m.width-20 {
+		w = m.width - 20
+	}
+	if w < 0 {
+		w = 0
+	}
+	return w
+}
+
+// listWidth returns the width allocated to the task list. When the detail panel
+// is open, the list is narrowed to make room.
+func (m *Model) listWidth() int {
+	return m.width - m.detailPanelWidth()
+}
+
+// detailPanelInnerWidth returns the usable content width inside the detail
+// panel, accounting for border (2) and padding (4). Returns at least 10.
+func (m *Model) detailPanelInnerWidth() int {
+	iw := m.detailPanelWidth() - 6
+	if iw < 10 {
+		iw = 10
+	}
+	return iw
+}
+
 // recomputeLayout recalculates list sizes based on the current terminal
 // dimensions and active panel height. Called from WindowSizeMsg and after
 // any mutation that might change the panel (taskSavedMsg).
@@ -2048,8 +2392,13 @@ func (m *Model) recomputeLayout() {
 	if listH < 3 {
 		listH = 3
 	}
+	lw := m.listWidth()
 	for i := range m.lists {
-		m.lists[i].SetSize(m.width, listH)
+		m.lists[i].SetSize(lw, listH)
+	}
+	// Resize the note textarea to fit inside the detail panel.
+	if m.detailOpen {
+		m.noteArea.SetWidth(m.detailPanelInnerWidth())
 	}
 	// Keep textinput widths in sync when the terminal is resized while a modal
 	// is open, so the fixed-width border doesn't reflow on the next render.
@@ -2061,12 +2410,143 @@ func (m *Model) recomputeLayout() {
 		m.tagInput.Width = inputW
 	case modeRetag, modeReschedule:
 		m.input.Width = m.modalInnerWidth() - 1
+	case modeSearch:
+		// Leave room for the "> " prompt (2) plus a few columns for the
+		// right-aligned count counter added by renderSearch in Task 6.
+		w := m.width - searchInputReserve
+		if w < 10 {
+			w = 10
+		}
+		m.search.input.Width = w
 	}
 }
 
 // --- View ------------------------------------------------------------------
 
+// detailPanelView renders the right-side detail panel for the currently
+// selected task. Returns an empty string when the panel is closed or no task
+// is selected.
+//
+// Layout (top to bottom, all within a bordered box):
+//   - Title (bold)
+//   - Schedule
+//   - Tags (if any)
+//   - Created date (and Completed date if done)
+//   - Blank line
+//   - Body text (scrollable via detailScroll)
+//   - Separator line
+//   - Note textarea
+func (m *Model) detailPanelView() string {
+	if !m.detailOpen {
+		return ""
+	}
+	task := m.selectedTask()
+	if task == nil {
+		return ""
+	}
+
+	pw := m.detailPanelWidth()
+	iw := m.detailPanelInnerWidth()
+
+	now := time.Now()
+
+	// --- header section ---
+	titleStyle := lipgloss.NewStyle().Bold(true)
+	var header []string
+	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
+
+	bucket := schedule.Bucket(task.Schedule, now)
+	if bucket != task.Schedule {
+		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, task.Schedule))
+	} else {
+		header = append(header, "Schedule: "+task.Schedule)
+	}
+
+	if vt := display.VisibleTags(task.Tags); len(vt) > 0 {
+		header = append(header, "Tags: "+strings.Join(vt, ", "))
+	}
+
+	created := display.FormatRelDate(now, task.CreatedAt)
+	if created != "" {
+		dateLine := "Created: " + created
+		if task.CompletedAt != "" {
+			completed := display.FormatRelDate(now, task.CompletedAt)
+			if completed != "" {
+				dateLine += "  Completed: " + completed
+			}
+		}
+		header = append(header, dateLine)
+	}
+
+	// --- body section (scrollable) ---
+	// Calculate how many lines we have for the body area.
+	// Total panel height = list height (from vlist) + 2 for tab bar line + 1 for help line.
+	// The body gets whatever is left after header, separator, and textarea.
+	listH := 0
+	if len(m.lists) > 0 {
+		listH = m.lists[0].height
+	}
+	// Panel content area height matches the list height (tab bar and help line
+	// offset the border cost).
+	panelContentH := listH
+	if panelContentH < 5 {
+		panelContentH = 5
+	}
+	headerLines := len(header)
+	noteAreaH := m.noteArea.Height() + 1 // +1 for the separator line above
+	bodyH := panelContentH - headerLines - 1 - noteAreaH // -1 for blank line between header and body
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	var bodyLines []string
+	if task.Body != "" {
+		bodyLines = wrapText(task.Body, iw)
+	}
+
+	// Clamp scroll offset to valid range so we never wrap to top.
+	if m.detailScroll >= len(bodyLines) {
+		m.detailScroll = max(0, len(bodyLines)-1)
+	}
+	// Apply scroll offset.
+	if m.detailScroll > 0 && m.detailScroll < len(bodyLines) {
+		bodyLines = bodyLines[m.detailScroll:]
+	}
+
+	// Truncate to fit available body height.
+	if len(bodyLines) > bodyH {
+		bodyLines = bodyLines[:bodyH]
+	}
+
+	// --- assemble panel content ---
+	var parts []string
+	parts = append(parts, strings.Join(header, "\n"))
+	parts = append(parts, "") // blank line between header and body
+	if len(bodyLines) > 0 {
+		parts = append(parts, strings.Join(bodyLines, "\n"))
+	}
+	sepLine := strings.Repeat("─", iw)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	parts = append(parts, dimStyle.Render(sepLine))
+	parts = append(parts, m.noteArea.View())
+
+	content := strings.Join(parts, "\n")
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(0, 2).
+		Width(pw - 2). // subtract border columns
+		Render(content)
+}
+
 func (m *Model) View() string {
+	// Search overlay owns the full screen: render and return before computing
+	// anything specific to the normal-mode layout (tab bar, panels, etc).
+	if m.mode == modeSearch {
+		return m.renderSearch()
+	}
+
 	var tabBar []string
 	for i, t := range m.tabs {
 		if i == m.activeTab {
@@ -2082,6 +2562,15 @@ func (m *Model) View() string {
 		body = m.lists[m.activeTab].Render(m.renderListItem)
 	} else {
 		body = m.modalView()
+	}
+
+	// When the detail panel is open in normal/grab mode, join the list body
+	// and detail panel side-by-side horizontally. Skip when a modal is active
+	// to avoid layout conflicts.
+	if m.mode == modeNormal || m.mode == modeGrab {
+		if detail := m.detailPanelView(); detail != "" {
+			body = lipgloss.JoinHorizontal(lipgloss.Top, body, detail)
+		}
 	}
 
 	help := m.helpLine()
@@ -2125,9 +2614,18 @@ func (m *Model) helpLine() string {
 	}
 	switch m.mode {
 	case modeNormal:
+		if m.detailOpen {
+			return renderHelpBar(
+				[2]string{"esc", "close"},
+				[2]string{"enter", "submit"},
+				[2]string{"alt+enter", "newline"},
+				[2]string{"[/]", "scroll"},
+			)
+		}
 		if m.viewMode == viewTag {
 			return renderHelpBar(
 				[2]string{"←/→", "tabs"},
+				[2]string{"enter", "notes"},
 				[2]string{"d", "done"},
 				[2]string{"e", "edit"},
 				[2]string{"r", "date"},
@@ -2136,6 +2634,7 @@ func (m *Model) helpLine() string {
 				[2]string{"x", "del"},
 				[2]string{"m", "grab"},
 				[2]string{"a", "active"},
+				[2]string{"/", "search"},
 				[2]string{"v", "schedule"},
 				[2]string{"s", "sync"},
 				[2]string{"h", "help"},
@@ -2145,6 +2644,7 @@ func (m *Model) helpLine() string {
 		return renderHelpBar(
 			[2]string{"←/→", "tabs"},
 			[2]string{"1-6", "jump"},
+			[2]string{"enter", "notes"},
 			[2]string{"d", "done"},
 			[2]string{"e", "edit"},
 			[2]string{"r", "date"},
@@ -2153,6 +2653,7 @@ func (m *Model) helpLine() string {
 			[2]string{"x", "del"},
 			[2]string{"m", "grab"},
 			[2]string{"a", "active"},
+			[2]string{"/", "search"},
 			[2]string{"v", "tags"},
 			[2]string{"s", "sync"},
 			[2]string{"h", "help"},
@@ -2229,10 +2730,20 @@ func helpModalContent() string {
 		"  " + k("x") + "    delete\n" +
 		"  " + k("m") + "    grab / reorder\n" +
 		"  " + k("a") + "    toggle active\n" +
+		"  " + k("/") + "    search\n" +
 		"  " + k("v") + "    toggle view\n" +
+		"  " + k("↵") + "    notes panel\n" +
 		"  " + k("s") + "    sync\n" +
 		"  " + k("h") + "    this help\n" +
-		"  " + k("q") + "    quit"
+		"  " + k("q") + "    quit\n\n" +
+		"Search:\n\n" +
+		"  " + k("/") + "              open fuzzy search\n" +
+		"  " + k("↑/↓") + "            move selection\n" +
+		"  " + k("ctrl+j/k") + "       move selection\n" +
+		"  " + k("ctrl+n/p") + "       move selection\n" +
+		"  " + k("pgdn/pgup") + "      page selection\n" +
+		"  " + k("enter") + "          jump to task\n" +
+		"  " + k("esc") + "            cancel"
 }
 
 func (m *Model) modalView() string {
@@ -2252,14 +2763,16 @@ func (m *Model) modalView() string {
 		}
 		return modalBox("Custom date:\n\n"+m.input.View(), iw)
 	case modeRetag:
-		return modalBox("Tags (comma-separated):\n\n"+m.input.View(), iw)
+		sugLines := m.renderSuggestions()
+		return modalBox("Tags (comma-separated):\n\n"+m.input.View()+sugLines, iw)
 	case modeAdd:
 		t := m.tabs[m.activeTab]
 		// The textarea's View() spans titleArea.Height() lines; align the "Title:"
 		// label with its first line so taller boxes still read naturally.
 		titleView := indentContinuation(m.titleArea.View(), "       ")
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s\n\n(Alt+Enter = newline, Enter = save)",
-			t.label, titleView, m.tagInput.View()), iw)
+		sugLines := m.renderSuggestions()
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View(), sugLines), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""

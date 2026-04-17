@@ -23,6 +23,7 @@ type Task struct {
 	UpdatedAt   string `json:"updated_at"`
 	CompletedAt string `json:"completed_at,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
+	NoteCount int      `json:"note_count,omitempty"`
 }
 
 // ActiveTag is the reserved tag name used to mark a task as currently being worked on.
@@ -155,6 +156,47 @@ func Initials(title string) string {
 		}
 	}
 	return strings.ToLower(b.String())
+}
+
+// maxSuggestions is the maximum number of tag suggestions returned by FilterTags.
+const maxSuggestions = 5
+
+// FilterTags returns tag suggestions for the current input field value.
+// It extracts the fragment after the last comma, filters known tags by
+// case-insensitive prefix match, excludes tags already present in the field,
+// and caps the result at maxSuggestions entries.
+func FilterTags(known []string, field string) []string {
+	// Split the field by commas to get already-entered tags and the current fragment.
+	parts := strings.Split(field, ",")
+	fragment := strings.TrimSpace(parts[len(parts)-1])
+	if fragment == "" {
+		return nil
+	}
+
+	// Collect already-entered tags (everything before the last comma).
+	entered := make(map[string]struct{})
+	for _, p := range parts[:len(parts)-1] {
+		tag := strings.TrimSpace(p)
+		if tag != "" {
+			entered[strings.ToLower(tag)] = struct{}{}
+		}
+	}
+
+	fragmentLower := strings.ToLower(fragment)
+	var result []string
+	for _, tag := range known {
+		tagLower := strings.ToLower(tag)
+		if _, already := entered[tagLower]; already {
+			continue
+		}
+		if strings.HasPrefix(tagLower, fragmentLower) {
+			result = append(result, tag)
+			if len(result) >= maxSuggestions {
+				break
+			}
+		}
+	}
+	return result
 }
 
 // NewID generates a new ULID string.

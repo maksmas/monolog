@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/mmaksmas/monolog/internal/git"
@@ -1099,6 +1100,85 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	}
 }
 
+// --- note count badge tests --------------------------------------------------
+
+func TestItemDescription_NoteCountBadge(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "task with notes",
+			Status:    "open",
+			Schedule:  "today",
+			NoteCount: 3,
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if !strings.Contains(desc, "[3]") {
+		t.Errorf("Description() = %q, want to contain note count badge [3]", desc)
+	}
+	// Badge should appear right after the short ID
+	idxID := strings.Index(desc, "01AB")
+	idxBadge := strings.Index(desc, "[3]")
+	if idxBadge < idxID {
+		t.Errorf("note count badge should appear after short ID in Description() = %q", desc)
+	}
+}
+
+func TestItemDescription_NoteCountZeroNoBadge(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "task without notes",
+			Status:    "open",
+			Schedule:  "today",
+			NoteCount: 0,
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if strings.Contains(desc, "[0]") {
+		t.Errorf("Description() = %q, should not contain [0] badge when NoteCount is 0", desc)
+	}
+}
+
+func TestItemDescription_NoteCountWithOtherMetadata(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:        "01ABCDEF",
+			Title:     "noted task",
+			Status:    "open",
+			Schedule:  "tomorrow",
+			Tags:      []string{"work"},
+			NoteCount: 5,
+			CreatedAt: "2026-04-11T12:00:00Z",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	// Should contain all metadata pieces
+	if !strings.Contains(desc, "[5]") {
+		t.Errorf("Description() = %q, want note count badge [5]", desc)
+	}
+	if !strings.Contains(desc, "tomorrow") {
+		t.Errorf("Description() = %q, want schedule 'tomorrow'", desc)
+	}
+	if !strings.Contains(desc, "[work]") {
+		t.Errorf("Description() = %q, want tags [work]", desc)
+	}
+	// Verify ordering: ID, badge, schedule, tags
+	idxID := strings.Index(desc, "01AB")
+	idxBadge := strings.Index(desc, "[5]")
+	idxSched := strings.Index(desc, "tomorrow")
+	idxTags := strings.Index(desc, "[work]")
+	if idxID > idxBadge || idxBadge > idxSched || idxSched > idxTags {
+		t.Errorf("Description() = %q, parts should appear in order: ID, badge, schedule, tags", desc)
+	}
+}
+
 // --- active panel tests ------------------------------------------------------
 
 func TestActivePanel_HiddenWhenNoActiveTasks(t *testing.T) {
@@ -1804,12 +1884,600 @@ func TestAdd_ColonNoAutoPopulateDuplicate(t *testing.T) {
 	m, _ = key(t, m, "c")
 	m, _ = key(t, m, "tab") // focus tags
 	m = typeString(t, m, "jean")
-	m, _ = key(t, m, "tab") // focus title
+	// First Tab accepts the autocomplete suggestion ("jean" -> "jean, ").
+	m, _ = key(t, m, "tab")
+	// Second Tab switches focus back to the title field.
+	m, _ = key(t, m, "tab")
 	m = typeString(t, m, "jean: ")
 	got := m.tagInput.Value()
-	// Should still be just "jean", not "jean, jean" or "jean,jean".
-	if got != "jean" {
-		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean")
+	// The tag field should contain "jean, " (from autocomplete acceptance) but
+	// not a duplicate "jean, jean, " — the auto-populate should detect that
+	// "jean" is already present.
+	if got != "jean, " {
+		t.Errorf("tagInput = %q, want %q (no duplicate)", got, "jean, ")
+	}
+}
+
+// --- tag autocomplete tests ------------------------------------------------
+
+func TestAdd_SuggestionsAppearWhenTypingPrefix(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c") // open add
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
+		t.Errorf("suggestions = %v, want [work]", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsEmptyOnNoMatch(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "xyz")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsEmptyOnEmptyFragment(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	// Empty tag field — no suggestions.
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty on empty fragment", m.suggestions)
+	}
+}
+
+func TestAdd_UpDownNavigatesSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project", "priority"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	// Should have all three p-tags.
+	if len(m.suggestions) != 3 {
+		t.Fatalf("suggestions = %v, want 3 items", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Down moves to 1.
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after down: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	// Down again to 2.
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 2 {
+		t.Errorf("after 2nd down: suggestionIdx = %d, want 2", m.suggestionIdx)
+	}
+	// Down at end stays at 2.
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 2 {
+		t.Errorf("down at end: suggestionIdx = %d, want 2", m.suggestionIdx)
+	}
+	// Up goes back to 1.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after up: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	// Up again to 0.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("after 2nd up: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Up at start stays at 0.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("up at start: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestAdd_TabAcceptsSuggestion(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	// suggestions = ["work"], idx = 0
+	m, _ = key(t, m, "tab") // accept suggestion
+	got := m.tagInput.Value()
+	if got != "work, " {
+		t.Errorf("tagInput = %q, want %q", got, "work, ")
+	}
+	// Suggestions should be cleared after acceptance (empty fragment).
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after accept = %v, want empty", m.suggestions)
+	}
+	// Focus should still be on tags (accept doesn't switch focus).
+	if m.addFocus != addFocusTags {
+		t.Errorf("addFocus = %v, want addFocusTags", m.addFocus)
+	}
+}
+
+func TestAdd_EnterAcceptsSuggestionInsteadOfSubmitting(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "a title")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	// Enter should accept the suggestion, not submit the form.
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("enter with active suggestion should not submit (cmd should be nil)")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode = %v, want modeAdd (should still be in modal)", m.mode)
+	}
+	got := m.tagInput.Value()
+	if got != "work, " {
+		t.Errorf("tagInput = %q, want %q", got, "work, ")
+	}
+}
+
+func TestAdd_EnterSubmitsWhenNoSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "new task")
+	// Do not type anything in tags — no suggestions visible.
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter with no suggestions should submit")
+	}
+	m = runCmd(t, m, cmd)
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal after submit", m.mode)
+	}
+}
+
+func TestAdd_EscClearsSuggestionsInsteadOfClosing(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before Esc")
+	}
+	// First Esc clears suggestions but stays in modal.
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after esc = %v, want empty", m.suggestions)
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode after first esc = %v, want modeAdd", m.mode)
+	}
+	// Second Esc closes the modal.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after second esc = %v, want modeNormal", m.mode)
+	}
+}
+
+func TestAdd_SuggestionsClearedOnCloseModal(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before close")
+	}
+	// Esc once to clear suggestions, Esc again to close.
+	m, _ = key(t, m, "esc")
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after close = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after close = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsExcludeAlreadyEnteredTags(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	// Type "work" and accept it.
+	m = typeString(t, m, "wo")
+	m, _ = key(t, m, "tab") // accept "work"
+	// Now type "w" — "work" should be excluded, only "writing" suggested.
+	m = typeString(t, m, "w")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "writing" {
+		t.Errorf("suggestions = %v, want [writing] (work excluded)", m.suggestions)
+	}
+}
+
+func TestAdd_DownNavigatesBeforeAccepting(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	// suggestions = ["personal", "project"], idx = 0
+	m, _ = key(t, m, "down") // idx = 1 -> "project"
+	m, _ = key(t, m, "tab")  // accept "project"
+	got := m.tagInput.Value()
+	if got != "project, " {
+		t.Errorf("tagInput = %q, want %q", got, "project, ")
+	}
+}
+
+func TestAdd_SuggestionsClearedInOpenAdd(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Set up some suggestions state, then open add modal.
+	m.suggestions = []string{"stale"}
+	m.suggestionIdx = 0
+	m, _ = key(t, m, "c")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after openAdd = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after openAdd = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_UpDownIgnoredWhenTitleFocused(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	// Focus is on title (default). Even if we had stale suggestions, Up/Down
+	// should not navigate them.
+	m.suggestions = []string{"work"}
+	m.suggestionIdx = 0
+	m, _ = key(t, m, "down")
+	// Should not change since title is focused — key falls through to textarea.
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx = %d, want 0 (should be unchanged when title focused)", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionsClearedOnTabToTitle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	// Simulate the stale-suggestions scenario: tag field has a partial value
+	// and suggestions were populated, but suggestionIdx is -1 (no selection).
+	// This happens after Esc clears the index but the field value remains.
+	m.tagInput.SetValue("wo")
+	m.suggestions = []string{"work"}
+	m.suggestionIdx = -1
+	// Tab should switch focus to title (since idx < 0, handleSuggestionNav
+	// does not intercept). Suggestions must be cleared so the dropdown
+	// does not render while the title field is focused.
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Fatalf("addFocus = %v, want addFocusTitle", m.addFocus)
+	}
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after Tab to title = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after Tab to title = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestAdd_SuggestionIdxResetsOnKeystrokeAfterNavigation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	// suggestions = ["personal", "project"], idx = 0
+	if m.suggestionIdx != 0 {
+		t.Fatalf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "down") // idx = 1
+	m, _ = key(t, m, "down") // idx stays 1 (clamped)
+	if m.suggestionIdx < 1 {
+		t.Fatalf("suggestionIdx after Down = %d, want >= 1", m.suggestionIdx)
+	}
+	// Type another character — should reset idx to 0 via refreshSuggestions.
+	m = typeString(t, m, "e")
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx after keystroke = %d, want 0 (should reset on new input)", m.suggestionIdx)
+	}
+}
+
+func TestAdd_ModalViewRendersSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	// Focus tag field and type a prefix to trigger suggestions.
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "w")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'w'")
+	}
+	view := m.modalView()
+	// The selected suggestion should appear with "> " prefix.
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("modalView should contain highlighted suggestion %q, got:\n%s", m.suggestions[0], view)
+	}
+	// All suggestions should be present in the output.
+	for _, s := range m.suggestions {
+		if !strings.Contains(view, s) {
+			t.Errorf("modalView should contain suggestion %q", s)
+		}
+	}
+}
+
+func TestAdd_ModalViewNoSuggestionsWhenEmpty(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	// Don't type anything in the tag field.
+	view := m.modalView()
+	// Should not contain the indented suggestion marker format.
+	if strings.Contains(view, "       > ") {
+		t.Errorf("modalView should not contain suggestion markers when no suggestions, got:\n%s", view)
+	}
+}
+
+func TestAdd_ModalViewSuggestionHighlightChangesOnNavigation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m = typeString(t, m, "p")
+	if len(m.suggestions) < 2 {
+		t.Fatalf("expected at least 2 suggestions, got %d", len(m.suggestions))
+	}
+	// Initially the first suggestion is highlighted.
+	view1 := m.modalView()
+	if !strings.Contains(view1, "> "+m.suggestions[0]) {
+		t.Errorf("first suggestion should be highlighted initially")
+	}
+	// Navigate down — second suggestion should now be highlighted.
+	m, _ = key(t, m, "down")
+	view2 := m.modalView()
+	if !strings.Contains(view2, "> "+m.suggestions[1]) {
+		t.Errorf("second suggestion should be highlighted after down, got:\n%s", view2)
+	}
+}
+
+// --- retag autocomplete tests -----------------------------------------------
+
+func TestRetag_SuggestionsAppearWhenTypingPrefix(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t") // open retag
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	// knownTags should be populated.
+	if len(m.knownTags) == 0 {
+		t.Fatal("knownTags should be populated in openRetag")
+	}
+	// Clear the input and type a prefix.
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
+		t.Errorf("suggestions = %v, want [work]", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestRetag_UpDownNavigatesSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"personal", "project", "priority"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "p")
+	if len(m.suggestions) != 3 {
+		t.Fatalf("suggestions = %v, want 3 items", m.suggestions)
+	}
+	if m.suggestionIdx != 0 {
+		t.Errorf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after down: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("after up: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Up at start stays at 0.
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("up at start: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+}
+
+func TestRetag_TabAcceptsSuggestion(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	// suggestions = ["work"], idx = 0
+	m, _ = key(t, m, "tab")
+	got := m.input.Value()
+	if got != "work, " {
+		t.Errorf("after tab accept: input = %q, want %q", got, "work, ")
+	}
+	// Suggestions should be cleared after acceptance (empty fragment).
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after accept = %v, want empty", m.suggestions)
+	}
+}
+
+func TestRetag_EnterAcceptsSuggestionInsteadOfSubmitting(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	// Enter with active suggestion should accept, not submit.
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("enter with active suggestion should not submit (cmd should be nil)")
+	}
+	if m.mode != modeRetag {
+		t.Errorf("mode = %v, want modeRetag (should stay in retag modal)", m.mode)
+	}
+	if !strings.Contains(m.input.Value(), "work, ") {
+		t.Errorf("input value = %q, want it to contain accepted suggestion 'work, '", m.input.Value())
+	}
+}
+
+func TestRetag_EnterSubmitsWhenNoSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	// Don't type anything new — no suggestions visible.
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter with no suggestions should submit")
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal (should close modal after submit)", m.mode)
+	}
+}
+
+func TestRetag_EscClearsSuggestionsInsteadOfClosing(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before Esc")
+	}
+	// First Esc clears suggestions but stays in modal.
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after esc = %v, want empty", m.suggestions)
+	}
+	if m.mode != modeRetag {
+		t.Errorf("mode after esc = %v, want modeRetag (should stay in modal)", m.mode)
+	}
+	// Second Esc closes the modal.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after 2nd esc = %v, want modeNormal", m.mode)
+	}
+}
+
+func TestRetag_SuggestionsClearedInOpenRetag(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Set up stale suggestions, then open retag modal.
+	m.suggestions = []string{"stale"}
+	m.suggestionIdx = 0
+	m, _ = key(t, m, "t")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after openRetag = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after openRetag = %d, want -1", m.suggestionIdx)
+	}
+}
+
+func TestRetag_ModalViewRendersSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	m.input.SetValue("")
+	m = typeString(t, m, "w")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'w'")
+	}
+	view := m.modalView()
+	// The selected suggestion should appear with "> " prefix.
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("retag modalView should contain highlighted suggestion %q, got:\n%s", m.suggestions[0], view)
+	}
+	// All suggestions should be present in the output.
+	for _, s := range m.suggestions {
+		if !strings.Contains(view, s) {
+			t.Errorf("retag modalView should contain suggestion %q", s)
+		}
+	}
+}
+
+func TestRetag_ModalViewNoSuggestionsWhenEmpty(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	// Don't type anything new in the tag field.
+	view := m.modalView()
+	// Should not contain the indented suggestion marker format.
+	if strings.Contains(view, "       > ") {
+		t.Errorf("retag modalView should not contain suggestion markers when no suggestions, got:\n%s", view)
 	}
 }
 
@@ -4411,6 +5079,101 @@ func TestHelpMode_ModalViewNonEmpty(t *testing.T) {
 	}
 }
 
+func TestHelpLine_ScheduleView_EnterNotes(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+	m.viewMode = viewSchedule
+
+	help := m.helpLine()
+	if !strings.Contains(help, "enter") || !strings.Contains(help, "notes") {
+		t.Errorf("schedule view help line should contain 'enter notes', got: %s", help)
+	}
+}
+
+func TestHelpLine_TagView_EnterNotes(t *testing.T) {
+	task := makeTask(t, "01HN01", "task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	m.mode = modeNormal
+
+	help := m.helpLine()
+	if !strings.Contains(help, "enter") || !strings.Contains(help, "notes") {
+		t.Errorf("tag view help line should contain 'enter notes', got: %s", help)
+	}
+}
+
+func TestHelpLine_DetailOpen_ShowsPanelKeys(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01HN02", Title: "test task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-16T00:00:00Z"},
+	)
+	m.mode = modeNormal
+	m.detailOpen = true
+
+	help := m.helpLine()
+	for _, want := range []string{"esc", "close", "enter", "submit", "alt+enter", "newline"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("detail open help line should contain %q, got: %s", want, help)
+		}
+	}
+	// Should NOT contain normal mode keys like "done", "edit", "grab"
+	for _, notWant := range []string{"done", "edit", "grab"} {
+		if strings.Contains(help, notWant) {
+			t.Errorf("detail open help line should not contain %q, got: %s", notWant, help)
+		}
+	}
+}
+
+// TestHelpLine_NormalMode_ContainsSearchHint verifies the `/` search key is
+// advertised in the normal-mode help bar for both schedule and tag views.
+func TestHelpLine_NormalMode_ContainsSearchHint_ScheduleView(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+	m.viewMode = viewSchedule
+
+	help := m.helpLine()
+	if !strings.Contains(help, "/") {
+		t.Errorf("schedule view help line missing '/' hint, got: %s", help)
+	}
+	if !strings.Contains(strings.ToLower(help), "search") {
+		t.Errorf("schedule view help line missing 'search' hint, got: %s", help)
+	}
+}
+
+func TestHelpLine_NormalMode_ContainsSearchHint_TagView(t *testing.T) {
+	task := makeTask(t, "01HS01", "task", schedule.Today, []string{"work"})
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	m.mode = modeNormal
+
+	help := m.helpLine()
+	if !strings.Contains(help, "/") {
+		t.Errorf("tag view help line missing '/' hint, got: %s", help)
+	}
+	if !strings.Contains(strings.ToLower(help), "search") {
+		t.Errorf("tag view help line missing 'search' hint, got: %s", help)
+	}
+}
+
+// TestHelpModal_ContainsSearchSection ensures the Help modal lists the search
+// entry key and a brief description of search keybindings.
+func TestHelpModal_ContainsSearchSection(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeHelp
+
+	view := m.modalView()
+	if !strings.Contains(view, "/") {
+		t.Errorf("help modal missing '/' key: %s", view)
+	}
+	if !strings.Contains(strings.ToLower(view), "search") {
+		t.Errorf("help modal missing 'search' label: %s", view)
+	}
+}
+
 func TestDone_SetsCompletedAt(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "complete me", Status: "open", Schedule: "today",
@@ -4724,5 +5487,1903 @@ func TestVlistItemHeight_MultilineTitle(t *testing.T) {
 	// 80 - 2 padding = 78 text width; title is short but has a newline → 2 title lines + 1 desc + 1 blank = 4.
 	if h := m.lists[0].itemHeight(0); h != 4 {
 		t.Errorf("itemHeight = %d, want 4 (newline in title)", h)
+	}
+}
+
+// --- detail panel tests ---------------------------------------------------
+
+func TestDetailPanel_EnterOpensPanel(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if m.detailOpen {
+		t.Fatal("detailOpen should be false initially")
+	}
+
+	m, _ = key(t, m, "enter")
+
+	if !m.detailOpen {
+		t.Error("detailOpen should be true after Enter")
+	}
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll = %d, want 0", m.detailScroll)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want modeNormal (%d)", m.mode, modeNormal)
+	}
+}
+
+func TestDetailPanel_EnterDoesNothingWithNoTask(t *testing.T) {
+	// Empty tab — no tasks to select.
+	m := newTestModel(t)
+
+	m, _ = key(t, m, "enter")
+
+	if m.detailOpen {
+		t.Error("detailOpen should remain false when no task is selected")
+	}
+}
+
+func TestDetailPanel_EscClosesPanel(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open after Enter")
+	}
+
+	// Close panel.
+	m, _ = key(t, m, "esc")
+	if m.detailOpen {
+		t.Error("detailOpen should be false after Esc")
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want modeNormal (%d)", m.mode, modeNormal)
+	}
+}
+
+func TestDetailPanel_NavigationResetsScroll(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Give it a window so the list has dimensions.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	// Simulate having scrolled down in the detail panel.
+	m.detailScroll = 5
+
+	// Navigate down — should reset scroll.
+	m, _ = key(t, m, "down")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll after down = %d, want 0", m.detailScroll)
+	}
+
+	// Simulate scroll again and navigate up.
+	m.detailScroll = 3
+	m, _ = key(t, m, "up")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll after up = %d, want 0", m.detailScroll)
+	}
+}
+
+func TestDetailPanel_StaysOpenDuringNavigation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Navigate down — panel should stay open.
+	m, _ = key(t, m, "down")
+	if !m.detailOpen {
+		t.Error("detailOpen should remain true after down navigation")
+	}
+
+	// Navigate up — panel should stay open.
+	m, _ = key(t, m, "up")
+	if !m.detailOpen {
+		t.Error("detailOpen should remain true after up navigation")
+	}
+}
+
+func TestDetailPanel_NoteAreaInitialized(t *testing.T) {
+	m := newTestModel(t)
+
+	// The noteArea should have the placeholder text.
+	if m.noteArea.Placeholder != "add a note..." {
+		t.Errorf("noteArea.Placeholder = %q, want %q", m.noteArea.Placeholder, "add a note...")
+	}
+}
+
+func TestDetailPanel_TextInputRoutedToNoteArea(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel — noteArea gets focus.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	// Type text that doesn't start with an action key — when the textarea is
+	// empty, single-char action keys (d/r/t/c/x/m/a/e/s/v/h/q) fall through
+	// to their handlers. Once the first non-action character lands in the
+	// textarea, subsequent characters (including action keys) are captured.
+	m = typeString(t, m, "notes")
+	if got := m.noteArea.Value(); got != "notes" {
+		t.Errorf("noteArea.Value() = %q, want %q", got, "notes")
+	}
+}
+
+func TestDetailPanel_EscClearsNoteArea(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open, type (non-action-key starting text), close.
+	m, _ = key(t, m, "enter")
+	m = typeString(t, m, "note text")
+	m, _ = key(t, m, "esc")
+
+	if m.detailOpen {
+		t.Error("panel should be closed")
+	}
+	if got := m.noteArea.Value(); got != "" {
+		t.Errorf("noteArea should be empty after close, got %q", got)
+	}
+}
+
+func TestDetailPanel_ActionKeysStillWorkWhenOpen(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel — textarea should be empty.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+	if strings.TrimSpace(m.noteArea.Value()) != "" {
+		t.Fatal("textarea should be empty after opening panel")
+	}
+
+	// 'd' (done) should work because textarea is empty — produces a save
+	// command and marks the task done when the command completes.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("'d' should return a command when detail panel is open with empty textarea")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+	// Verify the task actually moved to the Done tab (index 5).
+	if got := len(m.lists[0].Items()); got != 0 {
+		t.Errorf("Today tab should be empty after done, got %d items", got)
+	}
+	if got := len(m.lists[5].Items()); got != 1 {
+		t.Errorf("Done tab should have 1 item, got %d", got)
+	}
+
+	// Also verify 'h' opens help mode when textarea is empty.
+	m2 := newTestModel(t,
+		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next2, _ := m2.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m2 = next2.(*Model)
+	m2, _ = key(t, m2, "enter")
+	m2, _ = key(t, m2, "h")
+	if m2.mode != modeHelp {
+		t.Errorf("'h' with panel open (empty textarea) should switch to help mode, got mode=%d", m2.mode)
+	}
+
+	// Verify action keys are captured by textarea when it has content.
+	m3 := newTestModel(t,
+		model.Task{ID: "01C", Title: "task three", Status: "open", Schedule: "today",
+			Position: 3000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next3, _ := m3.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m3 = next3.(*Model)
+	m3, _ = key(t, m3, "enter")
+	m3 = typeString(t, m3, "some text")
+	// Now 'd' should go to textarea, not trigger done.
+	m3, cmd3 := key(t, m3, "d")
+	// The cmd should be nil (textarea internal cursor blink) or at least not a done save.
+	// The textarea value should contain 'd'.
+	if !strings.Contains(m3.noteArea.Value(), "d") {
+		t.Errorf("'d' with non-empty textarea should go to textarea, got value=%q", m3.noteArea.Value())
+	}
+	_ = cmd3
+}
+
+func TestDetailPanel_TabSwitchResetsScroll(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	// Open panel, set some scroll.
+	m, _ = key(t, m, "enter")
+	m.detailScroll = 5
+
+	// Switch tab.
+	m, _ = key(t, m, "right")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll = %d after tab switch, want 0", m.detailScroll)
+	}
+}
+
+// --- detail panel rendering tests ------------------------------------------
+
+func TestDetailPanelView_EmptyWhenClosed(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	if got := m.detailPanelView(); got != "" {
+		t.Errorf("detailPanelView() should be empty when panel is closed, got %q", got)
+	}
+}
+
+func TestDetailPanelView_ShowsTaskMetadata(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ABCDEF", Title: "my test task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Tags:      []string{"work", "urgent"},
+			CreatedAt: "2026-04-15T10:00:00Z",
+			UpdatedAt: "2026-04-15T10:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open the panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	panel := m.detailPanelView()
+	if panel == "" {
+		t.Fatal("detailPanelView() should not be empty when panel is open")
+	}
+
+	// Title should be visible.
+	if !strings.Contains(panel, "my test task") {
+		t.Errorf("panel should contain the task title; got %q", panel)
+	}
+
+	// Schedule should be visible.
+	if !strings.Contains(panel, "Schedule:") {
+		t.Errorf("panel should contain schedule label; got %q", panel)
+	}
+
+	// Tags should be visible.
+	if !strings.Contains(panel, "Tags:") {
+		t.Errorf("panel should contain tags label; got %q", panel)
+	}
+	if !strings.Contains(panel, "work") {
+		t.Errorf("panel should contain tag 'work'; got %q", panel)
+	}
+	if !strings.Contains(panel, "urgent") {
+		t.Errorf("panel should contain tag 'urgent'; got %q", panel)
+	}
+
+	// Created date should be visible.
+	if !strings.Contains(panel, "Created:") {
+		t.Errorf("panel should contain created label; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_ShowsCompletedDate(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01DONE", Title: "done task", Status: "done",
+			Schedule:    expectSchedule(t, "today"), Position: 1000,
+			CreatedAt:   "2026-04-10T10:00:00Z",
+			UpdatedAt:   "2026-04-15T10:00:00Z",
+			CompletedAt: "2026-04-15T10:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Navigate to the Done tab.
+	doneIdx := findTabByLabel(t, m, "Done")
+	for m.activeTab != doneIdx {
+		m, _ = key(t, m, "right")
+	}
+
+	// Open the panel.
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "Completed:") {
+		t.Errorf("panel should show completed date for done tasks; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_ShowsBody(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01BODY", Title: "task with body", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "this is the body text\nwith multiple lines",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "this is the body text") {
+		t.Errorf("panel should contain body text; got %q", panel)
+	}
+	if !strings.Contains(panel, "with multiple lines") {
+		t.Errorf("panel should contain body continuation; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_EmptyBodyOK(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01NOBODY", Title: "no body task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+	if panel == "" {
+		t.Error("panel should render even with empty body")
+	}
+	// Should still contain the separator line (─).
+	if !strings.Contains(panel, "─") {
+		t.Errorf("panel should contain separator line; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_HidesActiveTag(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ACTIVE", Title: "active task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Tags:      []string{"work", "active"},
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	// "work" should be visible but "active" tag should be filtered by VisibleTags.
+	if !strings.Contains(panel, "work") {
+		t.Errorf("panel should show visible tags; got %q", panel)
+	}
+	// The panel should not show "active" as a tag (it's filtered by VisibleTags).
+	// Check that Tags: line doesn't contain the word "active".
+	for _, line := range strings.Split(panel, "\n") {
+		if strings.Contains(line, "Tags:") && strings.Contains(line, "active") {
+			t.Errorf("panel Tags line should not contain the reserved 'active' tag; got %q", line)
+		}
+	}
+}
+
+func TestDetailPanelView_NoTagsLine(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01NOTAG", Title: "no tags", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Tags:      nil,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+	if strings.Contains(panel, "Tags:") {
+		t.Errorf("panel should not show Tags line when there are no tags; got %q", panel)
+	}
+}
+
+func TestDetailPanel_ListNarrowsWhenOpen(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	widthBefore := m.lists[0].Width()
+
+	// Open the detail panel.
+	m, _ = key(t, m, "enter")
+
+	widthAfter := m.lists[0].Width()
+	if widthAfter >= widthBefore {
+		t.Errorf("list width should shrink when detail panel opens: before=%d after=%d", widthBefore, widthAfter)
+	}
+
+	// The detail panel width should be ~45% of terminal width.
+	dpw := m.detailPanelWidth()
+	if dpw == 0 {
+		t.Fatal("detailPanelWidth() should be > 0 when panel is open")
+	}
+	if widthAfter+dpw != 100 {
+		t.Errorf("list width + detail panel width should equal terminal width: %d + %d = %d, want 100",
+			widthAfter, dpw, widthAfter+dpw)
+	}
+}
+
+func TestDetailPanel_ListRestoresWidthWhenClosed(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	widthBefore := m.lists[0].Width()
+
+	// Open and close the panel.
+	m, _ = key(t, m, "enter")
+	m, _ = key(t, m, "esc")
+
+	widthAfter := m.lists[0].Width()
+	if widthAfter != widthBefore {
+		t.Errorf("list width should restore after panel close: before=%d after=%d", widthBefore, widthAfter)
+	}
+}
+
+func TestDetailPanel_ResizeRecalculatesWidths(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	widthAt100 := m.lists[0].Width()
+
+	// Resize terminal wider.
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = next.(*Model)
+	widthAt120 := m.lists[0].Width()
+
+	if widthAt120 <= widthAt100 {
+		t.Errorf("list width should grow when terminal widens: at100=%d at120=%d", widthAt100, widthAt120)
+	}
+	// Sum should equal new terminal width.
+	dpw := m.detailPanelWidth()
+	if widthAt120+dpw != 120 {
+		t.Errorf("list + panel should equal terminal width: %d + %d = %d, want 120",
+			widthAt120, dpw, widthAt120+dpw)
+	}
+}
+
+func TestDetailPanelView_AppearsInView(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ABCDEF", Title: "my viewable task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "some body content",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// View without panel open should not contain detail-panel-specific content.
+	viewClosed := m.View()
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	viewOpen := m.View()
+
+	// The open view should contain the task title in the panel.
+	if !strings.Contains(viewOpen, "my viewable task") {
+		t.Errorf("View() with panel open should contain task title")
+	}
+	if !strings.Contains(viewOpen, "some body content") {
+		t.Errorf("View() with panel open should contain body content")
+	}
+	// The separator (─) should appear in the panel.
+	if !strings.Contains(viewOpen, "─") {
+		t.Errorf("View() with panel open should contain the separator line")
+	}
+	// Confirm that closed view does NOT contain body content in the list rendering.
+	if strings.Contains(viewClosed, "some body content") {
+		t.Errorf("View() without panel should not contain body content")
+	}
+}
+
+func TestDetailPanelWidth_ZeroWhenClosed(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	if w := m.detailPanelWidth(); w != 0 {
+		t.Errorf("detailPanelWidth() = %d when closed, want 0", w)
+	}
+}
+
+func TestDetailPanelWidth_Proportional(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	pw := m.detailPanelWidth()
+
+	// Should be ~45% of 100 = 45.
+	if pw != 45 {
+		t.Errorf("detailPanelWidth() = %d for width 100, want 45", pw)
+	}
+}
+
+func TestDetailPanelView_BodyScrollOffset(t *testing.T) {
+	// Create a task with a long body that requires scrolling.
+	var bodyLines []string
+	for i := 0; i < 50; i++ {
+		bodyLines = append(bodyLines, fmt.Sprintf("line %d of the body", i))
+	}
+	longBody := strings.Join(bodyLines, "\n")
+
+	m := newTestModel(t,
+		model.Task{ID: "01SCROLL", Title: "scrollable", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      longBody,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+
+	// With scroll at 0, "line 0" should be visible.
+	panel0 := m.detailPanelView()
+	if !strings.Contains(panel0, "line 0 of the body") {
+		t.Error("panel at scroll=0 should show line 0")
+	}
+
+	// Set scroll offset to skip first 10 lines.
+	m.detailScroll = 10
+	panel10 := m.detailPanelView()
+
+	// "line 0" should no longer be visible (scrolled past).
+	if strings.Contains(panel10, "line 0 of the body") {
+		t.Error("panel at scroll=10 should not show line 0")
+	}
+	// "line 10" should now be visible (first visible after scroll).
+	if !strings.Contains(panel10, "line 10 of the body") {
+		t.Error("panel at scroll=10 should show line 10")
+	}
+}
+
+// --- Note Submission (Task 8) tests ----------------------------------------
+
+func TestDetailPanel_NoteSubmission(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01NOTE", Title: "note target", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open detail panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+
+	// Type a note (starts with non-action-key character so it goes to textarea).
+	m = typeString(t, m, "first note")
+	if got := m.noteArea.Value(); got != "first note" {
+		t.Fatalf("noteArea = %q, want %q", got, "first note")
+	}
+
+	// Submit with Enter — should return a tea.Cmd (the async save).
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("submit should return a non-nil cmd")
+	}
+
+	// Textarea should be cleared immediately after submission.
+	if got := m.noteArea.Value(); got != "" {
+		t.Errorf("noteArea should be empty after submit, got %q", got)
+	}
+
+	// Execute the async command to simulate the save completing.
+	m = runCmd(t, m, cmd)
+
+	// After save+reload, the task's body should contain the note text and
+	// NoteCount should be 1.
+	task := m.selectedTask()
+	if task == nil {
+		t.Fatal("no task selected after reload")
+	}
+	if !strings.Contains(task.Body, "first note") {
+		t.Errorf("task body should contain the note, got %q", task.Body)
+	}
+	if task.NoteCount != 1 {
+		t.Errorf("NoteCount = %d, want 1", task.NoteCount)
+	}
+	if m.statusMsg != "Note added: note target" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "Note added: note target")
+	}
+}
+
+func TestDetailPanel_NoteSubmission_EmptyIgnored(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01EMPTY", Title: "empty note", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Press Enter with empty textarea — should be a no-op (nil cmd).
+	_, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("Enter with empty textarea should return nil cmd")
+	}
+
+	// Task should be unchanged.
+	task := m.selectedTask()
+	if task == nil {
+		t.Fatal("no task selected")
+	}
+	if task.NoteCount != 0 {
+		t.Errorf("NoteCount = %d, want 0 (empty input should be ignored)", task.NoteCount)
+	}
+}
+
+func TestDetailPanel_NoteSubmission_WhitespaceOnlyIgnored(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01WS", Title: "whitespace note", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Type only spaces.
+	m = typeString(t, m, "   ")
+
+	// Press Enter — should be no-op.
+	_, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("Enter with whitespace-only textarea should return nil cmd")
+	}
+}
+
+func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
+	// Task already has a note (NoteCount=1, body with separator).
+	m := newTestModel(t,
+		model.Task{ID: "01INC", Title: "has notes", Status: "open",
+			Schedule:  expectSchedule(t, "today"), Position: 1000,
+			Body:      "--- 2026-04-15 10:00:00 ---\nexisting note",
+			NoteCount: 1,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel, type (non-action-key starting text), submit.
+	m, _ = key(t, m, "enter")
+	m = typeString(t, m, "new note")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task := m.selectedTask()
+	if task == nil {
+		t.Fatal("no task selected after reload")
+	}
+	if task.NoteCount != 2 {
+		t.Errorf("NoteCount = %d, want 2", task.NoteCount)
+	}
+	if !strings.Contains(task.Body, "existing note") {
+		t.Error("original note should still be present")
+	}
+	if !strings.Contains(task.Body, "new note") {
+		t.Error("new note should be present")
+	}
+}
+
+func TestDetailPanel_AltEnterInsertsNewline(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ALT", Title: "alt enter test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+
+	// Type some text.
+	m = typeString(t, m, "line one")
+
+	// Send Alt+Enter — should insert a newline, not submit.
+	altEnter := tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+	next2, cmd := m.Update(altEnter)
+	m = next2.(*Model)
+	// If there was a cmd from the textarea update, run it (textarea internal).
+	if cmd != nil {
+		// Textarea may return internal cmds; just feed them back.
+		next3, _ := m.Update(cmd())
+		m = next3.(*Model)
+	}
+
+	// Type more text after the newline.
+	m = typeString(t, m, "line two")
+
+	// The value should contain both lines separated by a newline.
+	val := m.noteArea.Value()
+	if !strings.Contains(val, "line one") || !strings.Contains(val, "line two") {
+		t.Errorf("expected multi-line content, got %q", val)
+	}
+	if !strings.Contains(val, "\n") {
+		t.Errorf("expected newline character in multi-line content, got %q", val)
+	}
+}
+
+func TestDetailPanel_NoteSubmission_NoTaskSelected(t *testing.T) {
+	// Empty model — no tasks, so no task selected.
+	m := newTestModel(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Manually force panel open and type text (normally Enter wouldn't open
+	// without a task, but we test the submitNote guard directly).
+	m.detailOpen = true
+	m.noteArea.Focus()
+	m.noteArea.SetValue("orphan note")
+
+	// submitNote should return nil because selectedTask() returns nil.
+	cmd := m.submitNote()
+	if cmd != nil {
+		t.Error("submitNote with no task selected should return nil")
+	}
+}
+
+func TestDetailPanel_NoteSubmission_UpdatesUpdatedAt(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01UPD", Title: "update at test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2020-01-01T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel and type a note (non-action-key starting text).
+	m, _ = key(t, m, "enter")
+	m = typeString(t, m, "note for update")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("submit should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("save error: %v", m.err)
+	}
+
+	task, err := m.store.GetByPrefix("01UPD")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.UpdatedAt == "2020-01-01T00:00:00Z" {
+		t.Error("UpdatedAt should change after note submission via TUI")
+	}
+}
+
+func TestDetailPanel_ViewWithNoTaskSelected(t *testing.T) {
+	// Empty model — no tasks.
+	m := newTestModel(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Force panel open — detailPanelView should return "" with no task.
+	m.detailOpen = true
+	got := m.detailPanelView()
+	if got != "" {
+		t.Errorf("detailPanelView with no task should return empty, got %q", got)
+	}
+}
+
+func TestDetailPanel_ScrollBodyDown(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01SCR", Title: "scroll test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel.
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+	if m.detailScroll != 0 {
+		t.Fatalf("initial scroll should be 0, got %d", m.detailScroll)
+	}
+
+	// Scroll down with ']'.
+	m, _ = key(t, m, "]")
+	if m.detailScroll != 1 {
+		t.Errorf("detailScroll after ] should be 1, got %d", m.detailScroll)
+	}
+
+	// Scroll up with '['.
+	m, _ = key(t, m, "[")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll after [ should be 0, got %d", m.detailScroll)
+	}
+
+	// Scroll up at 0 should stay at 0.
+	m, _ = key(t, m, "[")
+	if m.detailScroll != 0 {
+		t.Errorf("detailScroll should not go negative, got %d", m.detailScroll)
+	}
+}
+
+func TestDetailPanel_ScrollOutOfBoundsStillRenders(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01OOB", Title: "oob scroll", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "short body",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	// Open panel and set scroll way beyond body length.
+	m, _ = key(t, m, "enter")
+	m.detailScroll = 999
+
+	// detailPanelView should still render without panic.
+	got := m.detailPanelView()
+	if got == "" {
+		t.Error("detailPanelView should still render even with scroll out of bounds")
+	}
+}
+
+func TestDetailPanel_HelpLineShowsScrollKeys(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01HLP", Title: "help test", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	help := m.helpLine()
+	if !strings.Contains(help, "scroll") {
+		t.Errorf("help line when detail open should mention scroll, got: %s", help)
+	}
+}
+
+// --- search overlay entry/exit plumbing (Task 3) ---------------------------
+
+func TestSearch_SlashEntersSearchMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "write docs", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("mode after '/' = %v, want modeSearch", m.mode)
+	}
+	if len(m.search.haystack) != 2 {
+		t.Errorf("haystack size = %d, want 2 (open + done tasks)", len(m.search.haystack))
+	}
+	// Initial rank with empty query should return all docs (sorted by CreatedAt desc).
+	if len(m.search.results) != 2 {
+		t.Errorf("results size = %d, want 2 for empty query", len(m.search.results))
+	}
+	if m.search.cursor != 0 {
+		t.Errorf("cursor = %d, want 0", m.search.cursor)
+	}
+}
+
+func TestSearch_EscClosesSearchMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc = %v, want modeNormal", m.mode)
+	}
+	if len(m.search.haystack) != 0 {
+		t.Errorf("haystack should be cleared on close, got len=%d", len(m.search.haystack))
+	}
+	if len(m.search.results) != 0 {
+		t.Errorf("results should be cleared on close, got len=%d", len(m.search.results))
+	}
+}
+
+func TestSearch_SlashInGrabModeDoesNotChangeMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].Select(0)
+	m, _ = key(t, m, "m")
+	if m.mode != modeGrab {
+		t.Fatalf("precondition: mode = %v, want modeGrab", m.mode)
+	}
+	m, _ = key(t, m, "/")
+	if m.mode != modeGrab {
+		t.Errorf("mode after '/' in grab = %v, want modeGrab (grab intact)", m.mode)
+	}
+}
+
+// --- search overlay input/navigation behaviour (Task 4) --------------------
+
+func TestSearch_TypingRerunsQueryAndChangesResults(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "write docs", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01C", Title: "refactor login", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 500,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	// Empty-query rank returns all 3 docs.
+	if got := len(m.search.results); got != 3 {
+		t.Fatalf("initial results = %d, want 3", got)
+	}
+
+	m = typeString(t, m, "login")
+	if got := m.search.input.Value(); got != "login" {
+		t.Errorf("input value = %q, want %q", got, "login")
+	}
+	// Only the two "login" tasks should match.
+	if got := len(m.search.results); got != 2 {
+		t.Errorf("results after typing %q = %d, want 2", "login", got)
+	}
+	// Confirm the matched IDs are the login-bearing tasks, not "write docs".
+	for _, r := range m.search.results {
+		id := m.search.haystack[r.docIdx].task.ID
+		if id == "01B" {
+			t.Errorf("result includes non-matching task %q", id)
+		}
+	}
+}
+
+func TestSearch_TypingRefinesAndClampsCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01C", Title: "gamma", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 3000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	// Move cursor to the last result, then type a query that produces fewer
+	// results — the cursor must clamp down.
+	m.search.cursor = 2
+	m = typeString(t, m, "alp")
+	if got := len(m.search.results); got != 1 {
+		t.Fatalf("results after %q = %d, want 1", "alp", got)
+	}
+	if m.search.cursor != 0 {
+		t.Errorf("cursor after narrowing = %d, want 0 (clamped)", m.search.cursor)
+	}
+}
+
+// TestSearch_ClampSearchCursorNoOpWithNonZeroCursor covers the path where the
+// cursor already points inside the (possibly-grown) result set: clampSearchCursor
+// must leave a valid non-zero cursor untouched. A previous implementation could
+// regress by always snapping back to zero when results change.
+func TestSearch_ClampSearchCursorNoOpWithNonZeroCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01C", Title: "gamma", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 3000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if got := len(m.search.results); got != 3 {
+		t.Fatalf("precondition: results = %d, want 3", got)
+	}
+	// Park the cursor on the middle result (still in-range for any result set
+	// that has >= 2 entries).
+	m.search.cursor = 1
+	// Directly exercise clampSearchCursor; it must leave the cursor at 1.
+	m.clampSearchCursor()
+	if m.search.cursor != 1 {
+		t.Errorf("clampSearchCursor moved in-range cursor: got %d, want 1", m.search.cursor)
+	}
+	// Now grow/refresh the result set by typing a broad query that still
+	// matches all docs. Cursor should still be preserved, not snapped to 0.
+	m = typeString(t, m, "a")
+	if len(m.search.results) < 2 {
+		t.Fatalf("results after broad query = %d, want >= 2", len(m.search.results))
+	}
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after broadening query = %d, want 1 (no-op clamp)", m.search.cursor)
+	}
+}
+
+func TestSearch_EscKeepsActiveTabAndListCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "second", Status: "open",
+			Schedule: expectSchedule(t, schedule.Tomorrow), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Move to the Tomorrow tab with the cursor anchored there.
+	tomorrowIdx := findTabByLabel(t, m, "Tomorrow")
+	m.activeTab = tomorrowIdx
+	m.lists[tomorrowIdx].Select(0)
+
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	// Type something and move the search cursor around, then cancel.
+	m = typeString(t, m, "first")
+	m, _ = key(t, m, "esc")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after esc = %v, want modeNormal", m.mode)
+	}
+	if m.activeTab != tomorrowIdx {
+		t.Errorf("activeTab after esc = %d, want %d (untouched)", m.activeTab, tomorrowIdx)
+	}
+	if got := m.lists[tomorrowIdx].Index(); got != 0 {
+		t.Errorf("list cursor after esc = %d, want 0", got)
+	}
+}
+
+func TestSearch_CursorDownUpClampsAtBoundaries(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:02Z"},
+		model.Task{ID: "01C", Title: "gamma", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 3000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:03Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.search.cursor != 0 {
+		t.Fatalf("precondition: cursor = %d, want 0", m.search.cursor)
+	}
+	// Up at position 0 stays at 0 (no underflow).
+	m, _ = key(t, m, "up")
+	if m.search.cursor != 0 {
+		t.Errorf("cursor after up at 0 = %d, want 0", m.search.cursor)
+	}
+	m, _ = key(t, m, "down")
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after down = %d, want 1", m.search.cursor)
+	}
+	m, _ = key(t, m, "down")
+	m, _ = key(t, m, "down") // at end already, should clamp
+	if m.search.cursor != 2 {
+		t.Errorf("cursor after down past end = %d, want 2 (clamped)", m.search.cursor)
+	}
+	m, _ = key(t, m, "up")
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after up from end = %d, want 1", m.search.cursor)
+	}
+}
+
+func TestSearch_CtrlNavAliasesMoveCursor(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+		model.Task{ID: "01B", Title: "beta", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:02Z"},
+	)
+	m, _ = key(t, m, "/")
+	// ctrl+n should move cursor down.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = next.(*Model)
+	if m.search.cursor != 1 {
+		t.Errorf("cursor after ctrl+n = %d, want 1", m.search.cursor)
+	}
+	// ctrl+p should move cursor up.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m = next.(*Model)
+	if m.search.cursor != 0 {
+		t.Errorf("cursor after ctrl+p = %d, want 0", m.search.cursor)
+	}
+}
+
+func TestSearch_PgDnPgUpMovesByPage(t *testing.T) {
+	var tasks []model.Task
+	for i := 0; i < searchPageSize+5; i++ {
+		tasks = append(tasks, model.Task{
+			ID:        fmt.Sprintf("01%02d", i),
+			Title:     fmt.Sprintf("task %02d", i),
+			Status:    "open",
+			Schedule:  expectSchedule(t, schedule.Today),
+			Position:  float64((i + 1) * 1000),
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: fmt.Sprintf("2026-04-13T00:00:%02dZ", i),
+		})
+	}
+	m := newTestModel(t, tasks...)
+	m, _ = key(t, m, "/")
+	// pgdown jumps by searchPageSize.
+	m, _ = key(t, m, "pgdown")
+	if m.search.cursor != searchPageSize {
+		t.Errorf("cursor after pgdown = %d, want %d", m.search.cursor, searchPageSize)
+	}
+	// pgdown again clamps at end.
+	m, _ = key(t, m, "pgdown")
+	wantEnd := len(m.search.results) - 1
+	if m.search.cursor != wantEnd {
+		t.Errorf("cursor after second pgdown = %d, want %d (clamped)", m.search.cursor, wantEnd)
+	}
+	// pgup brings it back down by a page.
+	m, _ = key(t, m, "pgup")
+	want := wantEnd - searchPageSize
+	if want < 0 {
+		want = 0
+	}
+	if m.search.cursor != want {
+		t.Errorf("cursor after pgup = %d, want %d", m.search.cursor, want)
+	}
+}
+
+func TestSearch_CtrlCClosesLikeEsc(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = next.(*Model)
+	if m.mode != modeNormal {
+		t.Errorf("mode after ctrl+c = %v, want modeNormal", m.mode)
+	}
+	if len(m.search.haystack) != 0 {
+		t.Errorf("haystack not cleared after ctrl+c, len = %d", len(m.search.haystack))
+	}
+}
+
+func TestSearch_RecomputeLayoutSetsInputWidthInSearchMode(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "first", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(*Model)
+	m, _ = key(t, m, "/")
+	// recomputeLayout is called inside openSearch; input width should be set.
+	wantW := 120 - searchInputReserve
+	if got := m.search.input.Width; got != wantW {
+		t.Errorf("search input width = %d, want %d", got, wantW)
+	}
+
+	// A resize while in search mode should update the width too.
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = next.(*Model)
+	wantW = 80 - searchInputReserve
+	if got := m.search.input.Width; got != wantW {
+		t.Errorf("search input width after resize = %d, want %d", got, wantW)
+	}
+}
+
+// --- search overlay commit / cross-tab focus (Task 5) ----------------------
+
+func TestSearch_CommitScheduleViewFocusesTargetTab(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "today task", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "tomorrow special", Status: "open",
+			Schedule: expectSchedule(t, schedule.Tomorrow), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+	)
+	// Start from the Today tab.
+	m.activeTab = findTabByLabel(t, m, "Today")
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "tomorrow special")
+	if got := len(m.search.results); got == 0 {
+		t.Fatalf("results empty after typing query")
+	}
+	// The first result should be the Tomorrow task (title match).
+	firstDoc := m.search.haystack[m.search.results[0].docIdx].task
+	if firstDoc.ID != "01B" {
+		t.Fatalf("first result = %q, want 01B (tomorrow special)", firstDoc.ID)
+	}
+	m, _ = key(t, m, "enter")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after enter = %v, want modeNormal", m.mode)
+	}
+	tomorrowIdx := findTabByLabel(t, m, "Tomorrow")
+	if m.activeTab != tomorrowIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Tomorrow)", m.activeTab, tomorrowIdx)
+	}
+	// The cursor should rest on the target task in the Tomorrow tab.
+	items := m.lists[tomorrowIdx].Items()
+	sel := m.lists[tomorrowIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01B" {
+		t.Errorf("selected task = %+v, want ID 01B", selItem.task)
+	}
+}
+
+func TestSearch_CommitDoneTaskSwitchesToDoneTab(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "open thing", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "finished artifact", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+	)
+	m.activeTab = findTabByLabel(t, m, "Today")
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "finished")
+	if got := len(m.search.results); got == 0 {
+		t.Fatalf("no results for 'finished'")
+	}
+	m, _ = key(t, m, "enter")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after enter = %v, want modeNormal", m.mode)
+	}
+	doneIdx := findTabByLabel(t, m, "Done")
+	if m.activeTab != doneIdx {
+		t.Errorf("activeTab after committing done task = %d, want %d (Done)", m.activeTab, doneIdx)
+	}
+	items := m.lists[doneIdx].Items()
+	sel := m.lists[doneIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01B" {
+		t.Errorf("selected task = %+v, want ID 01B", selItem.task)
+	}
+}
+
+func TestSearch_CommitTagViewFocusesCorrectTagTab(t *testing.T) {
+	task1 := makeTask(t, "01WRK", "work refactor", schedule.Today, []string{"work"})
+	task1.CreatedAt = "2026-04-13T00:00:00Z"
+	task2 := makeTask(t, "01HOM", "home errand", schedule.Today, []string{"home"})
+	task2.CreatedAt = "2026-04-13T00:00:01Z"
+	m := newTestModel(t, task1, task2)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	// Start from the Active tab (index 0 by construction of tagTabs).
+	m.activeTab = 0
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "home errand")
+	if got := len(m.search.results); got == 0 {
+		t.Fatalf("no results for 'home errand'")
+	}
+	m, _ = key(t, m, "enter")
+
+	if m.mode != modeNormal {
+		t.Errorf("mode after enter = %v, want modeNormal", m.mode)
+	}
+	homeIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "home" {
+			homeIdx = i
+			break
+		}
+	}
+	if homeIdx < 0 {
+		t.Fatalf("no home tag tab found")
+	}
+	if m.activeTab != homeIdx {
+		t.Errorf("activeTab after commit = %d, want %d (home)", m.activeTab, homeIdx)
+	}
+	items := m.lists[homeIdx].Items()
+	sel := m.lists[homeIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01HOM" {
+		t.Errorf("selected task = %+v, want ID 01HOM", selItem.task)
+	}
+}
+
+func TestSearch_CommitTagViewActiveTakesPriority(t *testing.T) {
+	task := makeTask(t, "01ACT", "active workflow", schedule.Today,
+		[]string{"work", model.ActiveTag})
+	task.CreatedAt = "2026-04-13T00:00:00Z"
+	m := newTestModel(t, task)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+	// Start from a non-Active tab to force the jump.
+	workIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.tag == "work" {
+			workIdx = i
+		}
+	}
+	if workIdx < 0 {
+		t.Fatalf("no work tag tab found")
+	}
+	m.activeTab = workIdx
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "active workflow")
+	m, _ = key(t, m, "enter")
+
+	activeIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.isActive {
+			activeIdx = i
+		}
+	}
+	if activeIdx < 0 {
+		t.Fatalf("no Active tag tab found")
+	}
+	if m.activeTab != activeIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Active preferred)", m.activeTab, activeIdx)
+	}
+}
+
+func TestSearch_CommitTagViewUntaggedRoute(t *testing.T) {
+	// One tagged task so tag tabs exist alongside the Untagged tab.
+	task1 := makeTask(t, "01WRK", "work alpha", schedule.Today, []string{"work"})
+	task1.CreatedAt = "2026-04-13T00:00:00Z"
+	task2 := makeTask(t, "01UNT", "loose untagged task", schedule.Today, nil)
+	task2.CreatedAt = "2026-04-13T00:00:01Z"
+	m := newTestModel(t, task1, task2)
+	if err := m.rebuildForTagView(); err != nil {
+		t.Fatalf("rebuildForTagView: %v", err)
+	}
+
+	m.activeTab = 0 // Active tab
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "loose untagged")
+	m, _ = key(t, m, "enter")
+
+	untaggedIdx := -1
+	for i, tt := range m.tagTabs {
+		if tt.isUntagged {
+			untaggedIdx = i
+		}
+	}
+	if untaggedIdx < 0 {
+		t.Fatalf("no Untagged tag tab found")
+	}
+	if m.activeTab != untaggedIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Untagged)", m.activeTab, untaggedIdx)
+	}
+}
+
+func TestSearch_EnterWithEmptyResultsIsNoOp(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "hello", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	originalTab := m.activeTab
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "zzzzznomatch")
+	if got := len(m.search.results); got != 0 {
+		t.Fatalf("precondition: results should be empty, got %d", got)
+	}
+	m, _ = key(t, m, "enter")
+	if m.mode != modeSearch {
+		t.Errorf("mode after enter with empty results = %v, want modeSearch (no-op)", m.mode)
+	}
+	if m.activeTab != originalTab {
+		t.Errorf("activeTab changed to %d on empty-result Enter, want %d", m.activeTab, originalTab)
+	}
+}
+
+// --- renderSearch layout (Task 6) ------------------------------------------
+
+func TestSearch_RenderSearchWideSplitPane(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Body: "the preview body text", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "write docs", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.width = 120
+	m.height = 40
+	m.recomputeLayout()
+	m, _ = key(t, m, "/")
+
+	out := m.renderSearch()
+	if out == "" {
+		t.Fatal("renderSearch() returned empty string")
+	}
+	// Render output must fit within the terminal bounds — every line no wider
+	// than m.width, and no more lines than m.height. Regression guard for the
+	// preview border width/height not being accounted for in the split math.
+	for i, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("renderSearch wide: line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+		}
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > m.height {
+		t.Errorf("renderSearch wide: rendered %d lines, want <= %d", lines, m.height)
+	}
+	// Strip ANSI so we can substring-match the plain content.
+	plain := ansi.Strip(out)
+
+	if !strings.Contains(plain, ">") {
+		t.Errorf("renderSearch output missing input prompt '>': %q", plain)
+	}
+	// The counter is rendered as "N/M" where N=visible and M=total.
+	if !strings.Contains(plain, "2/2") {
+		t.Errorf("renderSearch output missing counter '2/2': %q", plain)
+	}
+	// Results pane: at least the first task's title must appear (it is the
+	// default-selected result).
+	if !strings.Contains(plain, "fix login bug") {
+		t.Errorf("renderSearch output missing first result title: %q", plain)
+	}
+	// Preview pane: the body of the selected task must be rendered.
+	if !strings.Contains(plain, "the preview body text") {
+		t.Errorf("renderSearch output missing preview body: %q", plain)
+	}
+	// Meta line: schedule bucket + status for the selected task, separated by
+	// middot. "today" is the bucket for Schedule.Today.
+	if !strings.Contains(plain, "today") || !strings.Contains(plain, "open") {
+		t.Errorf("renderSearch output missing meta line (bucket/status): %q", plain)
+	}
+	if !strings.Contains(plain, "·") {
+		t.Errorf("renderSearch output missing middot separator in meta line: %q", plain)
+	}
+	// Help hint: the in-search key set.
+	for _, want := range []string{"enter", "esc", "filter"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("renderSearch output missing help hint %q: %q", want, plain)
+		}
+	}
+}
+
+func TestSearch_RenderSearchNarrowStacked(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Body: "body", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.width = 60
+	m.height = 30
+	m.recomputeLayout()
+	m, _ = key(t, m, "/")
+
+	out := m.renderSearch()
+	if out == "" {
+		t.Fatal("renderSearch() returned empty string in narrow layout")
+	}
+	// Stacked (narrow) path must also respect terminal bounds.
+	for i, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("renderSearch narrow: line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+		}
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > m.height {
+		t.Errorf("renderSearch narrow: rendered %d lines, want <= %d", lines, m.height)
+	}
+	if !strings.Contains(out, ">") {
+		t.Errorf("renderSearch narrow output missing input prompt '>': %q", out)
+	}
+}
+
+func TestSearch_RenderSearchEmptyResults(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "hello", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.width = 120
+	m.height = 40
+	m.recomputeLayout()
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "zzzzznomatch")
+	out := m.renderSearch()
+	if out == "" {
+		t.Fatal("renderSearch() returned empty with empty results")
+	}
+	if !strings.Contains(out, "no matches") {
+		t.Errorf("renderSearch empty-results output missing '(no matches)': %q", out)
+	}
+}
+
+func TestSearch_HighlightMatchesBoldsMatches(t *testing.T) {
+	// Reset style profile so ANSI output is deterministic regardless of TERM.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	plain := highlightMatches("hello", nil)
+	if plain != "hello" {
+		t.Errorf("highlightMatches with nil hits = %q, want %q", plain, "hello")
+	}
+
+	// For ASCII strings, byte offsets and rune indexes coincide, so [0, 2] hit
+	// the 'h' and 'l' of "hello".
+	styled := highlightMatches("hello", []int{0, 2})
+	if styled == "hello" {
+		t.Errorf("highlightMatches with hits should differ from plain; got %q", styled)
+	}
+	// Stripping the ANSI escapes should yield the original string.
+	if got := ansi.Strip(styled); got != "hello" {
+		t.Errorf("ansi.Strip(highlighted) = %q, want %q", got, "hello")
+	}
+}
+
+func TestSearch_HighlightMatchesSkipsOutOfRange(t *testing.T) {
+	// Out-of-range indices must not panic or corrupt output.
+	got := highlightMatches("hi", []int{10, -1})
+	if ansi.Strip(got) != "hi" {
+		t.Errorf("highlightMatches with out-of-range hits = %q, want plain 'hi'", ansi.Strip(got))
+	}
+}
+
+// TestSearch_HighlightMatchesMultibyte exercises the byte-offset contract of
+// highlightMatches on a string with multi-byte runes. The earlier rune-index
+// implementation mis-aligned or dropped highlights here because sahilm/fuzzy
+// returns byte offsets. "café" has bytes: c=0, a=1, f=2, é=3..4.
+func TestSearch_HighlightMatchesMultibyte(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	styled := highlightMatches("café", []int{3})
+	if plain := ansi.Strip(styled); plain != "café" {
+		t.Errorf("highlightMatches round-trip on multibyte = %q, want %q", plain, "café")
+	}
+	if styled == "café" {
+		t.Errorf("highlightMatches should apply styling for valid multibyte hit, got unchanged %q", styled)
+	}
+	// A byte offset that lands inside the é rune (offset 4) must not corrupt
+	// output — highlightMatches keys on rune-start byte offsets only.
+	styledBad := highlightMatches("café", []int{4})
+	if plain := ansi.Strip(styledBad); plain != "café" {
+		t.Errorf("highlightMatches with non-rune-start offset corrupted output: %q", plain)
+	}
+}
+
+func TestSearch_ResultsWindowKeepsCursorVisible(t *testing.T) {
+	tests := []struct {
+		name              string
+		cursor, total, h  int
+		wantStart, wantEnd int
+	}{
+		{"all fit", 0, 5, 10, 0, 5},
+		{"cursor at top", 0, 20, 10, 0, 10},
+		{"cursor centered", 10, 20, 10, 5, 15},
+		{"cursor at bottom", 19, 20, 10, 10, 20},
+		{"zero total", 0, 0, 10, 0, 0},
+		{"zero height", 0, 5, 0, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotS, gotE := resultsWindow(tt.cursor, tt.total, tt.h)
+			if gotS != tt.wantStart || gotE != tt.wantEnd {
+				t.Errorf("resultsWindow(%d,%d,%d) = (%d,%d), want (%d,%d)",
+					tt.cursor, tt.total, tt.h, gotS, gotE, tt.wantStart, tt.wantEnd)
+			}
+		})
+	}
+}
+
+// TestSearchSplitWidths pins the boundary behavior of searchSplitWidths across
+// the narrow-threshold edge (79/80/81) and verifies the wide-path invariant
+// that the two pane widths plus the 2-col preview border sum to the total.
+func TestSearchSplitWidths(t *testing.T) {
+	tests := []struct {
+		name        string
+		total       int
+		wantResults int
+		wantPreview int
+	}{
+		// Below the narrow threshold: helper returns (total, total) per its
+		// doc; the renderer is expected to branch to the stacked path instead.
+		{"width 60 narrow path", 60, 60, 60},
+		{"width 79 just below threshold", 79, 79, 79},
+		// At/above the threshold: results = total*2/5 (clamped min 20),
+		// preview = total - results - 2 (border, clamped min 20).
+		{"width 80 boundary", 80, 32, 46},   // 80*2/5=32; 80-32-2=46
+		{"width 81 just above", 81, 32, 47}, // 81*2/5=32; 81-32-2=47
+		{"width 120 wide", 120, 48, 70},     // 120*2/5=48; 120-48-2=70
+		{"width 200 very wide", 200, 80, 118},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotR, gotP := searchSplitWidths(tt.total)
+			if gotR != tt.wantResults || gotP != tt.wantPreview {
+				t.Errorf("searchSplitWidths(%d) = (%d,%d), want (%d,%d)",
+					tt.total, gotR, gotP, tt.wantResults, tt.wantPreview)
+			}
+			// Wide-path invariant: results + preview + 2 (border) must equal
+			// total so the horizontally-joined panes render at exactly total
+			// columns. Skip for narrow (helper returns (total,total) stub).
+			if tt.total >= 80 {
+				if sum := gotR + gotP + 2; sum != tt.total {
+					t.Errorf("wide invariant: results(%d)+preview(%d)+2 = %d, want %d",
+						gotR, gotP, sum, tt.total)
+				}
+			}
+		})
+	}
+}
+
+// TestSearchBodyHeight pins the floor (3) and the wide-path invariant that
+// total render height = bodyHeight + 5 (input+meta+help+border). Small heights
+// (<8) hit the floor, which the compact renderer path handles separately.
+func TestSearchBodyHeight(t *testing.T) {
+	tests := []struct {
+		name  string
+		total int
+		want  int
+	}{
+		{"tiny 1", 1, 3},  // floored
+		{"tiny 3", 3, 3},  // floored
+		{"tiny 7", 7, 3},  // floored (7-5=2, clamped to 3)
+		{"boundary 8", 8, 3}, // 8-5=3
+		{"boundary 9", 9, 4},
+		{"typical 20", 20, 15},
+		{"typical 40", 40, 35},
+		{"tall 100", 100, 95},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := searchBodyHeight(tt.total)
+			if got != tt.want {
+				t.Errorf("searchBodyHeight(%d) = %d, want %d", tt.total, got, tt.want)
+			}
+			if got < 3 {
+				t.Errorf("searchBodyHeight(%d) = %d, violated floor of 3", tt.total, got)
+			}
+		})
+	}
+}
+
+// TestSearch_RenderSearchTinyTerminalFitsBounds guards against the overflow
+// regression where the stacked layout rendered 10 rows on an 8-row terminal.
+// At m.height < searchCompactMinHeight the renderer must drop preview/meta/help
+// and emit at most m.height lines, each no wider than m.width.
+func TestSearch_RenderSearchTinyTerminalFitsBounds(t *testing.T) {
+	sizes := []struct {
+		name string
+		w, h int
+	}{
+		{"8x60 stacked-path-would-overflow", 60, 8},
+		{"9x60 stacked-path-would-overflow", 60, 9},
+		{"5x120 wide-path-would-overflow", 120, 5},
+		{"3x80 extreme", 80, 3},
+	}
+	for _, tc := range sizes {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t,
+				model.Task{ID: "01A", Title: "alpha task", Body: "body text", Status: "open",
+					Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+					UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+				model.Task{ID: "01B", Title: "beta task", Status: "open",
+					Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+					UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+			)
+			m.width = tc.w
+			m.height = tc.h
+			m.recomputeLayout()
+			m, _ = key(t, m, "/")
+
+			out := m.renderSearch()
+			if out == "" {
+				t.Fatal("renderSearch() returned empty string")
+			}
+			for i, line := range strings.Split(out, "\n") {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+				}
+			}
+			if lines := strings.Count(out, "\n") + 1; lines > m.height {
+				t.Errorf("rendered %d lines, want <= %d", lines, m.height)
+			}
+			// Input prompt must still be visible.
+			if !strings.Contains(ansi.Strip(out), ">") {
+				t.Errorf("compact render missing input prompt '>': %q", out)
+			}
+		})
+	}
+}
+
+// TestSearch_CommitAfterAsyncAllTasksMutation simulates a taskSavedMsg arriving
+// while the search overlay is open. The overlay's haystack snapshot must
+// survive the reload, and committing the selection must still focus the task
+// via the search-time snapshot (not the mutated allTasks). The focus target
+// is the task as it exists *after* reload, via focusTaskByID.
+func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "beta target", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+	)
+	m.activeTab = findTabByLabel(t, m, "Today")
+
+	// Open search, narrow to the target, take snapshot.
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "beta")
+	if len(m.search.results) == 0 {
+		t.Fatalf("precondition: results empty after typing 'beta'")
+	}
+	snapshotSize := len(m.search.haystack)
+
+	// Simulate an unrelated async mutation completing (e.g. a prior 'c' that
+	// created a new task resolves while modeSearch is open). The taskSavedMsg
+	// reloads allTasks and tab lists but must not touch the search haystack.
+	id, err := model.NewID()
+	if err != nil {
+		t.Fatalf("model.NewID: %v", err)
+	}
+	added := model.Task{
+		ID: id, Title: "gamma late addition", Status: "open",
+		Schedule:  expectSchedule(t, schedule.Today),
+		Position:  3000,
+		CreatedAt: "2026-04-13T00:00:02Z",
+		UpdatedAt: "2026-04-13T00:00:02Z",
+	}
+	if err := m.store.Create(added); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	next, _ := m.Update(taskSavedMsg{status: "Added: gamma", focusID: id})
+	m = next.(*Model)
+
+	// Search mode should still be open (taskSavedMsg does not close it).
+	if m.mode != modeSearch {
+		t.Errorf("mode after taskSavedMsg = %v, want modeSearch (still open)", m.mode)
+	}
+	// Haystack is a snapshot from openSearch and must not have grown.
+	if got := len(m.search.haystack); got != snapshotSize {
+		t.Errorf("haystack len after async save = %d, want %d (snapshot invariant)", got, snapshotSize)
+	}
+	// allTasks, on the other hand, reflects the newly-created task.
+	if got := len(m.allTasks); got != 3 {
+		t.Errorf("allTasks len after async save = %d, want 3", got)
+	}
+
+	// Commit the selection — Enter on the "beta" match must still focus the
+	// target task via the stable haystack snapshot.
+	m, _ = key(t, m, "enter")
+	if m.mode != modeNormal {
+		t.Errorf("mode after commit = %v, want modeNormal", m.mode)
+	}
+	todayIdx := findTabByLabel(t, m, "Today")
+	if m.activeTab != todayIdx {
+		t.Errorf("activeTab after commit = %d, want %d (Today)", m.activeTab, todayIdx)
+	}
+	items := m.lists[todayIdx].Items()
+	sel := m.lists[todayIdx].Index()
+	if sel < 0 || sel >= len(items) {
+		t.Fatalf("list cursor %d out of range (items=%d)", sel, len(items))
+	}
+	selItem, ok := items[sel].(item)
+	if !ok || selItem.task.ID != "01B" {
+		t.Errorf("selected task after async-mutated commit = %+v, want ID 01B", selItem.task)
 	}
 }

@@ -255,6 +255,47 @@ func TestInitials(t *testing.T) {
 	}
 }
 
+func TestFilterTags(t *testing.T) {
+	known := []string{"alpha", "beta", "build", "gamma", "personal", "work"}
+
+	tests := []struct {
+		name  string
+		known []string
+		field string
+		want  []string
+	}{
+		{"prefix match", known, "al", []string{"alpha"}},
+		{"multiple matches", known, "b", []string{"beta", "build"}},
+		{"case insensitive", known, "AL", []string{"alpha"}},
+		{"case insensitive mixed", known, "Be", []string{"beta"}},
+		{"excludes already entered tag", known, "alpha, b", []string{"beta", "build"}},
+		{"excludes already entered case insensitive", known, "Alpha, al", nil},
+		{"empty fragment returns nil", known, "", nil},
+		{"empty fragment after comma returns nil", known, "alpha, ", nil},
+		{"no matches", known, "xyz", nil},
+		{"caps at 5", []string{"a1", "a2", "a3", "a4", "a5", "a6", "a7"}, "a", []string{"a1", "a2", "a3", "a4", "a5"}},
+		{"nil known", nil, "al", nil},
+		{"empty known", []string{}, "al", nil},
+		{"whitespace in fragment trimmed", known, "alpha,  be", []string{"beta"}},
+		{"exact match included", known, "alpha", []string{"alpha"}},
+		{"exact match already entered", known, "alpha, alpha", nil},
+		{"fragment only spaces", known, "   ", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FilterTags(tc.known, tc.field)
+			if len(got) != len(tc.want) {
+				t.Fatalf("FilterTags(%v, %q) = %v, want %v", tc.known, tc.field, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("FilterTags()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestSanitizeTags(t *testing.T) {
 	tests := []struct {
 		name string

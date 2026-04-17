@@ -83,6 +83,14 @@ Reorder a task within its schedule group. Exactly one flag required:
 | `--before <id>` | Insert before another task |
 | `--after <id>` | Insert after another task |
 
+### `monolog note <id-prefix> <text>`
+
+Append a timestamped note to a task. The note is stored inside the task's body using `--- YYYY-MM-DD HH:MM:SS ---` separators. Empty text is rejected.
+
+### `monolog show <id-prefix>`
+
+Print full task detail to stdout: title, ID, status, schedule, tags, dates, note count, and body (including notes).
+
 ### `monolog log`
 
 Show tasks completed in the last 7 days, with `created→done` compact dates.
@@ -117,6 +125,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `←`/`→`, `Tab`/`Shift+Tab` | Switch tabs |
 | `1`–`6` | Jump to tab by number |
 | `↑`/`↓` | Move within list |
+| `Enter` | Toggle detail/notes panel for the focused task |
 | `c` | Open the add-task modal (title + tags fields, Tab to switch) |
 | `d` | Mark focused task as done |
 | `a` | Toggle active on the focused task |
@@ -125,6 +134,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `e` | Edit in `$EDITOR` (YAML round-trip) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
 | `v` | Toggle between schedule view and tag view |
+| `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
 | `x` | Delete task (with confirmation) |
 | `s` | Sync (commit, pull --rebase, push) |
 | `q` | Quit |
@@ -137,7 +147,7 @@ Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-co
 
 ## Task lookup
 
-Commands that take a task identifier (`done`, `edit`, `rm`, `mv`) resolve it in two steps:
+Commands that take a task identifier (`done`, `edit`, `rm`, `mv`, `note`, `show`) resolve it in two steps:
 
 1. **ULID prefix** — type the first few characters of the task ID (e.g. `01J5K`).
 2. **Title initials** — if no ULID matches and you typed at least 2 characters, monolog computes the first letter of each word in every open task's title and looks for a prefix match.

@@ -65,4 +65,54 @@ var (
 	// separators in the status bar (no padding — padding applied by renderHelpBar).
 	helpTextStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	// suggestionBoldStyle highlights the currently selected autocomplete suggestion.
+	suggestionBoldStyle = lipgloss.NewStyle().Bold(true)
+
+	// suggestionDimStyle dims non-selected autocomplete suggestions.
+	suggestionDimStyle = lipgloss.NewStyle().Faint(true)
+
+	// --- search overlay styles ---------------------------------------------
+	// Kept here (not in search.go) so the palette stays discoverable alongside
+	// the rest of the TUI styling.
+
+	// searchSelectedStyle reverses foreground/background for the highlighted
+	// result row so it is obvious regardless of theme.
+	searchSelectedStyle = lipgloss.NewStyle().Reverse(true)
+
+	// searchMatchStyle bolds the matched runes inside a result title.
+	searchMatchStyle = lipgloss.NewStyle().Bold(true)
+
+	// searchDoneStyle dims rows for done tasks so open work stands out.
+	searchDoneStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+
+	// searchActiveStyle paints rows green when the task carries the active tag,
+	// mirroring the in-list treatment.
+	searchActiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("76"))
+
+	// searchCountStyle is used for the "N/M" counter on the right of the input
+	// bar. Dim so it doesn't distract from the query.
+	searchCountStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	// searchMetaStyle renders the meta line (schedule · status · created).
+	searchMetaStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Padding(0, 1)
+
+	// searchPreviewBorderStyle wraps the preview pane in a subtle border so the
+	// split is clear even on terminals without vertical rule characters.
+	searchPreviewBorderStyle = lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("240")).
+					Padding(0, 1)
+
+	// searchResultsStyle wraps the results list in matching padding so it
+	// visually balances the preview pane.
+	searchResultsStyle = lipgloss.NewStyle().Padding(0, 1)
+
+	// searchPreviewTitleStyle styles the title heading inside the preview pane.
+	searchPreviewTitleStyle = lipgloss.NewStyle().Bold(true)
+
+	// searchPreviewDimStyle is the "(no body)" placeholder style in the preview.
+	searchPreviewDimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
 )
