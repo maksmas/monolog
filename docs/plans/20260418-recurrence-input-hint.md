@@ -142,13 +142,13 @@ on both `cmd/add.go:95` and `cmd/edit.go:116`.
 - Create: `internal/recurrence/suggest.go`
 - Create: `internal/recurrence/suggest_test.go`
 
-- [ ] add `GrammarHint` string constant in `internal/recurrence/recurrence.go` (or `suggest.go`) with value `"monthly:N | weekly:<day> | workdays | days:N"`
-- [ ] create `internal/recurrence/suggest.go` with `Suggest(input string) []string`; implement static completion set: `monthly:N`, `weekly:`, `workdays`, `days:N` at top level; for `weekly:<prefix>` return filtered `weekly:<day>` canonical three-letter forms; for `monthly:*` and `days:*` return the single template form
-- [ ] ensure ordering is deterministic; cap results at 5; case-insensitive prefix match
-- [ ] empty input returns empty slice (no dropdown when field is blank)
-- [ ] write table-driven tests covering: empty input, `m` → `monthly:N`, `w` → `weekly:`+`workdays`, `week` → `weekly:`, `weekly:` → seven weekdays, `weekly:t` → `weekly:tue`+`weekly:thu`, `weekly:MON` (case), `monthly:1` → still `monthly:N` template (user has not finished), `days:` → `days:N`, `xyz` → empty
-- [ ] verify the 5-result cap: `weekly:` returns exactly 5 (not 7) and preserves deterministic ordering
-- [ ] run tests - must pass before task 2: `go test ./internal/recurrence/`
+- [x] add `GrammarHint` string constant in `internal/recurrence/recurrence.go` (or `suggest.go`) with value `"monthly:N | weekly:<day> | workdays | days:N"`
+- [x] create `internal/recurrence/suggest.go` with `Suggest(input string) []string`; implement static completion set: `monthly:N`, `weekly:`, `workdays`, `days:N` at top level; for `weekly:<prefix>` return filtered `weekly:<day>` canonical three-letter forms; for `monthly:*` and `days:*` return the single template form
+- [x] ensure ordering is deterministic; cap results at 5; case-insensitive prefix match
+- [x] empty input returns empty slice (no dropdown when field is blank)
+- [x] write table-driven tests covering: empty input, `m` → `monthly:N`, `w` → `weekly:`+`workdays`, `week` → `weekly:`, `weekly:` → seven weekdays, `weekly:t` → `weekly:tue`+`weekly:thu`, `weekly:MON` (case), `monthly:1` → still `monthly:N` template (user has not finished), `days:` → `days:N`, `xyz` → empty
+- [x] verify the 5-result cap: `weekly:` returns exactly 5 (not 7) and preserves deterministic ordering
+- [x] run tests - must pass before task 2: `go test ./internal/recurrence/`
 
 ### Task 2: Wire suggestions into the TUI add modal
 
