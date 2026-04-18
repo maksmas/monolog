@@ -52,11 +52,10 @@ func TestCompleteAndSpawn_UsesConfiguredDateFormat(t *testing.T) {
 		// computed next-occurrence rather than hardcoding wall-clock
 		// behavior.
 		wantCommitDateFn func(iso string) string
-		// wantSepRegex is a substring search fragment to look for in the
-		// old task's body after completion, proving the note separator
-		// was written using the supplied layout.
-		wantSepRegexDD bool // true = expect DD-MM-YYYY separator
-		wantSepRegexUS bool // true = expect MM/DD/YYYY separator
+		// wantSepSubstring is the substring expected to appear in both the
+		// old and spawn task bodies, proving the note separator was
+		// written using the supplied layout.
+		wantSepSubstring string
 	}{
 		{
 			name:       "DD-MM-YYYY (default)",
@@ -65,7 +64,7 @@ func TestCompleteAndSpawn_UsesConfiguredDateFormat(t *testing.T) {
 				tt, _ := time.Parse("2006-01-02", iso)
 				return tt.Format("02-01-2006")
 			},
-			wantSepRegexDD: true,
+			wantSepSubstring: "--- 18-04-2026 ",
 		},
 		{
 			name:       "MM/DD/YYYY (alternative)",
@@ -74,7 +73,7 @@ func TestCompleteAndSpawn_UsesConfiguredDateFormat(t *testing.T) {
 				tt, _ := time.Parse("2006-01-02", iso)
 				return tt.Format("01/02/2006")
 			},
-			wantSepRegexUS: true,
+			wantSepSubstring: "--- 04/18/2026 ",
 		},
 	}
 
@@ -156,20 +155,14 @@ func TestCompleteAndSpawn_UsesConfiguredDateFormat(t *testing.T) {
 
 			// The note separator on the old body should start with
 			// "--- " and the date rendered in the configured layout.
-			if tc.wantSepRegexDD && !strings.Contains(reloadedOld.Body, "--- 18-04-2026 ") {
-				t.Errorf("old body missing DD-MM-YYYY separator, got:\n%s", reloadedOld.Body)
-			}
-			if tc.wantSepRegexUS && !strings.Contains(reloadedOld.Body, "--- 04/18/2026 ") {
-				t.Errorf("old body missing MM/DD/YYYY separator, got:\n%s", reloadedOld.Body)
+			if !strings.Contains(reloadedOld.Body, tc.wantSepSubstring) {
+				t.Errorf("old body missing separator %q, got:\n%s", tc.wantSepSubstring, reloadedOld.Body)
 			}
 
 			// The spawn body's "Spawned from" note separator should also
 			// use the configured layout.
-			if tc.wantSepRegexDD && !strings.Contains(spawn.Body, "--- 18-04-2026 ") {
-				t.Errorf("spawn body missing DD-MM-YYYY separator, got:\n%s", spawn.Body)
-			}
-			if tc.wantSepRegexUS && !strings.Contains(spawn.Body, "--- 04/18/2026 ") {
-				t.Errorf("spawn body missing MM/DD/YYYY separator, got:\n%s", spawn.Body)
+			if !strings.Contains(spawn.Body, tc.wantSepSubstring) {
+				t.Errorf("spawn body missing separator %q, got:\n%s", tc.wantSepSubstring, spawn.Body)
 			}
 		})
 	}

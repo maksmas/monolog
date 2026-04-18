@@ -9,6 +9,11 @@
 // For now there is no settings file: the value is a package-level variable
 // initialised to the DD-MM-YYYY default. When real settings persistence is
 // added later, only this package changes; no callers need to be touched.
+//
+// DateFormat, DateFormatLabel, and DateRegex panic if the currently
+// configured layout is not present in the supported table — this is
+// unreachable via the public API today and only a test helper can put the
+// package into that state.
 package config
 
 // formatEntry describes a supported date format: its user-facing label and

@@ -87,6 +87,10 @@ var ErrInvalid = errors.New("invalid schedule")
 //  3. a legacy ISO date (silent backward compat so pre-existing scripts
 //     continue to work after a format switch).
 //
+// layout == "" means "ISO-only": the configured-layout attempt is skipped
+// and only bucket names and legacy ISO input are accepted (used internally
+// by Normalize where the layout is irrelevant to bucket resolution).
+//
 // On failure it returns ErrInvalid wrapped with the offending input, so
 // callers can use errors.Is and format the user-facing message themselves.
 func Parse(input string, now time.Time, layout string) (string, error) {

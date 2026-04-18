@@ -206,6 +206,42 @@ func TestDropYearToken(t *testing.T) {
 	}
 }
 
+// TestShortDate_EdgeLayouts pins the behavior of shortDate on boundary
+// layouts not reachable via the config-allowed table today, so if a new
+// supported layout ever exposes these shapes the regression shows up here
+// rather than in user-facing output.
+//
+//   - year-only layout ("2006"): cross-year falls through strings.Replace and
+//     yields the short year "06"; same-year drops to "" via dropYearToken.
+//   - literal "2006" token outside the year position: strings.Replace targets
+//     only the first occurrence, which is the year in practice.
+func TestShortDate_EdgeLayouts(t *testing.T) {
+	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	crossYear := time.Date(2025, 3, 28, 10, 0, 0, 0, time.UTC)
+	sameYear := time.Date(2026, 3, 28, 10, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name   string
+		t      time.Time
+		layout string
+		want   string
+	}{
+		{name: "year_only_cross_year", t: crossYear, layout: "2006", want: "25"},
+		{name: "year_only_same_year", t: sameYear, layout: "2006", want: ""},
+		// A layout containing "2006" twice only has the first instance
+		// rewritten by strings.Replace; pin that so a future refactor that
+		// switches to ReplaceAll is caught.
+		{name: "double_year_token_cross_year", t: crossYear, layout: "2006-2006", want: "25-2025"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shortDate(now, tc.t, tc.layout); got != tc.want {
+				t.Errorf("shortDate(now, %v, %q) = %q, want %q", tc.t, tc.layout, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFormatTaskDates_AlternativeLayout proves the layout parameter flows
 // through FormatTaskDates to FormatRelDate.
 func TestFormatTaskDates_AlternativeLayout(t *testing.T) {
