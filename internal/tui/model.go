@@ -2909,9 +2909,22 @@ func (m *Model) modalView() string {
 		// The textarea's View() spans titleArea.Height() lines; align the "Title:"
 		// label with its first line so taller boxes still read naturally.
 		titleView := indentContinuation(m.titleArea.View(), "       ")
-		sugLines := m.renderSuggestions()
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n\n(Alt+Enter = newline, Enter = save)",
-			t.label, titleView, m.tagInput.View(), sugLines, m.recurInput.View()), iw)
+		// Tag suggestions render below the Tags line only when the tag field is
+		// focused; recurrence suggestions render below the Recur hint only when
+		// the recur field is focused. This prevents recur completions from
+		// leaking under the Tags row (and vice-versa).
+		var tagSug, recurSug string
+		switch m.addFocus {
+		case addFocusTags:
+			tagSug = m.renderSuggestions()
+		case addFocusRecur:
+			recurSug = m.renderSuggestions()
+		}
+		// GrammarHint is always visible under the Recur input as a dim-styled
+		// reminder of the accepted grammar.
+		hintLine := "       " + suggestionDimStyle.Render("("+recurrence.GrammarHint+")")
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n%s%s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View(), tagSug, m.recurInput.View(), hintLine, recurSug), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""

@@ -2902,6 +2902,140 @@ func TestAdd_TagSuggestionsStillAcceptOnEnter(t *testing.T) {
 	}
 }
 
+// --- recurrence hint / view tests ------------------------------------------
+
+// normalizeView collapses all whitespace (spaces, tabs, newlines) into single
+// spaces so tests can assert on hint substrings without being affected by the
+// modal's soft-wrapping at narrow terminal widths. Box-drawing characters
+// that delimit the modal frame are also stripped so they don't break up the
+// hint on wrapped lines.
+func normalizeView(s string) string {
+	// ansi.Strip removes styling so dim/bold markers don't hide substrings.
+	plain := ansi.Strip(s)
+	// Strip the rounded-border glyphs used by modalBox so a wrapped hint like
+	// "(monthly:N | weekly:<day> |\n│ workdays | days:N)" collapses cleanly.
+	replacer := strings.NewReplacer(
+		"│", " ",
+		"╭", " ",
+		"╮", " ",
+		"╰", " ",
+		"╯", " ",
+		"─", " ",
+	)
+	return strings.Join(strings.Fields(replacer.Replace(plain)), " ")
+}
+
+// TestAdd_ModalViewContainsRecurrenceHint verifies the GrammarHint string is
+// always rendered in the add modal — regardless of which field is focused —
+// as a discoverability affordance under the Recur input. Uses a normalized
+// view to tolerate the box-wrap line break inserted by lipgloss when the
+// modal is drawn at its minimum width.
+func TestAdd_ModalViewContainsRecurrenceHint(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	view := normalizeView(m.modalView())
+	// The literal grammar hint must appear in the rendered view (whitespace-
+	// normalized to tolerate soft-wrap in narrow modal boxes).
+	if !strings.Contains(view, "monthly:N | weekly:<day> | workdays | days:N") {
+		t.Errorf("modalView should contain the grammar hint literal; got:\n%s", view)
+	}
+}
+
+// TestAdd_ModalViewHintVisibleWithRecurFocus confirms that the hint remains
+// visible even after Tab-ing into the recur field (not hidden or consumed by
+// other decorations).
+func TestAdd_ModalViewHintVisibleWithRecurFocus(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	view := normalizeView(m.modalView())
+	if !strings.Contains(view, "monthly:N | weekly:<day> | workdays | days:N") {
+		t.Errorf("modalView with recur focus should still contain the grammar hint; got:\n%s", view)
+	}
+}
+
+// TestAdd_ModalViewRecurSuggestionsRendered verifies that when the recur field
+// is focused and a matching prefix is typed, suggestion lines appear in the
+// rendered view (with the highlighted item prefixed by "> ").
+func TestAdd_ModalViewRecurSuggestionsRendered(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "weekly:")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected weekday suggestions")
+	}
+	view := m.modalView()
+	// At least the first weekday completion (weekly:mon) should render.
+	if !strings.Contains(view, "weekly:mon") {
+		t.Errorf("modalView should contain 'weekly:mon' suggestion; got:\n%s", view)
+	}
+	// The highlighted suggestion is prefixed with "> ".
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("modalView should contain highlighted marker '> %s'; got:\n%s", m.suggestions[0], view)
+	}
+}
+
+// TestAdd_ModalViewTagFocusRendersTagSuggestionsNotRecur verifies the
+// field-owned rendering contract: real tag completions render under the Tags
+// row when the tag field is focused, and no recur-style suggestion leaks
+// into the view.
+func TestAdd_ModalViewTagFocusRendersTagSuggestionsNotRecur(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m = typeString(t, m, "w")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected tag suggestions after typing 'w'")
+	}
+	// Confirm the suggestions are tag-shaped (no colon like recur completions).
+	for _, s := range m.suggestions {
+		if strings.Contains(s, ":") {
+			t.Fatalf("unexpected recur-looking suggestion in tag-focus: %q", s)
+		}
+	}
+	view := m.modalView()
+	// The highlighted tag should render.
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("expected highlighted tag suggestion in view, got:\n%s", view)
+	}
+	// No weekly: / workdays / days: / monthly: recur-style marker should appear.
+	for _, leak := range []string{"> weekly:", "> workdays", "> days:N", "> monthly:N"} {
+		if strings.Contains(view, leak) {
+			t.Errorf("tag-focused view should not leak recur suggestion %q, got:\n%s", leak, view)
+		}
+	}
+}
+
+// TestAdd_ModalViewEmptyRecurHasNoSuggestionLines confirms an empty recur
+// input with the recur field focused shows the hint but no suggestion list
+// (since Suggest returns nil for empty input).
+func TestAdd_ModalViewEmptyRecurHasNoSuggestionLines(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	rawView := m.modalView()
+	// No suggestion markers should be rendered for an empty recur field
+	// (the seven-space indent followed by "> " is the suggestion marker).
+	if strings.Contains(rawView, "       > ") {
+		t.Errorf("modalView on empty recur should not contain suggestion markers; got:\n%s", rawView)
+	}
+	// But the hint MUST still be there.
+	view := normalizeView(rawView)
+	if !strings.Contains(view, "monthly:N | weekly:<day> | workdays | days:N") {
+		t.Errorf("modalView on empty recur should contain hint; got:\n%s", view)
+	}
+}
+
 // --- retag autocomplete tests -----------------------------------------------
 
 func TestRetag_SuggestionsAppearWhenTypingPrefix(t *testing.T) {

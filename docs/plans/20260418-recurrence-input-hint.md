@@ -176,13 +176,13 @@ on both `cmd/add.go:95` and `cmd/edit.go:116`.
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] in the modal-rendering code path that builds the add-modal string (around `modalBox(fmt.Sprintf("Add task to %s:...`), insert a dim-styled hint line under the Recur input showing `recurrence.GrammarHint` wrapped in parentheses
-- [ ] render the suggestion list under the hint when `addFocus == addFocusRecur` and `len(m.suggestions) > 0`, following the same visual style (`>` marker on selected item) used for tag suggestions
-- [ ] confirm the existing width calculation still fits; if the modal now overflows, shrink input widths proportionally or allow modal to grow vertically
-- [ ] write TUI view test: rendered add modal contains the literal hint substring `"monthly:N | weekly:<day> | workdays | days:N"`
-- [ ] write TUI view test: with recur focused and input `weekly:`, rendered view contains at least one weekday suggestion (`weekly:mon`)
-- [ ] write TUI view test: with tag focused, rendered view does NOT contain the recurrence hint-line suggestions (guards against leaking suggestions across fields)
-- [ ] run tests - must pass before task 4: `go test ./internal/tui/`
+- [x] in the modal-rendering code path that builds the add-modal string (around `modalBox(fmt.Sprintf("Add task to %s:...`), insert a dim-styled hint line under the Recur input showing `recurrence.GrammarHint` wrapped in parentheses
+- [x] render the suggestion list under the hint when `addFocus == addFocusRecur` and `len(m.suggestions) > 0`, following the same visual style (`>` marker on selected item) used for tag suggestions
+- [x] confirm the existing width calculation still fits; if the modal now overflows, shrink input widths proportionally or allow modal to grow vertically
+- [x] write TUI view test: rendered add modal contains the literal hint substring `"monthly:N | weekly:<day> | workdays | days:N"`
+- [x] write TUI view test: with recur focused and input `weekly:`, rendered view contains at least one weekday suggestion (`weekly:mon`)
+- [x] write TUI view test: with tag focused, rendered view does NOT contain the recurrence hint-line suggestions (guards against leaking suggestions across fields)
+- [x] run tests - must pass before task 4: `go test ./internal/tui/`
 
 ### Task 4: Add grammar comment to YAML edit buffer
 
