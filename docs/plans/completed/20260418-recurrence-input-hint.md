@@ -223,7 +223,7 @@ on both `cmd/add.go:95` and `cmd/edit.go:116`.
 ### Task 7: Update documentation and move plan
 
 - [x] update `CLAUDE.md` to mention the new recurrence autocomplete / hint behavior alongside the existing Tag autocomplete bullet (one sentence)
-- [ ] move this plan to `docs/plans/completed/`: `mkdir -p docs/plans/completed && git mv docs/plans/20260418-recurrence-input-hint.md docs/plans/completed/` (deferred to finalize)
+- [x] move this plan to `docs/plans/completed/`: `mkdir -p docs/plans/completed && git mv docs/plans/20260418-recurrence-input-hint.md docs/plans/completed/`
 
 ## Post-Completion
 
