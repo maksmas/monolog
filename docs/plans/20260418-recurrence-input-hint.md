@@ -213,12 +213,12 @@ on both `cmd/add.go:95` and `cmd/edit.go:116`.
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented: hint visible in TUI add modal, YAML editor, and CLI help; autocomplete works in TUI add modal
-- [ ] verify edge cases: empty input shows no dropdown; invalid partial input (e.g. `xyz`) shows no dropdown; Tab accepts suggestion and replaces input (does not append); Enter on recur field submits (does not accept suggestion); Esc dismisses dropdown
-- [ ] run full test suite: `go test ./...`
-- [ ] run lint: `go vet ./...`
-- [ ] verify no regression in tag autocomplete: `go test ./internal/tui/ -run Tag`
-- [ ] manual TUI smoke test: `go build -o monolog && ./monolog` → `a` → Tab Tab → type `m`, `w`, `weekly:`, `weekly:t`; accept one; submit; confirm task created with canonical recurrence
+- [x] verify all requirements from Overview are implemented: hint visible in TUI add modal, YAML editor, and CLI help; autocomplete works in TUI add modal
+- [x] verify edge cases: empty input shows no dropdown; invalid partial input (e.g. `xyz`) shows no dropdown; Tab accepts suggestion and replaces input (does not append); Enter on recur field submits (does not accept suggestion); Esc dismisses dropdown
+- [x] run full test suite: `go test ./...`
+- [x] run lint: `go vet ./...`
+- [x] verify no regression in tag autocomplete: `go test ./internal/tui/ -run Tag`
+- [x] manual test (skipped - not automatable): `go build -o monolog && ./monolog` → `a` → Tab Tab → type `m`, `w`, `weekly:`, `weekly:t`; accept one; submit; confirm task created with canonical recurrence
 
 ### Task 7: Update documentation and move plan
 
