@@ -204,12 +204,12 @@ on both `cmd/add.go:95` and `cmd/edit.go:116`.
 - Modify: `cmd/edit.go`
 - Modify: `cmd/add_test.go` (or new test file `cmd/recur_help_test.go` — choose per codebase convention)
 
-- [ ] replace the `--recur` flag help string on `cmd/add.go` with a longer form including explicit examples, e.g. `"Recurrence rule: monthly:N | weekly:<day> | workdays | days:N (e.g. monthly:1, weekly:mon, workdays, days:7)"`
-- [ ] replace the same on `cmd/edit.go`, preserving the `(pass "" to clear)` suffix
-- [ ] have the help strings reference `recurrence.GrammarHint` where practical (string concat) so the grammar stays in one place
-- [ ] write test: running `monolog add --help` output contains all four grammar forms
-- [ ] write test: running `monolog edit --help` output contains all four grammar forms AND the `pass "" to clear` note
-- [ ] run tests - must pass before task 6: `go test ./cmd/`
+- [x] replace the `--recur` flag help string on `cmd/add.go` with a longer form including explicit examples, e.g. `"Recurrence rule: monthly:N | weekly:<day> | workdays | days:N (e.g. monthly:1, weekly:mon, workdays, days:7)"`
+- [x] replace the same on `cmd/edit.go`, preserving the `(pass "" to clear)` suffix
+- [x] have the help strings reference `recurrence.GrammarHint` where practical (string concat) so the grammar stays in one place
+- [x] write test: running `monolog add --help` output contains all four grammar forms
+- [x] write test: running `monolog edit --help` output contains all four grammar forms AND the `pass "" to clear` note
+- [x] run tests - must pass before task 6: `go test ./cmd/`
 
 ### Task 6: Verify acceptance criteria
 

@@ -97,7 +97,7 @@ func newAddCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", fmt.Sprintf("Schedule: today, tomorrow, week, month, someday, or %s", config.DateFormatLabel()))
 	cmd.Flags().StringVarP(&tags, "tags", "t", "", "Comma-separated tags")
-	cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: monthly:N, weekly:<day>, workdays, days:N")
+	cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: "+recurrence.GrammarHint+" (e.g. monthly:1, weekly:mon, workdays, days:7)")
 
 	return cmd
 }
