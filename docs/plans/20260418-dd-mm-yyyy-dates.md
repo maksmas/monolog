@@ -224,27 +224,27 @@ Thin, config-driven display/input layer on top of unchanged storage:
 - Create: `internal/config/config.go`
 - Create: `internal/config/config_test.go`
 
-- [ ] create `internal/config/config.go` with a package-level
+- [x] create `internal/config/config.go` with a package-level
       `dateFormat` variable defaulting to `"02-01-2006"`, a
       `supported` map (one entry today: `"02-01-2006"` → label
       `"DD-MM-YYYY"`, regex `\d{2}-\d{2}-\d{4}`), and three exported
       accessors that look up `dateFormat` in the map:
       `DateFormat()`, `DateFormatLabel()`, `DateRegex()`
-- [ ] add a non-exported setter (internal test helper, e.g.
+- [x] add a non-exported setter (internal test helper, e.g.
       `setDateFormatForTest(layout string, restore func())`) so tests
       can temporarily swap the format. No public mutation API yet
-- [ ] write tests for default accessors: `DateFormat() == "02-01-2006"`,
+- [x] write tests for default accessors: `DateFormat() == "02-01-2006"`,
       `DateFormatLabel() == "DD-MM-YYYY"`, `DateRegex() ==
       \d{2}-\d{2}-\d{4}`
-- [ ] write a test that adds a second entry to `supported` at test
+- [x] write a test that adds a second entry to `supported` at test
       time (via the test helper) for an alternative layout and verifies
       the accessors return the right label and regex for the second
       entry. This guards against the accessors being hardcoded to the
       default
-- [ ] write a test for the unknown-layout error path (setter called
+- [x] write a test for the unknown-layout error path (setter called
       with a layout not in `supported`) — decide panic vs. fallback at
-      implementation time and test whichever is chosen
-- [ ] run `go test ./internal/config/...` — must pass before next task
+      implementation time and test whichever is chosen (chose panic)
+- [x] run `go test ./internal/config/...` — must pass before next task
 
 ### Task 2: Extend internal/schedule with FormatDisplay + layout-aware Parse
 
