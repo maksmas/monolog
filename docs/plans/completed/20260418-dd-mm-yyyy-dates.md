@@ -496,7 +496,7 @@ panels, YAML marshal, and the `monolog show` output.
 - Modify: `README.md`
 - Modify: `CLAUDE.md`
 
-- [ ] update `README.md`: every `YYYY-MM-DD` reference in help/usage
+- [x] update `README.md`: every `YYYY-MM-DD` reference in help/usage
       blocks for `--schedule` switches → `DD-MM-YYYY`. Specifically
       update line 90 ("notes are stored inside the task's body using
       `--- YYYY-MM-DD HH:MM:SS ---` separators") to reference the new
@@ -504,7 +504,7 @@ panels, YAML marshal, and the `monolog show` output.
       stays ISO, and that the display format will be configurable in
       the future (today it's a compile-time default in
       `internal/config`)
-- [ ] update `CLAUDE.md`: rewrite the "Schedule values" and "Task
+- [x] update `CLAUDE.md`: rewrite the "Schedule values" and "Task
       notes" bullets under "Key Design Decisions" to describe:
       - user-facing/input format is configurable via `internal/config`
         (default DD-MM-YYYY); on-disk stays ISO
@@ -513,7 +513,7 @@ panels, YAML marshal, and the `monolog show` output.
       - `CountNotes` only recognizes separators in the currently
         configured format — no backward compat, so changing the
         format loses historical note counts
-- [ ] move this plan: `mkdir -p docs/plans/completed && git mv
+- [x] move this plan: `mkdir -p docs/plans/completed && git mv
       docs/plans/20260418-dd-mm-yyyy-dates.md docs/plans/completed/`
 
 ## Post-Completion
