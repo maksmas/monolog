@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/store"
@@ -50,7 +51,7 @@ func newLogCmd() *cobra.Command {
 				return recent[i].UpdatedAt > recent[j].UpdatedAt
 			})
 
-			display.FormatTasks(cmd.OutOrStdout(), recent, now)
+			display.FormatTasks(cmd.OutOrStdout(), recent, now, config.DateFormat())
 			return nil
 		},
 	}

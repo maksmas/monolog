@@ -65,8 +65,10 @@ func VisibleTags(tags []string) []string {
 
 // FormatTasks writes tasks as a clean terminal table to w.
 // Each line shows: position indicator, short ID, title, schedule, dates, tags.
-// The now parameter is used to compute compact relative dates.
-func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
+// The now parameter is used to compute compact relative dates. layout is the
+// configured date format (Go layout) that controls how far dates are rendered
+// (callers typically pass config.DateFormat()).
+func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) {
 	if len(tasks) == 0 {
 		fmt.Fprintln(w, "No tasks.")
 		return
@@ -88,7 +90,7 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 			tags = "[" + strings.Join(vt, ", ") + "]"
 		}
 
-		dates := FormatTaskDates(now, task)
+		dates := FormatTaskDates(now, task, layout)
 
 		// Title is truncated/padded to titleColWidth runes so subsequent columns
 		// stay aligned even for long titles. 17-rune pad on dates: worst case is

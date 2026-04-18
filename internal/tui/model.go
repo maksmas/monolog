@@ -221,7 +221,7 @@ func (i item) Description() string {
 	if vt := display.VisibleTags(i.task.Tags); len(vt) > 0 {
 		parts = append(parts, "["+strings.Join(vt, ", ")+"]")
 	}
-	if dates := display.FormatTaskDates(i.now, i.task); dates != "" {
+	if dates := display.FormatTaskDates(i.now, i.task, config.DateFormat()); dates != "" {
 		parts = append(parts, dates)
 	}
 	return strings.Join(parts, "  ")
@@ -2510,11 +2510,12 @@ func (m *Model) detailPanelView() string {
 		header = append(header, "Tags: "+strings.Join(vt, ", "))
 	}
 
-	created := display.FormatRelDate(now, task.CreatedAt)
+	layout := config.DateFormat()
+	created := display.FormatRelDate(now, task.CreatedAt, layout)
 	if created != "" {
 		dateLine := "Created: " + created
 		if task.CompletedAt != "" {
-			completed := display.FormatRelDate(now, task.CompletedAt)
+			completed := display.FormatRelDate(now, task.CompletedAt, layout)
 			if completed != "" {
 				dateLine += "  Completed: " + completed
 			}

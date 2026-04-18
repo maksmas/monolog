@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -72,7 +73,7 @@ func newLsCmd() *cobra.Command {
 				tasks = filterActive(tasks)
 			}
 
-			display.FormatTasks(cmd.OutOrStdout(), tasks, now)
+			display.FormatTasks(cmd.OutOrStdout(), tasks, now, config.DateFormat())
 			return nil
 		},
 	}

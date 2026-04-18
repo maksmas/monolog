@@ -1171,7 +1171,7 @@ func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
 func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	// When now is zero (e.g. item constructed without setting now),
 	// a valid CreatedAt is far in the future relative to time.Time{},
-	// so FormatRelDate returns a YY-MM-DD date string — not empty.
+	// so FormatRelDate returns a DD-MM-YY date string — not empty.
 	it := item{
 		task: model.Task{
 			ID:        "01ABCDEF",
@@ -1186,9 +1186,9 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	if !strings.Contains(desc, "01AB") {
 		t.Errorf("Description() = %q, should contain short ID", desc)
 	}
-	// With zero now, the date should render as YY-MM-DD (different year from year 1)
-	if !strings.Contains(desc, "26-04-11") {
-		t.Errorf("Description() = %q, should contain far-future date '26-04-11'", desc)
+	// With zero now, the date should render as DD-MM-YY (different year from year 1)
+	if !strings.Contains(desc, "11-04-26") {
+		t.Errorf("Description() = %q, should contain far-future date '11-04-26'", desc)
 	}
 }
 

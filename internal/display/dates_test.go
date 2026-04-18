@@ -7,6 +7,13 @@ import (
 	"github.com/mmaksmas/monolog/internal/model"
 )
 
+// ddmmyyyy is the default user-facing layout (DD-MM-YYYY).
+const ddmmyyyy = "02-01-2006"
+
+// yyyymmdd is the alternative layout used to prove the layout parameter is
+// wired through rather than ignored.
+const yyyymmdd = "2006-01-02"
+
 func TestFormatRelDate(t *testing.T) {
 	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
 
@@ -43,26 +50,57 @@ func TestFormatRelDate(t *testing.T) {
 		{"6d ago", now.Add(-6 * 24 * time.Hour).Format(time.RFC3339), "6d"},
 		{"6d23h59m ago", now.Add(-6*24*time.Hour - 23*time.Hour - 59*time.Minute).Format(time.RFC3339), "6d"},
 
-		// date format: >=7 days
-		{"7d ago (boundary)", now.Add(-7 * 24 * time.Hour).Format(time.RFC3339), "04-06"},
-		{"older same year", time.Date(2026, 3, 28, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), "03-28"},
-		{"older different year", time.Date(2025, 3, 28, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), "25-03-28"},
+		// date format: >=7 days (DD-MM for same year, DD-MM-YY for cross-year)
+		{"7d ago (boundary)", now.Add(-7 * 24 * time.Hour).Format(time.RFC3339), "06-04"},
+		{"older same year", time.Date(2026, 3, 28, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), "28-03"},
+		{"older different year", time.Date(2025, 3, 28, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), "28-03-25"},
 
 		// future: within 1 min tolerance -> "now"
 		{"future 30s", now.Add(30 * time.Second).Format(time.RFC3339), "now"},
 		{"future exactly 1m", now.Add(1 * time.Minute).Format(time.RFC3339), "now"},
 
-		// future: beyond 1 min -> MM-DD
-		{"future 61s (first non-now)", now.Add(61 * time.Second).Format(time.RFC3339), "04-13"},
-		{"future >1m same year", now.Add(2 * time.Minute).Format(time.RFC3339), "04-13"},
-		{"future >1m different year", time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC).Format(time.RFC3339), "27-01-15"},
+		// future: beyond 1 min -> DD-MM (same year) or DD-MM-YY (cross year)
+		{"future 61s (first non-now)", now.Add(61 * time.Second).Format(time.RFC3339), "13-04"},
+		{"future >1m same year", now.Add(2 * time.Minute).Format(time.RFC3339), "13-04"},
+		{"future >1m different year", time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC).Format(time.RFC3339), "15-01-27"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := FormatRelDate(now, tt.ts)
+			got := FormatRelDate(now, tt.ts, ddmmyyyy)
 			if got != tt.want {
-				t.Errorf("FormatRelDate(now, %q) = %q, want %q", tt.ts, got, tt.want)
+				t.Errorf("FormatRelDate(now, %q, %q) = %q, want %q", tt.ts, ddmmyyyy, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFormatRelDate_AlternativeLayout confirms the layout parameter is
+// actually wired through — rendering under YYYY-MM-DD must produce the ISO
+// form, not the default DD-MM-YYYY.
+func TestFormatRelDate_AlternativeLayout(t *testing.T) {
+	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		ts   string
+		want string
+	}{
+		// Same-year: drop year token from layout "2006-01-02" -> "01-02"
+		// so "older same year" becomes "03-28" (MM-DD).
+		{"older same year", time.Date(2026, 3, 28, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), "03-28"},
+		// Cross-year: replace "2006" with "06" -> "06-01-02", so
+		// "older different year" renders as "25-03-28" (YY-MM-DD).
+		{"older different year", time.Date(2025, 3, 28, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), "25-03-28"},
+		// Relative (non-date) branches still bypass layout.
+		{"2d ago", now.Add(-2 * 24 * time.Hour).Format(time.RFC3339), "2d"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatRelDate(now, tt.ts, yyyymmdd)
+			if got != tt.want {
+				t.Errorf("FormatRelDate(now, %q, %q) = %q, want %q", tt.ts, yyyymmdd, got, tt.want)
 			}
 		})
 	}
@@ -129,16 +167,31 @@ func TestFormatTaskDates(t *testing.T) {
 				Status:    "open",
 				CreatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339),
 			},
-			want: "03-01",
+			want: "01-03",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := FormatTaskDates(now, tt.task)
+			got := FormatTaskDates(now, tt.task, ddmmyyyy)
 			if got != tt.want {
 				t.Errorf("FormatTaskDates() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFormatTaskDates_AlternativeLayout proves the layout parameter flows
+// through FormatTaskDates to FormatRelDate.
+func TestFormatTaskDates_AlternativeLayout(t *testing.T) {
+	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	task := model.Task{
+		Status:    "open",
+		CreatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	}
+	got := FormatTaskDates(now, task, yyyymmdd)
+	want := "03-01"
+	if got != want {
+		t.Errorf("FormatTaskDates(layout=%q) = %q, want %q", yyyymmdd, got, want)
 	}
 }

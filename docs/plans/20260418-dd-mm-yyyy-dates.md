@@ -307,7 +307,7 @@ Thin, config-driven display/input layer on top of unchanged storage:
 - Modify: any caller of `FormatRelDate` / `FormatTaskDates` that needs to
   pass the layout (TUI table, `cmd/ls.go` printer)
 
-- [ ] change `shortDate` to take the configured layout and render by
+- [x] change `shortDate` to take the configured layout and render by
       building a short-form layout from the full layout via
       `strings.Replace(layout, "2006", "06", 1)`, then delegating to
       `t.Format`. Same-year output uses a same-year short layout that
@@ -320,24 +320,24 @@ Thin, config-driven display/input layer on top of unchanged storage:
       not bite. When a year-leading format is added to `supported`,
       revisit this function — a cross-year test for such a layout
       should be added at that time
-- [ ] change `FormatRelDate` and `FormatTaskDates` to accept the layout
+- [x] change `FormatRelDate` and `FormatTaskDates` to accept the layout
       and thread it to `shortDate`
-- [ ] update the doc comments on `FormatRelDate` so the formats described
+- [x] update the doc comments on `FormatRelDate` so the formats described
       (`MM-DD`, `YY-MM-DD`) are replaced with the new ones computed from
       the configured layout (describe the default and note the layout
       parameter controls it)
-- [ ] update every caller of `FormatRelDate` / `FormatTaskDates` to pass
+- [x] update every caller of `FormatRelDate` / `FormatTaskDates` to pass
       `config.DateFormat()`. Callers live in `internal/display/table.go`,
       `cmd/ls.go`, and any TUI panels that render timestamps
-- [ ] update every asserted string in `TestFormatRelDate` and
+- [x] update every asserted string in `TestFormatRelDate` and
       `TestFormatTaskDates` that currently matches the old format
       (`"04-06"` → `"06-04"`, `"03-28"` → `"28-03"`, `"25-03-28"` →
       `"28-03-25"`, `"04-13"` → `"13-04"`, `"27-01-15"` →
       `"15-01-27"`, `"03-01"` → `"01-03"`)
-- [ ] add at least one test case that passes an alternative layout
+- [x] add at least one test case that passes an alternative layout
       (e.g. `"2006-01-02"`) and asserts the date renders in that layout,
       proving the param is used
-- [ ] run `go test ./internal/display/...` — must pass before next task
+- [x] run `go test ./internal/display/...` — must pass before next task
 
 ### Task 4: Switch note separator to the configured format + add dateFormat to recurrence spawn
 
