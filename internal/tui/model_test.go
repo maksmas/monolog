@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -22,7 +23,7 @@ import (
 // expectSchedule resolves a bucket name to its ISO date for current now.
 func expectSchedule(t *testing.T, bucket string) string {
 	t.Helper()
-	got, err := schedule.Parse(bucket, time.Now())
+	got, err := schedule.Parse(bucket, time.Now(), config.DateFormat())
 	if err != nil {
 		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
 	}
@@ -242,6 +243,8 @@ func TestReschedule_CustomDate(t *testing.T) {
 	if m.rescheduleSub != 1 {
 		t.Fatalf("rescheduleSub = %d, want 1", m.rescheduleSub)
 	}
+	// Legacy ISO input is still accepted silently so existing muscle
+	// memory / scripts keep working after the format switch.
 	m = typeString(t, m, "2026-05-20")
 	m, cmd := key(t, m, "enter")
 	if cmd == nil {
@@ -259,6 +262,44 @@ func TestReschedule_CustomDate(t *testing.T) {
 	}
 }
 
+func TestReschedule_CustomDate_ConfiguredFormat(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "custom date cfg", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "r")
+	m, _ = key(t, m, "6")
+	// Enter the date in the configured DD-MM-YYYY layout. Stored value
+	// must still be ISO so we can round-trip back through FormatDisplay.
+	m = typeString(t, m, "20-05-2026")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter on valid DD-MM-YYYY date should save")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Schedule != "2026-05-20" {
+		t.Errorf("Schedule = %q, want %q (DD-MM-YYYY input must store as ISO)",
+			task.Schedule, "2026-05-20")
+	}
+}
+
+func TestReschedule_Placeholder_UsesConfiguredLabel(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "placeholder check", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "r")
+	m, _ = key(t, m, "6")
+	if got, want := m.input.Placeholder, config.DateFormatLabel(); got != want {
+		t.Errorf("reschedule placeholder = %q, want %q", got, want)
+	}
+}
+
 func TestReschedule_InvalidCustomDateSurfacesError(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "bad date", Status: "open", Schedule: "today",
@@ -272,7 +313,11 @@ func TestReschedule_InvalidCustomDateSurfacesError(t *testing.T) {
 		t.Error("invalid date should not produce save cmd")
 	}
 	if m.err == nil {
-		t.Error("expected error on invalid date")
+		t.Fatal("expected error on invalid date")
+	}
+	if got := m.err.Error(); !strings.Contains(got, config.DateFormatLabel()) {
+		t.Errorf("error message should mention configured format %q, got %q",
+			config.DateFormatLabel(), got)
 	}
 }
 
@@ -743,6 +788,36 @@ func TestApplyEditedYAML_UpdatesUpdatedAt(t *testing.T) {
 	}
 }
 
+// TestMarshalTaskForEdit_ScheduleInConfiguredFormat ensures the YAML
+// edit buffer renders the schedule in the user-facing (DD-MM-YYYY)
+// layout even though the stored value is ISO. applyEditedYAML must be
+// able to round-trip that back to ISO.
+func TestMarshalTaskForEdit_ScheduleInConfiguredFormat(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "pay bills", Status: "open", Schedule: "2026-04-13",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The rendered YAML must contain the user-facing date, not the raw ISO.
+	if !strings.Contains(string(data), "schedule: 13-04-2026") {
+		t.Errorf("YAML should contain DD-MM-YYYY schedule, got:\n%s", string(data))
+	}
+	if strings.Contains(string(data), "schedule: 2026-04-13") {
+		t.Errorf("YAML should not contain raw ISO schedule, got:\n%s", string(data))
+	}
+	// Round-trip: applyEditedYAML must accept that rendering and
+	// produce the original ISO value.
+	got, err := applyEditedYAML(orig, data, time.Now())
+	if err != nil {
+		t.Fatalf("parse round-trip: %v", err)
+	}
+	if got.Schedule != "2026-04-13" {
+		t.Errorf("round-trip Schedule = %q, want %q", got.Schedule, "2026-04-13")
+	}
+}
+
 // TestMarshalTaskForEdit_IncludesRecurrence ensures the YAML edit buffer
 // exposes the Recurrence field so users can set/clear it via $EDITOR.
 func TestMarshalTaskForEdit_IncludesRecurrence(t *testing.T) {
@@ -1170,7 +1245,7 @@ func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
 func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	// When now is zero (e.g. item constructed without setting now),
 	// a valid CreatedAt is far in the future relative to time.Time{},
-	// so FormatRelDate returns a YY-MM-DD date string — not empty.
+	// so FormatRelDate returns a DD-MM-YY date string — not empty.
 	it := item{
 		task: model.Task{
 			ID:        "01ABCDEF",
@@ -1185,9 +1260,36 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	if !strings.Contains(desc, "01AB") {
 		t.Errorf("Description() = %q, should contain short ID", desc)
 	}
-	// With zero now, the date should render as YY-MM-DD (different year from year 1)
-	if !strings.Contains(desc, "26-04-11") {
-		t.Errorf("Description() = %q, should contain far-future date '26-04-11'", desc)
+	// With zero now, the date should render as DD-MM-YY (different year from year 1)
+	if !strings.Contains(desc, "11-04-26") {
+		t.Errorf("Description() = %q, should contain far-future date '11-04-26'", desc)
+	}
+}
+
+// TestItemDescription_ISOScheduleRendersInConfiguredLayout verifies that a
+// stored ISO schedule (e.g. "2026-05-15") is rendered in the configured
+// user-facing layout (default DD-MM-YYYY) inside the list item description —
+// not leaked raw as the stored ISO string.
+func TestItemDescription_ISOScheduleRendersInConfiguredLayout(t *testing.T) {
+	// Use a fixedNow such that 2026-05-15 is not in the "today" bucket so
+	// the schedule fragment is actually emitted (the code path guards on
+	// "not today" before appending the schedule).
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:       "01ABCDEF",
+			Title:    "future task",
+			Status:   "open",
+			Schedule: "2026-05-15",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if !strings.Contains(desc, "15-05-2026") {
+		t.Errorf("Description() = %q, should contain schedule in DD-MM-YYYY (15-05-2026)", desc)
+	}
+	if strings.Contains(desc, "2026-05-15") {
+		t.Errorf("Description() = %q, should NOT contain raw stored ISO schedule", desc)
 	}
 }
 
@@ -3446,7 +3548,7 @@ func TestSeparatorRender_ContainsLabel(t *testing.T) {
 // helper: create a task with specific schedule bucket and tags.
 func makeTask(t *testing.T, id, title, bucket string, tags []string) model.Task {
 	t.Helper()
-	sched, err := schedule.Parse(bucket, time.Now())
+	sched, err := schedule.Parse(bucket, time.Now(), config.DateFormat())
 	if err != nil {
 		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
 	}
@@ -6565,7 +6667,7 @@ func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01INC", Title: "has notes", Status: "open",
 			Schedule: expectSchedule(t, "today"), Position: 1000,
-			Body:      "--- 2026-04-15 10:00:00 ---\nexisting note",
+			Body:      "--- 15-04-2026 10:00:00 ---\nexisting note",
 			NoteCount: 1,
 			UpdatedAt: "2026-04-13T00:00:00Z"},
 	)

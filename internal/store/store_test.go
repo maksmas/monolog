@@ -140,7 +140,7 @@ func TestUpdateRecalculatesNoteCount(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	task.Body = "--- 2026-04-17 10:00:00 ---\nfirst note\n\n--- 2026-04-17 11:00:00 ---\nsecond note"
+	task.Body = "--- 17-04-2026 10:00:00 ---\nfirst note\n\n--- 17-04-2026 11:00:00 ---\nsecond note"
 	task.NoteCount = 99 // deliberately stale
 	if err := s.Update(task); err != nil {
 		t.Fatalf("Update failed: %v", err)
@@ -187,8 +187,8 @@ func TestUpdateResetsNoteCountWhenBodyHasNone(t *testing.T) {
 func TestCreateRecalculatesNoteCount(t *testing.T) {
 	s := newTestStore(t)
 	task := sampleTask("01AAA", "New task")
-	task.Body = "first line\n--- 2026-04-17 10:00:00 ---\nfirst note\n" +
-		"--- 2026-04-17 11:00:00 ---\nsecond note"
+	task.Body = "first line\n--- 17-04-2026 10:00:00 ---\nfirst note\n" +
+		"--- 17-04-2026 11:00:00 ---\nsecond note"
 	task.NoteCount = 99 // stale; Create must overwrite
 	if err := s.Create(task); err != nil {
 		t.Fatalf("Create failed: %v", err)

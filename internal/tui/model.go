@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"gopkg.in/yaml.v3"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -215,12 +217,14 @@ func (i item) Description() string {
 		parts = append(parts, fmt.Sprintf("[%d]", i.task.NoteCount))
 	}
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
-		parts = append(parts, i.task.Schedule)
+		// Render stored ISO schedule in the configured user-facing layout
+		// (default DD-MM-YYYY). Legacy bucket strings pass through unchanged.
+		parts = append(parts, schedule.FormatDisplay(i.task.Schedule, config.DateFormat()))
 	}
 	if vt := display.VisibleTags(i.task.Tags); len(vt) > 0 {
 		parts = append(parts, "["+strings.Join(vt, ", ")+"]")
 	}
-	if dates := display.FormatTaskDates(i.now, i.task); dates != "" {
+	if dates := display.FormatTaskDates(i.now, i.task, config.DateFormat()); dates != "" {
 		parts = append(parts, dates)
 	}
 	return strings.Join(parts, "  ")
@@ -1131,7 +1135,7 @@ func (m *Model) submitNote() tea.Cmd {
 	}
 	t := *task
 	nowT := time.Now()
-	t.Body = model.AppendNote(t.Body, text, nowT)
+	t.Body = model.AppendNote(t.Body, text, nowT, config.DateFormat())
 	t.UpdatedAt = nowT.UTC().Format(time.RFC3339)
 	flat := flattenTitle(t.Title)
 
@@ -1165,7 +1169,7 @@ func (m *Model) doneSelected() tea.Cmd {
 		// warnBuf collects any recurrence warnings surfaced through the
 		// status bar (stderr has no natural home in the TUI).
 		var warnBuf strings.Builder
-		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf)
+		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf, config.DateFormat())
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("done: %w", err)}
 		}
@@ -1219,15 +1223,22 @@ func (m *Model) openReschedule() tea.Cmd {
 
 func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.rescheduleSub == 0 {
-		// Picker step.
+		// Picker step. Presets are bucket names; resolve them once here
+		// rather than again inside applyReschedule.
 		switch msg.String() {
 		case "1", "2", "3", "4", "5":
 			n := int(msg.String()[0] - '1')
-			return m, m.applyReschedule(reschedulePresets[n])
+			preset := reschedulePresets[n]
+			iso, err := schedule.Parse(preset, time.Now(), config.DateFormat())
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			return m, m.applyReschedule(iso, preset)
 		case "6":
 			m.rescheduleSub = 1
 			m.input.Width = m.modalInnerWidth() - 1
-			m.input.Placeholder = "YYYY-MM-DD"
+			m.input.Placeholder = config.DateFormatLabel()
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
@@ -1235,36 +1246,45 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Custom date input step.
+	// Custom date input step. schedule.Parse accepts bucket names, the
+	// configured format, and legacy ISO input (silent backward compat) —
+	// we rely on it for validation and normalization rather than IsISODate
+	// so the modal automatically follows the configured format. The parsed
+	// ISO is threaded into applyReschedule so we do not re-parse the same
+	// input twice.
 	switch msg.Type {
 	case tea.KeyEnter:
 		date := strings.TrimSpace(m.input.Value())
-		if !schedule.IsISODate(date) {
-			m.err = fmt.Errorf("invalid date %q (want YYYY-MM-DD)", date)
+		iso, err := schedule.Parse(date, time.Now(), config.DateFormat())
+		if err != nil {
+			if errors.Is(err, schedule.ErrInvalid) {
+				m.err = fmt.Errorf("invalid date %q (want %s)", date, config.DateFormatLabel())
+			} else {
+				m.err = err
+			}
 			return m, nil
 		}
-		return m, m.applyReschedule(date)
+		return m, m.applyReschedule(iso, date)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
-func (m *Model) applyReschedule(sched string) tea.Cmd {
+// applyReschedule moves m.modalTask to scheduleISO (already-parsed storage
+// format) and emits a save command. displayLabel is the user-facing string
+// to surface in commit message / status bar — typically either a bucket
+// name (for presets) or the raw user input (for custom dates).
+func (m *Model) applyReschedule(scheduleISO, displayLabel string) tea.Cmd {
 	if m.modalTask == nil {
 		return nil
 	}
 	nowT := time.Now()
-	scheduleDate, err := schedule.Parse(sched, nowT)
-	if err != nil {
-		m.err = err
-		return nil
-	}
 	t := *m.modalTask
 	oldBucket := schedule.Bucket(m.modalTask.Schedule, nowT)
-	t.Schedule = scheduleDate
+	t.Schedule = scheduleISO
 	t.UpdatedAt = now()
-	newBucket := schedule.Bucket(scheduleDate, nowT)
+	newBucket := schedule.Bucket(scheduleISO, nowT)
 	// Position it at the bottom of the new bucket if the bucket changed.
 	if newBucket != oldBucket {
 		others, err := bucketSiblings(m.store, t.Schedule, nowT)
@@ -1274,8 +1294,8 @@ func (m *Model) applyReschedule(sched string) tea.Cmd {
 	}
 	m.closeModal()
 	flat := flattenTitle(t.Title)
-	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", flat, sched),
-		fmt.Sprintf("Rescheduled: %s -> %s", flat, sched))
+	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", flat, displayLabel),
+		fmt.Sprintf("Rescheduled: %s -> %s", flat, displayLabel))
 }
 
 // bucketSiblings returns all open tasks that fall into the same bucket as the
@@ -1625,12 +1645,15 @@ type editableFields struct {
 
 // marshalTaskForEdit renders a task into the YAML shown in the editor.
 // The reserved "active" tag is filtered out so the user only sees their own
-// tags; active state is preserved separately in applyEditedYAML.
+// tags; active state is preserved separately in applyEditedYAML. The
+// schedule field is rendered through FormatDisplay so the user sees
+// dates in the configured format (default DD-MM-YYYY); applyEditedYAML
+// round-trips it back to the stored ISO format via schedule.Parse.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
 	return yaml.Marshal(editableFields{
 		Title:      t.Title,
 		Body:       t.Body,
-		Schedule:   t.Schedule,
+		Schedule:   schedule.FormatDisplay(t.Schedule, config.DateFormat()),
 		Tags:       display.VisibleTags(t.Tags),
 		Recurrence: t.Recurrence,
 	})
@@ -1653,7 +1676,7 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 	if edit.Title == "" {
 		return model.Task{}, fmt.Errorf("title cannot be empty")
 	}
-	scheduleDate, err := schedule.Parse(edit.Schedule, now)
+	scheduleDate, err := schedule.Parse(edit.Schedule, now, config.DateFormat())
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -1992,7 +2015,7 @@ func (m *Model) commitGrab() tea.Cmd {
 			t.Status = "open"
 			if bucket != "" {
 				if schedule.Bucket(t.Schedule, nowT) != bucket {
-					scheduleDate, err := schedule.Parse(bucket, nowT)
+					scheduleDate, err := schedule.Parse(bucket, nowT, config.DateFormat())
 					if err == nil {
 						t.Schedule = scheduleDate
 					}
@@ -2009,7 +2032,7 @@ func (m *Model) commitGrab() tea.Cmd {
 			// bucket, otherwise dropping back into your current bucket would
 			// reset a custom-set date (e.g. a 3-day-out task in the Week tab).
 			if schedule.Bucket(t.Schedule, nowT) != targetTab.bucket {
-				scheduleDate, err := schedule.Parse(targetTab.bucket, nowT)
+				scheduleDate, err := schedule.Parse(targetTab.bucket, nowT, config.DateFormat())
 				if err == nil {
 					t.Schedule = scheduleDate
 				}
@@ -2173,7 +2196,7 @@ func (m *Model) createCmd(title string, tags []string, recur string) tea.Cmd {
 	repoPath := m.repoPath
 	return func() tea.Msg {
 		nowT := time.Now()
-		scheduleDate, err := schedule.Parse(bucket, nowT)
+		scheduleDate, err := schedule.Parse(bucket, nowT, config.DateFormat())
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("schedule: %w", err)}
 		}
@@ -2499,21 +2522,23 @@ func (m *Model) detailPanelView() string {
 	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
 
 	bucket := schedule.Bucket(task.Schedule, now)
+	displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
 	if bucket != task.Schedule {
-		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, task.Schedule))
+		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, displayDate))
 	} else {
-		header = append(header, "Schedule: "+task.Schedule)
+		header = append(header, "Schedule: "+displayDate)
 	}
 
 	if vt := display.VisibleTags(task.Tags); len(vt) > 0 {
 		header = append(header, "Tags: "+strings.Join(vt, ", "))
 	}
 
-	created := display.FormatRelDate(now, task.CreatedAt)
+	layout := config.DateFormat()
+	created := display.FormatRelDate(now, task.CreatedAt, layout)
 	if created != "" {
 		dateLine := "Created: " + created
 		if task.CompletedAt != "" {
-			completed := display.FormatRelDate(now, task.CompletedAt)
+			completed := display.FormatRelDate(now, task.CompletedAt, layout)
 			if completed != "" {
 				dateLine += "  Completed: " + completed
 			}

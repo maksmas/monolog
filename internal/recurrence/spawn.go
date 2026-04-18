@@ -16,8 +16,12 @@ import (
 type spawnResult struct {
 	// newID is the ULID of the newly created spawn task.
 	newID string
-	// nextDate is the ISO-formatted next-occurrence date (e.g. "2026-05-01").
-	nextDate string
+	// nextDateDisplay is the next-occurrence date formatted with the
+	// display layout (e.g. DD-MM-YYYY). Used for commit messages and
+	// cross-reference notes that surface to the user. The ISO form is
+	// already on the newly created task's Schedule field, which callers
+	// can re-read from the store if needed.
+	nextDateDisplay string
 }
 
 // spawn creates the next-occurrence task for a completed recurring old task.
@@ -25,10 +29,15 @@ type spawnResult struct {
 // note from the returned newID and nextDate and persists the old task via a
 // single Update that combines the done transition with the back-reference.
 //
+// The dateFormat parameter controls the layout used for note separators in
+// the spawned task's Body (via AppendNote) and for the displayed
+// next-occurrence date returned in spawnResult.nextDateDisplay. The stored
+// Schedule on the new task is always ISO (schedule.IsoLayout).
+//
 // On Create failure, the new task is not written and the returned error
 // should be warned-and-skipped so the underlying completion still goes
 // through.
-func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResult, error) {
+func spawn(s *store.Store, old model.Task, rule Rule, now time.Time, dateFormat string) (spawnResult, error) {
 	newID, err := model.NewID()
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("generate ID: %w", err)
@@ -40,16 +49,18 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 	}
 
 	nowStr := now.UTC().Format(time.RFC3339)
-	nextDate := rule.Next(now).Format(schedule.IsoLayout)
+	nextT := rule.Next(now)
+	nextISO := nextT.Format(schedule.IsoLayout)
+	nextDisplay := nextT.Format(dateFormat)
 
 	newTask := model.Task{
 		ID:         newID,
 		Title:      old.Title,
-		Body:       model.AppendNote(old.Body, fmt.Sprintf("Spawned from %s", old.ID), now),
+		Body:       model.AppendNote(old.Body, fmt.Sprintf("Spawned from %s", old.ID), now, dateFormat),
 		Source:     old.Source,
 		Status:     "open",
 		Position:   ordering.NextPosition(existing),
-		Schedule:   nextDate,
+		Schedule:   nextISO,
 		Recurrence: old.Recurrence,
 		Tags:       tagsWithoutActive(old.Tags),
 		CreatedAt:  nowStr,
@@ -60,7 +71,7 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 		return spawnResult{}, fmt.Errorf("create spawned task: %w", err)
 	}
 
-	return spawnResult{newID: newID, nextDate: nextDate}, nil
+	return spawnResult{newID: newID, nextDateDisplay: nextDisplay}, nil
 }
 
 // CompleteAndSpawn transitions a task to done and, when the task has a
@@ -68,6 +79,11 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 // cross-reference notes. It returns the git commit message and the list of
 // relative task file paths (under .monolog/tasks/) to include in a single
 // commit — old task alone for non-recurring, or old and new for recurring.
+//
+// The dateFormat parameter is the Go layout used for every user-facing
+// date rendered by this function: the commit message's next-occurrence
+// date and both cross-reference notes' separator timestamps. Stored task
+// fields (Schedule, timestamps) are unaffected.
 //
 // Any recurrence-spawn failure (invalid rule, list error, create error) is
 // downgraded to a warning on w — the task's own completion is never
@@ -82,7 +98,7 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time) (spawnResul
 //
 // Callers pass the task by pointer because the function mutates it (status,
 // timestamps, body) so the post-call view reflects persisted state.
-func CompleteAndSpawn(s *store.Store, task *model.Task, now time.Time, w io.Writer) (commitMsg string, commitFiles []string, err error) {
+func CompleteAndSpawn(s *store.Store, task *model.Task, now time.Time, w io.Writer, dateFormat string) (commitMsg string, commitFiles []string, err error) {
 	nowStr := now.UTC().Format(time.RFC3339)
 	task.Status = "done"
 	task.SetActive(false)
@@ -107,13 +123,13 @@ func CompleteAndSpawn(s *store.Store, task *model.Task, now time.Time, w io.Writ
 		} else {
 			// Parse with non-empty input returns (rule, nil) on success — rule
 			// is never nil here; the empty-input path cannot reach this block.
-			res, spawnErr := spawn(s, *task, rule, now)
+			res, spawnErr := spawn(s, *task, rule, now, dateFormat)
 			if spawnErr != nil {
 				fmt.Fprintf(w, "warning: recurrence %q spawn failed: %v; skipping spawn\n", task.Recurrence, spawnErr)
 			} else {
-				backRef := fmt.Sprintf("Spawned follow-up: %s (scheduled %s)", res.newID, res.nextDate)
-				task.Body = model.AppendNote(task.Body, backRef, now)
-				commitMsg = fmt.Sprintf("done: %s (recurring, next %s)", task.Title, res.nextDate)
+				backRef := fmt.Sprintf("Spawned follow-up: %s (scheduled %s)", res.newID, res.nextDateDisplay)
+				task.Body = model.AppendNote(task.Body, backRef, now, dateFormat)
+				commitMsg = fmt.Sprintf("done: %s (recurring, next %s)", task.Title, res.nextDateDisplay)
 				commitFiles = append(commitFiles, filepath.Join(".monolog", "tasks", res.newID+".json"))
 				spawnedID = res.newID
 			}

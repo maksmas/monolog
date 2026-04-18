@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
 )
@@ -18,7 +19,7 @@ import (
 // Used by tests that previously asserted on the bucket-name string.
 func expectSchedule(t *testing.T, bucket string) string {
 	t.Helper()
-	got, err := schedule.Parse(bucket, time.Now())
+	got, err := schedule.Parse(bucket, time.Now(), config.DateFormat())
 	if err != nil {
 		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
 	}

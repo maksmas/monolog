@@ -828,7 +828,7 @@ func TestEditCommand_BodyWithSeparatorSetsNoteCount(t *testing.T) {
 	id := addTestTask(t, dir, "Manual body separator")
 
 	// Set a body containing a well-formed separator line via --body.
-	body := "some intro\n--- 2026-04-17 10:30:00 ---\nthe note content"
+	body := "some intro\n--- 17-04-2026 10:30:00 ---\nthe note content"
 
 	rootCmd := NewRootCmd()
 	buf := new(bytes.Buffer)

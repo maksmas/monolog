@@ -35,7 +35,7 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 
 | Flag | Description |
 |------|-------------|
-| `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date |
+| `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or a date (default format `DD-MM-YYYY`; legacy ISO `YYYY-MM-DD` is still accepted) |
 | `-t, --tags` | Comma-separated tags |
 | `--recur` | Recurrence rule: `monthly:N`, `weekly:<day>`, `workdays`, or `days:N` (see [Recurring tasks](#recurring-tasks)) |
 
@@ -43,7 +43,7 @@ If the title starts with `tag: ...` and that tag already exists on another task,
 
 ### `monolog ls`
 
-Lists today's open tasks by default. Each row includes a compact dates column: relative for recent tasks (`5m`, `3h`, `2d`), `MM-DD` for older same-year tasks, and `YY-MM-DD` for cross-year. Done tasks show `created→done` (e.g. `5d→1h`). Active tasks are marked with a leading `*`.
+Lists today's open tasks by default. Each row includes a compact dates column: relative for recent tasks (`5m`, `3h`, `2d`), a short date for older same-year tasks (`DD-MM` under the default format), and a year-qualified short date for cross-year (`DD-MM-YY` under the default). Done tasks show `created→done` (e.g. `5d→1h`). Active tasks are marked with a leading `*`.
 
 | Flag | Description |
 |------|-------------|
@@ -87,7 +87,7 @@ Reorder a task within its schedule group. Exactly one flag required:
 
 ### `monolog note <id-prefix> <text>`
 
-Append a timestamped note to a task. The note is stored inside the task's body using `--- YYYY-MM-DD HH:MM:SS ---` separators. Empty text is rejected.
+Append a timestamped note to a task. The note is stored inside the task's body using `--- DD-MM-YYYY HH:MM:SS ---` separators (the date portion follows the configured display format; see [Date format](#date-format)). Empty text is rejected.
 
 ### `monolog show <id-prefix>`
 
@@ -170,6 +170,14 @@ Active tasks render in green in the list and appear in a dedicated panel above t
 ## How it works
 
 Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-commits to git. Ordering uses fractional positions with automatic rebalancing.
+
+## Date format
+
+User-facing dates default to `DD-MM-YYYY` — this covers CLI `--schedule` input, TUI reschedule/YAML-edit input, the task-list date column, the detail panel, recurrence commit messages and cross-reference notes, note separators inside task bodies, and error messages. Legacy ISO input (`YYYY-MM-DD`) is still accepted silently so older scripts keep working.
+
+On-disk storage always stays ISO (`"schedule": "2026-04-15"` in the JSON) regardless of the display format — this keeps `.monolog/` repos portable and sync-safe.
+
+The format is a compile-time default today, owned by `internal/config`. A future release will expose it as a configurable setting; at that point adding e.g. `YYYY-MM-DD` or `MM/DD/YYYY` will only touch the config package.
 
 ## Task lookup
 

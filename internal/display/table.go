@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 )
 
 // titleColWidth is the fixed rune width for the title column in `ls` output.
@@ -65,8 +66,10 @@ func VisibleTags(tags []string) []string {
 
 // FormatTasks writes tasks as a clean terminal table to w.
 // Each line shows: position indicator, short ID, title, schedule, dates, tags.
-// The now parameter is used to compute compact relative dates.
-func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
+// The now parameter is used to compute compact relative dates. layout is the
+// configured date format (Go layout) that controls how far dates are rendered
+// (callers typically pass config.DateFormat()).
+func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) {
 	if len(tasks) == 0 {
 		fmt.Fprintln(w, "No tasks.")
 		return
@@ -88,7 +91,14 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 			tags = "[" + strings.Join(vt, ", ") + "]"
 		}
 
-		dates := FormatTaskDates(now, task)
+		dates := FormatTaskDates(now, task, layout)
+
+		// Render the schedule column through FormatDisplay so stored ISO dates
+		// (e.g. "2030-04-15") appear in the configured user-facing format
+		// (default DD-MM-YYYY → "15-04-2030"). Legacy bucket strings ("today",
+		// "tomorrow", etc.) pass through unchanged because FormatDisplay only
+		// reformats inputs that parse as IsoLayout.
+		scheduleCell := schedule.FormatDisplay(task.Schedule, layout)
 
 		// Title is truncated/padded to titleColWidth runes so subsequent columns
 		// stay aligned even for long titles. 17-rune pad on dates: worst case is
@@ -98,7 +108,7 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time) {
 			marker,
 			ShortID(task.ID),
 			truncatePad(task.Title, titleColWidth),
-			task.Schedule,
+			scheduleCell,
 			padRight(dates, 17),
 			tags,
 		)
