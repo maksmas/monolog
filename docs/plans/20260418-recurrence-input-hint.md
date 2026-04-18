@@ -156,19 +156,19 @@ on both `cmd/add.go:95` and `cmd/edit.go:116`.
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] locate the block that refreshes `m.suggestions` on tag-field input changes; extend it so `addFocus == addFocusRecur` triggers `recurrence.Suggest(m.recurInput.Value())` instead of `model.FilterTags(...)`
-- [ ] clear `m.suggestions` and reset `m.suggestionIdx` when focus leaves the recur field (Tab cycle into/out of recur)
-- [ ] accept behavior: on the recur field, **Tab** (not Enter) accepts a selected suggestion — `m.recurInput.SetValue(selected)` then clears suggestions. Do NOT append (recurrence is a single value). **Enter on the recur field continues to submit the modal**, even when the dropdown is visible — this is a deliberate divergence from tag autocomplete (see Solution Overview).
-- [ ] adjust the existing Tab-cycle logic on the recur field so that when the dropdown is visible, Tab accepts the suggestion instead of cycling focus back to the title field. When the dropdown is empty (no input or no matches), Tab retains its current cycle-focus behavior.
-- [ ] verify Up/Down navigation already works via the shared `suggestionIdx` path (no change expected)
-- [ ] verify Esc dismiss already works (no change expected)
-- [ ] write TUI test: open add modal, Tab Tab (focus recur), type `week`, assert `m.suggestions` contains `weekly:` (and/or workdays), press Tab to accept, assert `m.recurInput.Value() == "weekly:"`
-- [ ] write TUI test: focused recur with `weekly:` typed → suggestions include all 7 weekdays canonical forms (capped as needed); Tab accepts `weekly:mon` and replaces input
-- [ ] write TUI test: with the recur dropdown visible, **Enter submits the modal** (creates the task with the current typed value, ignoring the highlighted suggestion) — guards the divergence from tag behavior
-- [ ] write TUI test: with the recur field focused and dropdown empty (no matches), Tab cycles focus back to title (current behavior preserved)
-- [ ] write TUI test: tag-field suggestions still behave the old way — both Tab and Enter accept (append with `, `) — regression guard
-- [ ] write TUI test: Tab cycling away from recur (when dropdown empty) clears `m.suggestions` / resets `m.suggestionIdx`
-- [ ] run tests - must pass before task 3: `go test ./internal/tui/`
+- [x] locate the block that refreshes `m.suggestions` on tag-field input changes; extend it so `addFocus == addFocusRecur` triggers `recurrence.Suggest(m.recurInput.Value())` instead of `model.FilterTags(...)`
+- [x] clear `m.suggestions` and reset `m.suggestionIdx` when focus leaves the recur field (Tab cycle into/out of recur)
+- [x] accept behavior: on the recur field, **Tab** (not Enter) accepts a selected suggestion — `m.recurInput.SetValue(selected)` then clears suggestions. Do NOT append (recurrence is a single value). **Enter on the recur field continues to submit the modal**, even when the dropdown is visible — this is a deliberate divergence from tag autocomplete (see Solution Overview).
+- [x] adjust the existing Tab-cycle logic on the recur field so that when the dropdown is visible, Tab accepts the suggestion instead of cycling focus back to the title field. When the dropdown is empty (no input or no matches), Tab retains its current cycle-focus behavior.
+- [x] verify Up/Down navigation already works via the shared `suggestionIdx` path (no change expected)
+- [x] verify Esc dismiss already works (no change expected)
+- [x] write TUI test: open add modal, Tab Tab (focus recur), type `week`, assert `m.suggestions` contains `weekly:` (and/or workdays), press Tab to accept, assert `m.recurInput.Value() == "weekly:"`
+- [x] write TUI test: focused recur with `weekly:` typed → suggestions include all 7 weekdays canonical forms (capped as needed); Tab accepts `weekly:mon` and replaces input
+- [x] write TUI test: with the recur dropdown visible, **Enter submits the modal** (creates the task with the current typed value, ignoring the highlighted suggestion) — guards the divergence from tag behavior
+- [x] write TUI test: with the recur field focused and dropdown empty (no matches), Tab cycles focus back to title (current behavior preserved)
+- [x] write TUI test: tag-field suggestions still behave the old way — both Tab and Enter accept (append with `, `) — regression guard
+- [x] write TUI test: Tab cycling away from recur (when dropdown empty) clears `m.suggestions` / resets `m.suggestionIdx`
+- [x] run tests - must pass before task 3: `go test ./internal/tui/`
 
 ### Task 3: Render hint line and suggestions in the TUI add modal view
 

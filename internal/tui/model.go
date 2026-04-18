@@ -1417,6 +1417,15 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Recur field suggestion navigation: Up/Down navigate, Tab accepts
+	// (replaces input with the selected suggestion). Enter is intentionally
+	// NOT consumed here — it must submit the modal even when the dropdown is
+	// visible, since the recur field is the last in the Tab cycle and users
+	// who do not need autocomplete should not be forced to dismiss a dropdown.
+	if recurFocused && m.handleRecurSuggestionNav(msg) {
+		return m, nil
+	}
+
 	// Tab: cycle focus title -> tags -> recur -> title.
 	if msg.Type == tea.KeyTab {
 		switch m.addFocus {
@@ -1430,10 +1439,10 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tagInput.Blur()
 			m.recurInput.Focus()
 			m.titleArea.Blur()
-			// Clear suggestions when leaving the tag field — they are not
-			// interactable from the recur field.
-			m.suggestions = nil
-			m.suggestionIdx = -1
+			// Clear any lingering tag suggestions, then populate recurrence
+			// suggestions based on whatever is already in the recur field so
+			// the dropdown appears immediately on Tab-into-recur.
+			m.refreshRecurSuggestions(m.recurInput.Value())
 		default: // addFocusRecur
 			m.addFocus = addFocusTitle
 			m.recurInput.Blur()
@@ -1467,6 +1476,8 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if recurFocused {
 		m.recurInput, cmd = m.recurInput.Update(msg)
+		// Refresh suggestions after every keystroke in the recur field.
+		m.refreshRecurSuggestions(m.recurInput.Value())
 	} else if tagsFocused {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 		// Refresh suggestions after every keystroke in the tag field.
@@ -1533,6 +1544,66 @@ func (m *Model) refreshSuggestions(fieldValue string) {
 	} else {
 		m.suggestionIdx = -1
 	}
+}
+
+// refreshRecurSuggestions updates m.suggestions with recurrence-grammar
+// completions for the current recur input value. Mirrors refreshSuggestions
+// but uses recurrence.Suggest (a pure function) and is invoked only when the
+// recur field is focused.
+func (m *Model) refreshRecurSuggestions(fieldValue string) {
+	m.suggestions = recurrence.Suggest(fieldValue)
+	if len(m.suggestions) > 0 {
+		m.suggestionIdx = 0
+	} else {
+		m.suggestionIdx = -1
+	}
+}
+
+// handleRecurSuggestionNav handles suggestion navigation for the recur field:
+// Up/Down navigate and Tab accepts (replaces the input with the selected
+// suggestion). Enter is deliberately NOT consumed here — it must submit the
+// modal even when the dropdown is visible. Returns true when the key was
+// consumed.
+func (m *Model) handleRecurSuggestionNav(msg tea.KeyMsg) bool {
+	hasSuggestions := len(m.suggestions) > 0
+
+	// Up/Down navigate suggestions.
+	if hasSuggestions && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
+		if msg.Type == tea.KeyUp {
+			if m.suggestionIdx > 0 {
+				m.suggestionIdx--
+			}
+		} else {
+			if m.suggestionIdx < len(m.suggestions)-1 {
+				m.suggestionIdx++
+			}
+		}
+		return true
+	}
+
+	// Tab accepts the highlighted suggestion (replaces the whole input, since
+	// recurrence is a single value — unlike the comma-appended tag field).
+	if msg.Type == tea.KeyTab && hasSuggestions && m.suggestionIdx >= 0 {
+		m.acceptRecurSuggestion()
+		return true
+	}
+
+	return false
+}
+
+// acceptRecurSuggestion replaces the recur input text with the currently
+// selected suggestion and refreshes the suggestion list. Recurrence is a
+// single value, so the accept semantics are "replace", not "append".
+func (m *Model) acceptRecurSuggestion() {
+	if m.suggestionIdx < 0 || m.suggestionIdx >= len(m.suggestions) {
+		return
+	}
+	selected := m.suggestions[m.suggestionIdx]
+	m.recurInput.SetValue(selected)
+	m.recurInput.CursorEnd()
+	// Recompute suggestions for the new value (e.g. accepting "weekly:" should
+	// immediately show the weekday completions).
+	m.refreshRecurSuggestions(m.recurInput.Value())
 }
 
 // acceptSuggestion replaces the current fragment in the given textinput with

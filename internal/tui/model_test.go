@@ -1964,7 +1964,12 @@ func TestAdd_RecurrenceClearedOnCloseModal(t *testing.T) {
 	if m.recurInput.Value() != "workdays" {
 		t.Fatalf("recurInput = %q, want 'workdays'", m.recurInput.Value())
 	}
-	// Esc closes the modal; reopening must start fresh.
+	// "workdays" populates recur suggestions, so the first Esc clears them
+	// (mirroring the tag-field dismiss behavior) and the second Esc closes
+	// the modal. Reopening must start fresh.
+	if len(m.suggestions) > 0 {
+		m, _ = key(t, m, "esc")
+	}
 	m, _ = key(t, m, "esc")
 	if m.mode != modeNormal {
 		t.Fatalf("mode after esc = %v, want modeNormal", m.mode)
@@ -2633,6 +2638,267 @@ func TestAdd_ModalViewSuggestionHighlightChangesOnNavigation(t *testing.T) {
 	view2 := m.modalView()
 	if !strings.Contains(view2, "> "+m.suggestions[1]) {
 		t.Errorf("second suggestion should be highlighted after down, got:\n%s", view2)
+	}
+}
+
+// --- recurrence autocomplete tests -----------------------------------------
+
+// TestAdd_RecurSuggestionsAppearOnWeeklyPrefix verifies that typing "week"
+// in the recur field populates m.suggestions with recurrence completions.
+func TestAdd_RecurSuggestionsAppearOnWeeklyPrefix(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")   // open add
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	m = typeString(t, m, "week")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'week'")
+	}
+	// "week" should match "weekly:" from topLevelCandidates.
+	found := false
+	for _, s := range m.suggestions {
+		if s == "weekly:" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("suggestions = %v, want to contain 'weekly:'", m.suggestions)
+	}
+}
+
+// TestAdd_RecurTabAcceptsSuggestionReplacesInput verifies Tab accepts a recur
+// suggestion and replaces the full input text (not appended, unlike tags).
+func TestAdd_RecurTabAcceptsSuggestionReplacesInput(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "week")
+	// suggestions should be populated.
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before accept")
+	}
+	m, _ = key(t, m, "tab") // accept highlighted suggestion
+	got := m.recurInput.Value()
+	if got != "weekly:" {
+		t.Errorf("recurInput = %q, want %q (Tab should replace full input)", got, "weekly:")
+	}
+	// After accepting "weekly:", suggestions should immediately show weekdays.
+	if len(m.suggestions) == 0 {
+		t.Errorf("expected weekday suggestions after accepting 'weekly:', got empty")
+	}
+	// Focus should still be on recur (accept does not switch focus).
+	if m.addFocus != addFocusRecur {
+		t.Errorf("addFocus = %v, want addFocusRecur after accept", m.addFocus)
+	}
+}
+
+// TestAdd_RecurWeeklyColonSuggestionsIncludeWeekdays verifies that the
+// completion set after "weekly:" contains canonical weekday forms (capped
+// at 5 by the pure Suggest function).
+func TestAdd_RecurWeeklyColonSuggestionsIncludeWeekdays(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "weekly:")
+	// The suggester caps results at 5 to match the tag-autocomplete convention.
+	if len(m.suggestions) != 5 {
+		t.Fatalf("suggestions len = %d, want 5 (cap), got %v", len(m.suggestions), m.suggestions)
+	}
+	// First one should be weekly:mon, after accepting it input becomes "weekly:mon".
+	m, _ = key(t, m, "tab") // accept first (weekly:mon)
+	got := m.recurInput.Value()
+	if got != "weekly:mon" {
+		t.Errorf("recurInput = %q, want %q", got, "weekly:mon")
+	}
+}
+
+// TestAdd_RecurEnterSubmitsEvenWithVisibleDropdown is the key divergence from
+// tag autocomplete: Enter on the recur field always submits the modal, even
+// when a suggestion is highlighted. The user's typed text is used as-is (after
+// canonicalization), not replaced by the highlighted suggestion.
+func TestAdd_RecurEnterSubmitsEvenWithVisibleDropdown(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "pay rent")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	// Type a fully-valid recurrence that also triggers suggestions.
+	m = typeString(t, m, "workdays")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions for 'workdays'")
+	}
+	// Enter must submit with the literal typed value — not replace it with
+	// the highlighted suggestion (which happens to be the same here, but the
+	// intent under test is that submit wins over accept).
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("Enter with visible dropdown should submit the modal")
+	}
+	m = runCmd(t, m, cmd)
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal after submit", m.mode)
+	}
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Recurrence != "workdays" {
+		t.Errorf("Recurrence = %q, want %q", task.Recurrence, "workdays")
+	}
+}
+
+// TestAdd_RecurTabCyclesFocusWhenDropdownEmpty verifies that when the
+// dropdown is empty (no input, no matches), Tab on the recur field cycles
+// focus back to title rather than consuming the key for suggestion accept.
+func TestAdd_RecurTabCyclesFocusWhenDropdownEmpty(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	// Recur field is empty — no suggestions.
+	if len(m.suggestions) != 0 {
+		t.Fatalf("expected empty suggestions on empty recur field, got %v", m.suggestions)
+	}
+	m, _ = key(t, m, "tab") // should cycle focus back to title
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle (Tab should cycle when dropdown empty)", m.addFocus)
+	}
+}
+
+// TestAdd_RecurTabCyclesFocusWithInvalidPrefix verifies that a recur-field
+// input that has no matching suggestions (e.g. "xyz") still allows Tab to
+// cycle focus, since no suggestion is available to accept.
+func TestAdd_RecurTabCyclesFocusWithInvalidPrefix(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "xyz")
+	if len(m.suggestions) != 0 {
+		t.Fatalf("expected no suggestions for 'xyz', got %v", m.suggestions)
+	}
+	m, _ = key(t, m, "tab") // should cycle focus back to title
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle when no matches", m.addFocus)
+	}
+}
+
+// TestAdd_RecurUpDownNavigatesSuggestions verifies Up/Down navigation works
+// on the recur field using the shared suggestionIdx plumbing.
+func TestAdd_RecurUpDownNavigatesSuggestions(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "weekly:")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected weekday suggestions")
+	}
+	if m.suggestionIdx != 0 {
+		t.Fatalf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after down: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("after up: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Down past the last clamps.
+	for i := 0; i < 10; i++ {
+		m, _ = key(t, m, "down")
+	}
+	if m.suggestionIdx != len(m.suggestions)-1 {
+		t.Errorf("suggestionIdx = %d, want %d (clamped at end)", m.suggestionIdx, len(m.suggestions)-1)
+	}
+}
+
+// TestAdd_RecurEscClearsSuggestions verifies Esc dismisses the dropdown on
+// the recur field, mirroring the existing tag-field Esc behavior.
+func TestAdd_RecurEscClearsSuggestions(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "week")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before Esc")
+	}
+	// First Esc clears suggestions.
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after Esc = %v, want empty", m.suggestions)
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode after first Esc = %v, want modeAdd (should not close)", m.mode)
+	}
+	// Second Esc closes the modal.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after second Esc = %v, want modeNormal", m.mode)
+	}
+}
+
+// TestAdd_RecurSuggestionsClearedOnTabAwayFromRecur verifies that cycling
+// focus away from recur (when dropdown is empty) leaves suggestions clean.
+func TestAdd_RecurSuggestionsClearedOnTabAwayFromRecur(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	// Simulate stale suggestions with idx = -1 — Tab should cycle focus and
+	// ensure suggestions are cleared.
+	m.suggestions = []string{"weekly:"}
+	m.suggestionIdx = -1
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Fatalf("addFocus = %v, want addFocusTitle", m.addFocus)
+	}
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after Tab away from recur = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after Tab away from recur = %d, want -1", m.suggestionIdx)
+	}
+}
+
+// TestAdd_TagSuggestionsStillAcceptOnEnter is a regression guard confirming
+// that the tag field retains its original behavior: both Tab and Enter accept
+// a suggestion (append with ", "). Only the recur field diverges.
+func TestAdd_TagSuggestionsStillAcceptOnEnter(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "a title")
+	m, _ = key(t, m, "tab") // -> tags
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected tag suggestions")
+	}
+	// Enter on tags accepts the suggestion (does NOT submit).
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("Enter on tag field with suggestion should accept, not submit")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode = %v, want modeAdd (should still be in modal)", m.mode)
+	}
+	got := m.tagInput.Value()
+	if got != "work, " {
+		t.Errorf("tagInput = %q, want %q (Enter should accept with append)", got, "work, ")
 	}
 }
 
