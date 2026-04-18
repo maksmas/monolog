@@ -86,6 +86,14 @@ func TestSuggest(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "weekly: with extra colon past the weekday returns nil",
+			// Fragment after the first colon ("mon:extra") is longer than
+			// any canonical weeklyCandidates entry, so prefix-match fails
+			// and the slice is empty even though kind "weekly" is known.
+			in:   "weekly:mon:extra",
+			want: nil,
+		},
+		{
 			name: "uppercase input case-insensitive at top-level",
 			in:   "MON",
 			want: []string{"monthly:N"},

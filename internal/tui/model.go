@@ -165,9 +165,11 @@ type Model struct {
 	detailScroll int
 	noteArea     textarea.Model
 
-	// Tag autocomplete state. Only one modal is open at a time, so a single
-	// pair of fields is shared between add and retag modals.
-	suggestions   []string // current filtered tag suggestions (max 5)
+	// Autocomplete state shared between the tag field (add/retag modals) and
+	// the recurrence field (add modal). Only one modal is open at a time and
+	// only one field is focused at a time, so a single pair of fields serves
+	// both use cases.
+	suggestions   []string // current filtered suggestions (max 5) — tags or recurrence forms depending on focused field
 	suggestionIdx int      // selected suggestion index; -1 = none selected
 
 	// Active tasks panel: tasks that carry the "active" tag, shown in a
@@ -1073,8 +1075,8 @@ func (m *Model) closeDetailPanel() {
 
 // updateModal routes keys based on the current modal.
 func (m *Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc: when tag suggestions are visible, clear them instead of closing the
-	// modal. Let the modal handler decide.
+	// Esc: when the suggestion dropdown (tag or recurrence) is visible, clear
+	// it instead of closing the modal. Let the modal handler decide.
 	if msg.Type == tea.KeyEsc {
 		if len(m.suggestions) > 0 && (m.mode == modeAdd || m.mode == modeRetag) {
 			m.suggestions = nil
@@ -1448,6 +1450,11 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.recurInput.Blur()
 			m.tagInput.Blur()
 			m.titleArea.Focus()
+			// Clear suggestions. Reachable in two cases:
+			//   1. Dropdown was empty (no matches for current input).
+			//   2. Highlighted suggestion already equals the recur input
+			//      verbatim, so handleRecurSuggestionNav deliberately falls
+			//      through to let Tab cycle focus (self-match escape hatch).
 			m.suggestions = nil
 			m.suggestionIdx = -1
 		}
@@ -1537,6 +1544,8 @@ func (m *Model) handleSuggestionNav(msg tea.KeyMsg, ti *textinput.Model) bool {
 
 // refreshSuggestions updates m.suggestions from knownTags based on the current
 // tag field value. Resets suggestionIdx to 0 if there are results, -1 otherwise.
+// See refreshRecurSuggestions for the parallel helper that populates the same
+// state from recurrence-grammar completions when the recur field is focused.
 func (m *Model) refreshSuggestions(fieldValue string) {
 	m.suggestions = model.FilterTags(m.knownTags, fieldValue)
 	if len(m.suggestions) > 0 {
@@ -1583,7 +1592,16 @@ func (m *Model) handleRecurSuggestionNav(msg tea.KeyMsg) bool {
 
 	// Tab accepts the highlighted suggestion (replaces the whole input, since
 	// recurrence is a single value — unlike the comma-appended tag field).
+	// BUT: if the highlighted suggestion already matches the current input
+	// (case-insensitively — e.g. user typed "WEEKLY:MON" and Suggest returns
+	// the canonical lowercase ["weekly:mon"]), do NOT consume Tab. Fall
+	// through to the focus-cycle handler so the user can move on without
+	// first pressing Esc to dismiss the self-matching dropdown, and without
+	// Tab silently rewriting their typed case.
 	if msg.Type == tea.KeyTab && hasSuggestions && m.suggestionIdx >= 0 {
+		if strings.EqualFold(m.suggestions[m.suggestionIdx], m.recurInput.Value()) {
+			return false
+		}
 		m.acceptRecurSuggestion()
 		return true
 	}

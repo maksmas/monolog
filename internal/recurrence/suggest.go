@@ -77,13 +77,16 @@ func Suggest(input string) []string {
 	}
 }
 
-// filterByPrefix returns candidates whose lowercased form starts with the
-// already-lowercased prefix, capped at maxSuggestResults. Preserves input
-// ordering from candidates.
+// filterByPrefix returns candidates whose form starts with the already-
+// lowercased prefix, capped at maxSuggestResults. Preserves input ordering
+// from candidates. Candidates are assumed to be lowercase already
+// (topLevelCandidates and weeklyCandidates satisfy this), so no per-element
+// ToLower is needed — the template forms "monthly:N" and "days:N" are
+// surfaced via separate branches in Suggest, not through this helper.
 func filterByPrefix(candidates []string, prefixLower string) []string {
 	var out []string
 	for _, c := range candidates {
-		if strings.HasPrefix(strings.ToLower(c), prefixLower) {
+		if strings.HasPrefix(c, prefixLower) {
 			out = append(out, c)
 			if len(out) >= maxSuggestResults {
 				break

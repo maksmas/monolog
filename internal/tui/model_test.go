@@ -2800,8 +2800,10 @@ func TestAdd_RecurWeeklyColonSuggestionsIncludeWeekdays(t *testing.T) {
 	m, _ = key(t, m, "tab") // -> recur
 	m = typeString(t, m, "weekly:")
 	// The suggester caps results at 5 to match the tag-autocomplete convention.
-	if len(m.suggestions) != 5 {
-		t.Fatalf("suggestions len = %d, want 5 (cap), got %v", len(m.suggestions), m.suggestions)
+	// The exact cap is pinned in recurrence's TestSuggest_CapAndOrderingForWeekly;
+	// here we only assert non-empty and within-cap to keep TUI tests decoupled.
+	if n := len(m.suggestions); n == 0 || n > 5 {
+		t.Fatalf("suggestions len = %d, want in [1,5], got %v", n, m.suggestions)
 	}
 	// First one should be weekly:mon, after accepting it input becomes "weekly:mon".
 	m, _ = key(t, m, "tab") // accept first (weekly:mon)
@@ -2815,35 +2817,132 @@ func TestAdd_RecurWeeklyColonSuggestionsIncludeWeekdays(t *testing.T) {
 // tag autocomplete: Enter on the recur field always submits the modal, even
 // when a suggestion is highlighted. The user's typed text is used as-is (after
 // canonicalization), not replaced by the highlighted suggestion.
+//
+// This test uses "monthly:1" with the highlighted template "monthly:N" so
+// that accept and submit would produce divergent outcomes — proving Enter
+// chose submit (preserving the typed "monthly:1"), not accept (which would
+// have replaced the input with the non-canonical template "monthly:N" and
+// failed canonicalization, leaving the modal open with an error).
 func TestAdd_RecurEnterSubmitsEvenWithVisibleDropdown(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = key(t, m, "c")
 	m = typeString(t, m, "pay rent")
 	m, _ = key(t, m, "tab") // -> tags
 	m, _ = key(t, m, "tab") // -> recur
-	// Type a fully-valid recurrence that also triggers suggestions.
-	m = typeString(t, m, "workdays")
+	// Type a concrete monthly rule; Suggest returns the template "monthly:N"
+	// for any "monthly:<...>" prefix, so the highlighted suggestion diverges
+	// from the typed value.
+	m = typeString(t, m, "monthly:1")
 	if len(m.suggestions) == 0 {
-		t.Fatal("expected suggestions for 'workdays'")
+		t.Fatal("expected suggestions while typing 'monthly:1'")
 	}
-	// Enter must submit with the literal typed value — not replace it with
-	// the highlighted suggestion (which happens to be the same here, but the
-	// intent under test is that submit wins over accept).
+	if m.suggestions[m.suggestionIdx] != "monthly:N" {
+		t.Fatalf("highlighted suggestion = %q, want %q (divergent accept/submit outcomes are the whole point of this test)",
+			m.suggestions[m.suggestionIdx], "monthly:N")
+	}
+	// Enter must submit with the typed value "monthly:1" — NOT replace it
+	// with the highlighted template "monthly:N". The real oracle for "did it
+	// submit" is m.mode returning to modeNormal after the command runs;
+	// runCmd itself fatals on nil cmd, so no separate nil check is needed.
 	m, cmd := key(t, m, "enter")
-	if cmd == nil {
-		t.Fatal("Enter with visible dropdown should submit the modal")
-	}
 	m = runCmd(t, m, cmd)
 	if m.mode != modeNormal {
-		t.Errorf("mode = %v, want modeNormal after submit", m.mode)
+		t.Errorf("mode = %v, want modeNormal after submit (err=%v)", m.mode, m.err)
 	}
 	items := m.lists[0].Items()
 	if len(items) != 1 {
 		t.Fatalf("Today items = %d, want 1", len(items))
 	}
 	task := items[0].(item).task
-	if task.Recurrence != "workdays" {
-		t.Errorf("Recurrence = %q, want %q", task.Recurrence, "workdays")
+	if task.Recurrence != "monthly:1" {
+		t.Errorf("Recurrence = %q, want %q (accept would have produced %q)",
+			task.Recurrence, "monthly:1", "monthly:N")
+	}
+}
+
+// TestAdd_RecurTabAfterFullCanonicalFormCyclesFocus guards the self-match
+// escape hatch in handleRecurSuggestionNav: when the highlighted suggestion
+// equals the current input verbatim (e.g. user typed the full canonical form
+// "weekly:mon" and Suggest returns ["weekly:mon"]), Tab must fall through to
+// the focus-cycle handler instead of being consumed as a no-op accept.
+// Without this, users cannot Tab-out without first pressing Esc.
+func TestAdd_RecurTabAfterFullCanonicalFormCyclesFocus(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	// Type the full canonical form; Suggest returns exactly ["weekly:mon"].
+	m = typeString(t, m, "weekly:mon")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "weekly:mon" {
+		t.Fatalf("suggestions = %v, want exactly [weekly:mon] for self-match precondition", m.suggestions)
+	}
+	if m.recurInput.Value() != "weekly:mon" {
+		t.Fatalf("recurInput.Value() = %q, want %q", m.recurInput.Value(), "weekly:mon")
+	}
+	// Tab must cycle focus back to title (not be consumed as a no-op accept).
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle (Tab must fall through on self-match)", m.addFocus)
+	}
+	// Suggestions should be cleared by the focus-cycle handler.
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty after Tab-out", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx = %d, want -1 after Tab-out", m.suggestionIdx)
+	}
+	// Recur value preserved (accept path was NOT invoked).
+	if m.recurInput.Value() != "weekly:mon" {
+		t.Errorf("recurInput.Value() = %q, want %q preserved after Tab-out",
+			m.recurInput.Value(), "weekly:mon")
+	}
+}
+
+// TestAdd_RecurTabAfterUppercaseCanonicalFormCyclesFocus pins the
+// case-insensitive self-match behavior: a user typing "WEEKLY:MON" sees
+// Suggest return the lowercase canonical ["weekly:mon"]. Tab must fall
+// through to the focus-cycle handler (cycling to title) AND preserve the
+// user's uppercase typed value rather than silently normalizing it. This
+// matches user intent: they typed a valid rule, pressing Tab means "move
+// on", not "rewrite my input".
+func TestAdd_RecurTabAfterUppercaseCanonicalFormCyclesFocus(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	// Type the full canonical form in uppercase; Suggest canonicalizes to
+	// lowercase so the returned list is ["weekly:mon"].
+	m = typeString(t, m, "WEEKLY:MON")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "weekly:mon" {
+		t.Fatalf("suggestions = %v, want exactly [weekly:mon] for self-match precondition", m.suggestions)
+	}
+	if m.recurInput.Value() != "WEEKLY:MON" {
+		t.Fatalf("recurInput.Value() = %q, want %q (uppercase preserved pre-Tab)",
+			m.recurInput.Value(), "WEEKLY:MON")
+	}
+	// Tab must cycle focus back to title (not consume the key as an accept).
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle (case-insensitive self-match must fall through)", m.addFocus)
+	}
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty after Tab-out", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx = %d, want -1 after Tab-out", m.suggestionIdx)
+	}
+	// Crucially, the uppercase typed value is preserved — Tab must not
+	// silently rewrite the user's input to the canonical lowercase form.
+	// Canonicalization happens at submit via recurrence.Canonicalize.
+	if m.recurInput.Value() != "WEEKLY:MON" {
+		t.Errorf("recurInput.Value() = %q, want %q preserved (Tab must NOT rewrite case)",
+			m.recurInput.Value(), "WEEKLY:MON")
 	}
 }
 
@@ -2943,17 +3042,39 @@ func TestAdd_RecurEscClearsSuggestions(t *testing.T) {
 	}
 }
 
-// TestAdd_RecurSuggestionsClearedOnTabAwayFromRecur verifies that cycling
-// focus away from recur (when dropdown is empty) leaves suggestions clean.
+// TestAdd_RecurSuggestionsClearedOnTabAwayFromRecur verifies that after
+// interacting with the recur dropdown (typing a valid prefix to populate
+// suggestions, then erasing the input so the dropdown is empty), Tab-ing
+// focus away from recur leaves the suggestion state fully clean
+// (suggestions empty AND suggestionIdx reset). Driven through realistic
+// keystrokes — no synthetic state.
 func TestAdd_RecurSuggestionsClearedOnTabAwayFromRecur(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = key(t, m, "c")
 	m, _ = key(t, m, "tab") // -> tags
 	m, _ = key(t, m, "tab") // -> recur
-	// Simulate stale suggestions with idx = -1 — Tab should cycle focus and
-	// ensure suggestions are cleared.
-	m.suggestions = []string{"weekly:"}
-	m.suggestionIdx = -1
+	// Populate suggestions by typing a valid prefix.
+	m = typeString(t, m, "week")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'week'")
+	}
+	if m.suggestionIdx != 0 {
+		t.Fatalf("suggestionIdx after typing = %d, want 0", m.suggestionIdx)
+	}
+	// Erase input via backspace so the dropdown empties out — ensures Tab
+	// below is not consumed as an accept and instead cycles focus. Loop is
+	// value-driven so the test stays correct if the typed literal above
+	// changes length.
+	for m.recurInput.Value() != "" {
+		m, _ = key(t, m, "backspace")
+	}
+	if m.recurInput.Value() != "" {
+		t.Fatalf("recurInput after backspaces = %q, want empty", m.recurInput.Value())
+	}
+	if len(m.suggestions) != 0 {
+		t.Fatalf("suggestions after erasing input = %v, want empty", m.suggestions)
+	}
+	// Tab away from recur — focus cycles to title and suggestion state stays clean.
 	m, _ = key(t, m, "tab")
 	if m.addFocus != addFocusTitle {
 		t.Fatalf("addFocus = %v, want addFocusTitle", m.addFocus)

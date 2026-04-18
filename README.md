@@ -37,7 +37,7 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 |------|-------------|
 | `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or a date (default format `DD-MM-YYYY`; legacy ISO `YYYY-MM-DD` is still accepted) |
 | `-t, --tags` | Comma-separated tags |
-| `--recur` | Recurrence rule: `monthly:N`, `weekly:<day>`, `workdays`, or `days:N` (see [Recurring tasks](#recurring-tasks)) |
+| `--recur` | Recurrence rule: `monthly:N` \| `weekly:<day>` \| `workdays` \| `days:N` (e.g. `monthly:1`, `weekly:mon`, `workdays`, `days:7` — see [Recurring tasks](#recurring-tasks)) |
 
 If the title starts with `tag: ...` and that tag already exists on another task, it is automatically added as a tag. For example, if a task already has the tag `jean`, running `monolog add "jean: create integration"` will auto-tag the new task with `jean`. The title is kept as-is. Duplicate tags are not created if the same tag is also passed via `--tags`.
 
@@ -152,12 +152,12 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `1`–`6` | Jump to tab by number |
 | `↑`/`↓` | Move within list |
 | `Enter` | Toggle detail/notes panel for the focused task |
-| `c` | Open the add-task modal (title + tags + recur fields, Tab to cycle) |
+| `c` | Open the add-task modal (title + tags + recur fields, Tab to cycle). The Recur field shows a grammar hint (`monthly:N \| weekly:<day> \| workdays \| days:N`) and inline autocomplete as you type — Tab accepts the highlighted suggestion (replaces the field), Enter always submits the modal, Esc dismisses the dropdown. |
 | `d` | Mark focused task as done (if it has a recurrence rule, auto-spawns the next occurrence — see [Recurring tasks](#recurring-tasks)) |
 | `a` | Toggle active on the focused task |
 | `r` | Reschedule (modal with 1–5 presets or 6 for custom date) |
 | `t` | Retag focused task |
-| `e` | Edit in `$EDITOR` (YAML round-trip; the YAML includes a `recurrence:` field you can set or clear) |
+| `e` | Edit in `$EDITOR` (YAML round-trip; the YAML includes a `recurrence:` field you can set or clear, with a `# recurrence rules:` grammar header comment at the top) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
 | `v` | Toggle between schedule view and tag view |
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
