@@ -16,12 +16,11 @@ import (
 type spawnResult struct {
 	// newID is the ULID of the newly created spawn task.
 	newID string
-	// nextDateISO is the ISO-formatted (2006-01-02) next-occurrence date,
-	// used for persistent storage of Schedule on the spawned task.
-	nextDateISO string
 	// nextDateDisplay is the next-occurrence date formatted with the
 	// display layout (e.g. DD-MM-YYYY). Used for commit messages and
-	// cross-reference notes that surface to the user.
+	// cross-reference notes that surface to the user. The ISO form is
+	// already on the newly created task's Schedule field, which callers
+	// can re-read from the store if needed.
 	nextDateDisplay string
 }
 
@@ -72,7 +71,7 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time, dateFormat 
 		return spawnResult{}, fmt.Errorf("create spawned task: %w", err)
 	}
 
-	return spawnResult{newID: newID, nextDateISO: nextISO, nextDateDisplay: nextDisplay}, nil
+	return spawnResult{newID: newID, nextDateDisplay: nextDisplay}, nil
 }
 
 // CompleteAndSpawn transitions a task to done and, when the task has a

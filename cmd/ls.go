@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,10 +54,20 @@ func newLsCmd() *cobra.Command {
 			case scheduleFlag != "":
 				if schedule.IsBucket(scheduleFlag) {
 					bucketFilter = scheduleFlag
-				} else if schedule.IsISODate(scheduleFlag) {
-					exactDate = scheduleFlag
 				} else {
-					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or a date (%s)", scheduleFlag, config.DateFormatLabel())
+					// Accept both the configured user-facing layout
+					// (e.g. DD-MM-YYYY) and legacy ISO input; schedule.Parse
+					// normalizes either to the ISO storage form so exact-date
+					// matching below works regardless of which form the user
+					// typed.
+					iso, err := schedule.Parse(scheduleFlag, now, config.DateFormat())
+					if err != nil {
+						if errors.Is(err, schedule.ErrInvalid) {
+							return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or a date (%s)", scheduleFlag, config.DateFormatLabel())
+						}
+						return err
+					}
+					exactDate = iso
 				}
 			case !all && !done && !(active && !scheduleChanged):
 				bucketFilter = schedule.Today
@@ -79,7 +90,7 @@ func newLsCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "Show all open tasks across all schedules")
-	cmd.Flags().StringVarP(&scheduleFlag, "schedule", "s", "", "Filter by schedule (today, tomorrow, week, month, someday, or ISO date)")
+	cmd.Flags().StringVarP(&scheduleFlag, "schedule", "s", "", fmt.Sprintf("Filter by schedule (today, tomorrow, week, month, someday, or %s)", config.DateFormatLabel()))
 	cmd.Flags().StringVarP(&tag, "tag", "t", "", "Filter by tag")
 	cmd.Flags().BoolVarP(&done, "done", "d", false, "Show completed tasks")
 	cmd.Flags().BoolVar(&active, "active", false, "Show only active tasks (lifts default today filter unless --schedule is explicit)")

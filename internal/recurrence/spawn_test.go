@@ -2,6 +2,8 @@ package recurrence
 
 import (
 	"bytes"
+	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -171,6 +173,90 @@ func TestCompleteAndSpawn_UsesConfiguredDateFormat(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCompleteAndSpawn_RollsBackSpawnOnUpdateFailure verifies the orphan-
+// cleanup path: if the old-task Update fails after a successful spawn
+// Create, the newly-written spawn file is deleted so the repo is not left
+// with an uncommitted orphan. We trigger the Update failure by removing
+// the old task file from disk between Create and CompleteAndSpawn —
+// Store.Update stats the path first and returns ErrNotFound, which is
+// exactly the condition we want to simulate.
+func TestCompleteAndSpawn_RollsBackSpawnOnUpdateFailure(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "tasks")
+	s, err := store.New(tasksDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	id, err := model.NewID()
+	if err != nil {
+		t.Fatalf("model.NewID: %v", err)
+	}
+	task := model.Task{
+		ID:         id,
+		Title:      "Chore",
+		Status:     "open",
+		Schedule:   "2026-04-18",
+		Recurrence: "days:3",
+		Position:   1000,
+		CreatedAt:  "2026-04-18T00:00:00Z",
+		UpdatedAt:  "2026-04-18T00:00:00Z",
+	}
+	if err := s.Create(task); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	// Capture the list of task files before CompleteAndSpawn so we can
+	// diff afterwards.
+	existingBefore := listTaskFiles(t, tasksDir)
+	if len(existingBefore) != 1 {
+		t.Fatalf("expected 1 task file before, got %d: %v", len(existingBefore), existingBefore)
+	}
+
+	// Remove the old task file from disk so the subsequent Update call
+	// fails with ErrNotFound. The spawn Create inside CompleteAndSpawn
+	// still succeeds (it writes a fresh file for the new ULID), and then
+	// the Update-failure branch should delete the spawn file.
+	if err := os.Remove(filepath.Join(tasksDir, task.ID+".json")); err != nil {
+		t.Fatalf("remove old task file: %v", err)
+	}
+
+	now := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
+	var warn bytes.Buffer
+	_, _, err = CompleteAndSpawn(s, &task, now, &warn, "02-01-2006")
+	if err == nil {
+		t.Fatalf("expected error from CompleteAndSpawn after old-task removal, got nil")
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected error to wrap store.ErrNotFound, got: %v", err)
+	}
+
+	// After rollback, the tasks directory should be empty — the old file
+	// was removed pre-call (by the test) and the spawn file should have
+	// been deleted by the rollback.
+	remaining := listTaskFiles(t, tasksDir)
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 task files after rollback, got %d: %v", len(remaining), remaining)
+	}
+}
+
+// listTaskFiles returns the sorted basenames of all .json files in dir.
+func listTaskFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read tasks dir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	return names
 }
 
 // TestTagsWithoutActive_ReturnsFreshSlice verifies that mutating the output

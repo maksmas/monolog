@@ -271,6 +271,65 @@ func TestLsCommand_DoneShowsAllSchedules(t *testing.T) {
 	}
 }
 
+// TestLsCommand_ScheduleFilter_AcceptsConfiguredFormat verifies that the
+// --schedule flag accepts the user-facing configured layout (DD-MM-YYYY by
+// default) as an exact-date filter, matching the advertised help text and
+// error message. Regression guard: the prior implementation gated input via
+// IsISODate, which rejected DD-MM-YYYY despite the error saying it was
+// allowed.
+func TestLsCommand_ScheduleFilter_AcceptsConfiguredFormat(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Add one task scheduled at a far-future concrete date so it can be
+	// filtered exactly, and one for "today" that must be filtered out.
+	addTask(t, "Today task")
+	addTask(t, "Future task", "-s", "15-04-2030")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--schedule", "15-04-2030"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --schedule DD-MM-YYYY error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Future task") {
+		t.Errorf("--schedule 15-04-2030 should show 'Future task', got:\n%s", output)
+	}
+	if strings.Contains(output, "Today task") {
+		t.Errorf("--schedule 15-04-2030 should NOT show 'Today task', got:\n%s", output)
+	}
+}
+
+// TestLsCommand_ScheduleFilter_AcceptsLegacyISO verifies that legacy ISO
+// input to --schedule still works silently alongside the DD-MM-YYYY path.
+func TestLsCommand_ScheduleFilter_AcceptsLegacyISO(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	addTask(t, "Today task")
+	addTask(t, "Future task", "-s", "2030-04-15")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--schedule", "2030-04-15"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --schedule ISO error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Future task") {
+		t.Errorf("--schedule 2030-04-15 (legacy ISO) should show 'Future task', got:\n%s", output)
+	}
+}
+
 func TestLsCommand_InvalidSchedule(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

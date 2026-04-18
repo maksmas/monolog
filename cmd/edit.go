@@ -115,7 +115,7 @@ func newEditCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&body, "body", "", "New body text")
-	cmd.Flags().StringVar(&scheduleArg, "schedule", "", "New schedule (today, tomorrow, week, month, someday, or ISO date)")
+	cmd.Flags().StringVar(&scheduleArg, "schedule", "", fmt.Sprintf("New schedule (today, tomorrow, week, month, someday, or %s)", config.DateFormatLabel()))
 	cmd.Flags().StringVar(&tags, "tags", "", "New comma-separated tags")
 	cmd.Flags().BoolVar(&active, "active", false, "Mark as active (use --active=false to deactivate)")
 	cmd.Flags().StringVar(&recur, "recur", "", "New recurrence rule: monthly:N, weekly:<day>, workdays, days:N (pass \"\" to clear)")

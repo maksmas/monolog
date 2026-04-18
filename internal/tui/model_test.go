@@ -1266,6 +1266,33 @@ func TestItemDescription_ZeroNowShowsFarDate(t *testing.T) {
 	}
 }
 
+// TestItemDescription_ISOScheduleRendersInConfiguredLayout verifies that a
+// stored ISO schedule (e.g. "2026-05-15") is rendered in the configured
+// user-facing layout (default DD-MM-YYYY) inside the list item description —
+// not leaked raw as the stored ISO string.
+func TestItemDescription_ISOScheduleRendersInConfiguredLayout(t *testing.T) {
+	// Use a fixedNow such that 2026-05-15 is not in the "today" bucket so
+	// the schedule fragment is actually emitted (the code path guards on
+	// "not today" before appending the schedule).
+	fixedNow := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:       "01ABCDEF",
+			Title:    "future task",
+			Status:   "open",
+			Schedule: "2026-05-15",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if !strings.Contains(desc, "15-05-2026") {
+		t.Errorf("Description() = %q, should contain schedule in DD-MM-YYYY (15-05-2026)", desc)
+	}
+	if strings.Contains(desc, "2026-05-15") {
+		t.Errorf("Description() = %q, should NOT contain raw stored ISO schedule", desc)
+	}
+}
+
 // --- note count badge tests --------------------------------------------------
 
 func TestItemDescription_NoteCountBadge(t *testing.T) {

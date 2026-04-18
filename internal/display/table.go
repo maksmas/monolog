@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 )
 
 // titleColWidth is the fixed rune width for the title column in `ls` output.
@@ -92,6 +93,13 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) 
 
 		dates := FormatTaskDates(now, task, layout)
 
+		// Render the schedule column through FormatDisplay so stored ISO dates
+		// (e.g. "2030-04-15") appear in the configured user-facing format
+		// (default DD-MM-YYYY → "15-04-2030"). Legacy bucket strings ("today",
+		// "tomorrow", etc.) pass through unchanged because FormatDisplay only
+		// reformats inputs that parse as IsoLayout.
+		scheduleCell := schedule.FormatDisplay(task.Schedule, layout)
+
 		// Title is truncated/padded to titleColWidth runes so subsequent columns
 		// stay aligned even for long titles. 17-rune pad on dates: worst case is
 		// "YY-MM-DD→YY-MM-DD" (17 runes). See TestPadRight_MaxWidthDates.
@@ -100,7 +108,7 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) 
 			marker,
 			ShortID(task.ID),
 			truncatePad(task.Title, titleColWidth),
-			task.Schedule,
+			scheduleCell,
 			padRight(dates, 17),
 			tags,
 		)

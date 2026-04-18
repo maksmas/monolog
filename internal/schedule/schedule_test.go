@@ -107,6 +107,11 @@ func TestFormatDisplay(t *testing.T) {
 		{name: "alt_MMDDYYYY", iso: "2026-04-15", layout: "01/02/2006", want: "04/15/2026"},
 		{name: "empty_passthrough", iso: "", layout: "02-01-2006", want: ""},
 		{name: "bucket_passthrough", iso: "today", layout: "02-01-2006", want: "today"},
+		// Guard: bucket names must pass through under any layout, not just
+		// the default DD-MM-YYYY. Without this, a future FormatDisplay that
+		// happens to special-case the default layout could silently mangle
+		// bucket strings when the user switches formats.
+		{name: "bucket_passthrough_alt_layout", iso: "today", layout: "2006-01-02", want: "today"},
 		{name: "junk_passthrough", iso: "not-a-date", layout: "02-01-2006", want: "not-a-date"},
 		{name: "empty_layout_passthrough", iso: "2026-04-15", layout: "", want: "2026-04-15"},
 	}

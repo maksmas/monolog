@@ -8,19 +8,13 @@ import (
 // setDateFormatForTest swaps the package-level dateFormat for the duration
 // of a test and returns a restore function. The caller is responsible for
 // calling the restore function (typically via t.Cleanup). If layout is not
-// already present in supported, the caller may pass entry to register it
-// for the duration of the test as well — use a zero-value struct{Label,
-// Regex} to leave supported unchanged.
-func setDateFormatForTest(layout string, entry *struct {
-	Label string
-	Regex string
-}) func() {
+// already present in supported, the caller may pass a non-nil entry to
+// register it for the duration of the test as well — pass nil to leave
+// supported unchanged.
+func setDateFormatForTest(layout string, entry *formatEntry) func() {
 	prevFormat := dateFormat
 	var hadPrev bool
-	var prevEntry struct {
-		Label string
-		Regex string
-	}
+	var prevEntry formatEntry
 	if entry != nil {
 		prevEntry, hadPrev = supported[layout]
 		supported[layout] = *entry
@@ -64,10 +58,10 @@ func TestDateRegexCompiles(t *testing.T) {
 }
 
 func TestAccessorsRespectAlternativeLayout(t *testing.T) {
-	restore := setDateFormatForTest("2006-01-02", &struct {
-		Label string
-		Regex string
-	}{Label: "YYYY-MM-DD", Regex: `\d{4}-\d{2}-\d{2}`})
+	restore := setDateFormatForTest("2006-01-02", &formatEntry{
+		Label: "YYYY-MM-DD",
+		Regex: `\d{4}-\d{2}-\d{2}`,
+	})
 	t.Cleanup(restore)
 
 	if got, want := DateFormat(), "2006-01-02"; got != want {
@@ -82,10 +76,31 @@ func TestAccessorsRespectAlternativeLayout(t *testing.T) {
 }
 
 func TestAccessorsRestoredAfterTest(t *testing.T) {
-	// this test ensures our restore helper actually works, by checking the
-	// default right after an alternative-layout test has run and cleaned up.
-	if got, want := DateFormat(), "02-01-2006"; got != want {
-		t.Errorf("DateFormat() = %q, want default %q after cleanup", got, want)
+	// Self-contained verification that setDateFormatForTest's returned
+	// restore func actually restores the prior format and removes any
+	// temporarily registered supported entry. Previously this test relied
+	// on the implicit ordering of a sibling test's cleanup running first,
+	// which would have silently become meaningless under t.Run reordering
+	// or sharding.
+	before := dateFormat
+	_, hadPrev := supported["2006-01-02"]
+
+	restore := setDateFormatForTest("2006-01-02", &formatEntry{
+		Label: "YYYY-MM-DD",
+		Regex: `\d{4}-\d{2}-\d{2}`,
+	})
+	if got := DateFormat(); got != "2006-01-02" {
+		t.Fatalf("DateFormat() during override = %q, want %q", got, "2006-01-02")
+	}
+
+	restore()
+
+	if got := DateFormat(); got != before {
+		t.Errorf("DateFormat() after restore = %q, want %q", got, before)
+	}
+	if _, present := supported["2006-01-02"]; present != hadPrev {
+		t.Errorf("restore did not roll back supported[%q] (present=%v, hadPrev=%v)",
+			"2006-01-02", present, hadPrev)
 	}
 }
 

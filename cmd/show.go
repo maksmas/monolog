@@ -45,10 +45,16 @@ func newShowCmd() *cobra.Command {
 			// Schedule (show bucket name for readability). The date portion
 			// is rendered through FormatDisplay so it matches the configured
 			// user-facing format (default DD-MM-YYYY), while the stored
-			// schedule on disk stays ISO.
+			// schedule on disk stays ISO. When the stored schedule is itself
+			// a legacy bucket string, bucket == task.Schedule and showing it
+			// twice is redundant — mirror the TUI detail panel guard.
 			bucket := schedule.Bucket(task.Schedule, now)
 			displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
-			fmt.Fprintf(w, "Schedule:  %s (%s)\n", bucket, displayDate)
+			if bucket == task.Schedule {
+				fmt.Fprintf(w, "Schedule:  %s\n", bucket)
+			} else {
+				fmt.Fprintf(w, "Schedule:  %s (%s)\n", bucket, displayDate)
+			}
 
 			// Recurrence (only when set)
 			if task.Recurrence != "" {

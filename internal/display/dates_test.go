@@ -181,6 +181,31 @@ func TestFormatTaskDates(t *testing.T) {
 	}
 }
 
+// TestDropYearToken covers the helper's layout transforms directly so the
+// subtle slice arithmetic is guarded against edge cases (leading year, no
+// separator, missing token, year-only layout).
+func TestDropYearToken(t *testing.T) {
+	cases := []struct {
+		name   string
+		layout string
+		want   string
+	}{
+		{name: "year_trailing_dash", layout: "02-01-2006", want: "02-01"},
+		{name: "year_leading_dash", layout: "2006-01-02", want: "01-02"},
+		{name: "year_trailing_slash", layout: "01/02/2006", want: "01/02"},
+		{name: "year_leading_slash", layout: "2006/01/02", want: "01/02"},
+		{name: "no_year_token", layout: "01-02", want: "01-02"},
+		{name: "year_only_layout", layout: "2006", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dropYearToken(tc.layout); got != tc.want {
+				t.Errorf("dropYearToken(%q) = %q, want %q", tc.layout, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFormatTaskDates_AlternativeLayout proves the layout parameter flows
 // through FormatTaskDates to FormatRelDate.
 func TestFormatTaskDates_AlternativeLayout(t *testing.T) {

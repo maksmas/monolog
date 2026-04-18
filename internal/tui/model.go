@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -216,7 +217,9 @@ func (i item) Description() string {
 		parts = append(parts, fmt.Sprintf("[%d]", i.task.NoteCount))
 	}
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
-		parts = append(parts, i.task.Schedule)
+		// Render stored ISO schedule in the configured user-facing layout
+		// (default DD-MM-YYYY). Legacy bucket strings pass through unchanged.
+		parts = append(parts, schedule.FormatDisplay(i.task.Schedule, config.DateFormat()))
 	}
 	if vt := display.VisibleTags(i.task.Tags); len(vt) > 0 {
 		parts = append(parts, "["+strings.Join(vt, ", ")+"]")
@@ -1220,11 +1223,18 @@ func (m *Model) openReschedule() tea.Cmd {
 
 func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.rescheduleSub == 0 {
-		// Picker step.
+		// Picker step. Presets are bucket names; resolve them once here
+		// rather than again inside applyReschedule.
 		switch msg.String() {
 		case "1", "2", "3", "4", "5":
 			n := int(msg.String()[0] - '1')
-			return m, m.applyReschedule(reschedulePresets[n])
+			preset := reschedulePresets[n]
+			iso, err := schedule.Parse(preset, time.Now(), config.DateFormat())
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			return m, m.applyReschedule(iso, preset)
 		case "6":
 			m.rescheduleSub = 1
 			m.input.Width = m.modalInnerWidth() - 1
@@ -1239,36 +1249,42 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Custom date input step. schedule.Parse accepts bucket names, the
 	// configured format, and legacy ISO input (silent backward compat) —
 	// we rely on it for validation and normalization rather than IsISODate
-	// so the modal automatically follows the configured format.
+	// so the modal automatically follows the configured format. The parsed
+	// ISO is threaded into applyReschedule so we do not re-parse the same
+	// input twice.
 	switch msg.Type {
 	case tea.KeyEnter:
 		date := strings.TrimSpace(m.input.Value())
-		if _, err := schedule.Parse(date, time.Now(), config.DateFormat()); err != nil {
-			m.err = fmt.Errorf("invalid date %q (want %s)", date, config.DateFormatLabel())
+		iso, err := schedule.Parse(date, time.Now(), config.DateFormat())
+		if err != nil {
+			if errors.Is(err, schedule.ErrInvalid) {
+				m.err = fmt.Errorf("invalid date %q (want %s)", date, config.DateFormatLabel())
+			} else {
+				m.err = err
+			}
 			return m, nil
 		}
-		return m, m.applyReschedule(date)
+		return m, m.applyReschedule(iso, date)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
-func (m *Model) applyReschedule(sched string) tea.Cmd {
+// applyReschedule moves m.modalTask to scheduleISO (already-parsed storage
+// format) and emits a save command. displayLabel is the user-facing string
+// to surface in commit message / status bar — typically either a bucket
+// name (for presets) or the raw user input (for custom dates).
+func (m *Model) applyReschedule(scheduleISO, displayLabel string) tea.Cmd {
 	if m.modalTask == nil {
 		return nil
 	}
 	nowT := time.Now()
-	scheduleDate, err := schedule.Parse(sched, nowT, config.DateFormat())
-	if err != nil {
-		m.err = err
-		return nil
-	}
 	t := *m.modalTask
 	oldBucket := schedule.Bucket(m.modalTask.Schedule, nowT)
-	t.Schedule = scheduleDate
+	t.Schedule = scheduleISO
 	t.UpdatedAt = now()
-	newBucket := schedule.Bucket(scheduleDate, nowT)
+	newBucket := schedule.Bucket(scheduleISO, nowT)
 	// Position it at the bottom of the new bucket if the bucket changed.
 	if newBucket != oldBucket {
 		others, err := bucketSiblings(m.store, t.Schedule, nowT)
@@ -1278,8 +1294,8 @@ func (m *Model) applyReschedule(sched string) tea.Cmd {
 	}
 	m.closeModal()
 	flat := flattenTitle(t.Title)
-	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", flat, sched),
-		fmt.Sprintf("Rescheduled: %s -> %s", flat, sched))
+	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", flat, displayLabel),
+		fmt.Sprintf("Rescheduled: %s -> %s", flat, displayLabel))
 }
 
 // bucketSiblings returns all open tasks that fall into the same bucket as the

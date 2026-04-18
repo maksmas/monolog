@@ -34,6 +34,19 @@ func shortDate(now, t time.Time, layout string) string {
 // dropYearToken returns layout with the "2006" year token (and its adjacent
 // separator) removed. For the default "02-01-2006" this returns "02-01".
 // For a leading-year layout like "2006-01-02" this returns "01-02".
+//
+// Assumes the year token is delimited from adjacent tokens by a single
+// non-digit separator char (e.g. '-', '/', '.', ' '). Layouts with no
+// separator around "2006" (e.g. "20060102") are not supported and would
+// yield a malformed stub — not reachable from the config-allowed layouts
+// today, but a caveat if the supported-layouts table grows.
+//
+// Edge cases:
+//   - layout without "2006" is returned unchanged.
+//   - layout equal to exactly "2006" (year-only) returns "". Nothing useful
+//     can be rendered in same-year short form for a year-only layout, so
+//     the empty string signals "no same-year shortening applicable" to
+//     time.Format (which simply emits nothing).
 func dropYearToken(layout string) string {
 	const yearTok = "2006"
 	idx := strings.Index(layout, yearTok)
@@ -45,12 +58,15 @@ func dropYearToken(layout string) string {
 	if idx > 0 {
 		return layout[:idx-1] + layout[idx+len(yearTok):]
 	}
-	// Year was at the start; drop it and the following separator.
+	// Year was at the start; drop it and the following separator (if any).
 	rest := layout[len(yearTok):]
-	if len(rest) > 0 {
+	if len(rest) > 1 {
+		// Skip the single separator char following the year token
+		// (e.g. "2006-01-02" -> "01-02").
 		return rest[1:]
 	}
-	return rest
+	// No trailing separator/content after "2006" — nothing left to render.
+	return ""
 }
 
 // FormatRelDate returns a compact representation of ts relative to now.
@@ -63,8 +79,11 @@ func dropYearToken(layout string) string {
 //	              (for the default "02-01-2006": "DD-MM" / "DD-MM-YY")
 //
 // Empty or unparseable ts -> "".
-// Future timestamps within 1 minute tolerance (inclusive) -> "now"; further
-// future -> the compact date form derived from layout.
+// Future timestamps within 1 minute tolerance (inclusive) -> "now"; any
+// further-future timestamp skips the Nm/Nh/Nd tiers entirely (those are
+// past-only) and routes straight to the compact date form derived from
+// layout. This asymmetry is intentional: future relative values like "+3h"
+// would misread as past in the column where this helper is used.
 func FormatRelDate(now time.Time, ts string, layout string) string {
 	if ts == "" {
 		return ""

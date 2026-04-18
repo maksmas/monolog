@@ -11,13 +11,17 @@
 // added later, only this package changes; no callers need to be touched.
 package config
 
+// formatEntry describes a supported date format: its user-facing label and
+// a regex fragment matching a date rendered in the corresponding Go layout.
+type formatEntry struct {
+	Label string
+	Regex string
+}
+
 // supported lists every Go layout we accept as the date format, paired with
 // its user-facing label and a regex fragment that matches a date rendered
 // in that layout. Adding a new format is a one-line addition here.
-var supported = map[string]struct {
-	Label string
-	Regex string
-}{
+var supported = map[string]formatEntry{
 	"02-01-2006": {Label: "DD-MM-YYYY", Regex: `\d{2}-\d{2}-\d{4}`},
 }
 

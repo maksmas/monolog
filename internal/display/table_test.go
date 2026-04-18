@@ -448,6 +448,65 @@ func TestFormatTasks_AlternativeLayout(t *testing.T) {
 	}
 }
 
+// TestFormatTasks_ISOScheduleRendersInConfiguredLayout verifies that stored
+// ISO schedules are rendered through schedule.FormatDisplay in the configured
+// user-facing layout (the plan's stated goal — do not leak ISO storage format
+// into the schedule column).
+func TestFormatTasks_ISOScheduleRendersInConfiguredLayout(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:       "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:    "Dated task",
+			Schedule: "2030-04-15",
+			Status:   "open",
+			Position: 1000,
+		},
+	}
+
+	// Under the default DD-MM-YYYY layout the schedule must render as
+	// 15-04-2030, NOT as the stored 2030-04-15.
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+	if !strings.Contains(output, "15-04-2030") {
+		t.Errorf("output should contain schedule in DD-MM-YYYY (15-04-2030), got:\n%s", output)
+	}
+	if strings.Contains(output, "2030-04-15") {
+		t.Errorf("output should NOT contain stored ISO schedule 2030-04-15, got:\n%s", output)
+	}
+
+	// Under an alternative layout the schedule must render in that layout,
+	// proving the parameter is wired through (not hardcoded).
+	buf.Reset()
+	FormatTasks(&buf, tasks, fixedNow, "01/02/2006")
+	output = buf.String()
+	if !strings.Contains(output, "04/15/2030") {
+		t.Errorf("output should contain schedule in MM/DD/YYYY (04/15/2030), got:\n%s", output)
+	}
+}
+
+// TestFormatTasks_BucketSchedulePassesThrough verifies that legacy bucket
+// strings (e.g. "today") render unchanged in the schedule column — they are
+// not valid ISO dates, so FormatDisplay returns them as-is.
+func TestFormatTasks_BucketSchedulePassesThrough(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:       "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:    "Bucket task",
+			Schedule: "tomorrow",
+			Status:   "open",
+			Position: 1000,
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+	if !strings.Contains(output, "tomorrow") {
+		t.Errorf("output should contain legacy bucket schedule 'tomorrow' unchanged, got:\n%s", output)
+	}
+}
+
 func TestVisibleTags(t *testing.T) {
 	tests := []struct {
 		name string
