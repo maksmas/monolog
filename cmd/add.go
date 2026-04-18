@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -29,8 +31,11 @@ func newAddCmd() *cobra.Command {
 			title := args[0]
 
 			now := time.Now()
-			scheduleDate, err := schedule.Parse(scheduleArg, now)
+			scheduleDate, err := schedule.Parse(scheduleArg, now, config.DateFormat())
 			if err != nil {
+				if errors.Is(err, schedule.ErrInvalid) {
+					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or %s", scheduleArg, config.DateFormatLabel())
+				}
 				return err
 			}
 

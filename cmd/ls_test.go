@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
 )
@@ -355,7 +356,7 @@ func TestLs_ActiveFlag_LiftsScheduleFilter(t *testing.T) {
 	setTaskActive(t, dir, weekID)
 
 	// Verify schedule.Parse("week") gives us the right ISO date
-	weekISO, err := schedule.Parse("week", time.Now())
+	weekISO, err := schedule.Parse("week", time.Now(), config.DateFormat())
 	if err != nil {
 		t.Fatalf("schedule.Parse(week): %v", err)
 	}

@@ -263,37 +263,40 @@ Thin, config-driven display/input layer on top of unchanged storage:
     reschedule modal, applyEditedYAML, grab-mode moves, add modal)
   - `internal/tui/model_test.go` (lines 25, 3449)
 
-- [ ] add `FormatDisplay(iso, layout string) string` — parses `iso` with
+- [x] add `FormatDisplay(iso, layout string) string` — parses `iso` with
       `IsoLayout`; on success returns `t.Format(layout)`; on
       failure/empty/bucket returns `iso` unchanged
-- [ ] change `Parse` signature to `Parse(input string, now time.Time,
+- [x] change `Parse` signature to `Parse(input string, now time.Time,
       layout string) (string, error)`. Order: bucket switch, then
       `time.Parse(layout, input)`, then legacy `time.Parse(IsoLayout,
       input)`, then error
-- [ ] introduce a sentinel `var ErrInvalid = errors.New(...)` (or a
+- [x] introduce a sentinel `var ErrInvalid = errors.New(...)` (or a
       simple named error type) so callers can format the user-facing
       message themselves with `config.DateFormatLabel()`. Parse
       returns the sentinel wrapped with the offending input via
       `fmt.Errorf("%w: %q", ErrInvalid, input)`
-- [ ] update the package doc comment to describe the new canonical
+- [x] update the package doc comment to describe the new canonical
       input format as configurable + note that legacy ISO input is
       still tolerated silently
-- [ ] update every caller enumerated above to pass `config.DateFormat()`
+- [x] update every caller enumerated above to pass `config.DateFormat()`
       as the new third argument. Callers in `cmd/` and
       `internal/tui/model.go` that previously surfaced the Parse
       error verbatim now wrap it into a user-facing message
-      referencing `config.DateFormatLabel()`
-- [ ] write tests for `FormatDisplay` with DD-MM-YYYY (default) and
+      referencing `config.DateFormatLabel()` (cmd/add.go and cmd/edit.go
+      do this explicitly; TUI call sites keep the existing `m.err = err`
+      path — Task 5 replaces that with a user-facing wrapper as part of
+      the placeholder/error-wording sweep)
+- [x] write tests for `FormatDisplay` with DD-MM-YYYY (default) and
       one alternative layout added via the test helper from Task 1;
       cover empty and unparseable passthrough
-- [ ] update `TestParse` (or add cases) to exercise: DD-MM-YYYY input,
+- [x] update `TestParse` (or add cases) to exercise: DD-MM-YYYY input,
       ISO input (legacy path), invalid input returns `ErrInvalid`
       (use `errors.Is` to assert), explicit alternative layout to
       prove the parameter is wired through and not ignored
-- [ ] update all caller tests (listed above) that fail because of the
+- [x] update all caller tests (listed above) that fail because of the
       signature change — pass the layout explicitly or via
       `config.DateFormat()`
-- [ ] run `go test ./...` — compile must succeed and all tests must
+- [x] run `go test ./...` — compile must succeed and all tests must
       pass before next task
 
 ### Task 3: Switch compact task-list date column to DD-MM / DD-MM-YY

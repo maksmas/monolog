@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func TestParse_Buckets(t *testing.T) {
 		Someday:  "2027-04-13",
 	}
 	for in, want := range cases {
-		got, err := Parse(in, fixedNow)
+		got, err := Parse(in, fixedNow, "02-01-2006")
 		if err != nil {
 			t.Fatalf("Parse(%q): unexpected error %v", in, err)
 		}
@@ -43,21 +44,78 @@ func TestParse_Buckets(t *testing.T) {
 	}
 }
 
-func TestParse_ISOPassThrough(t *testing.T) {
-	got, err := Parse("2026-05-01", fixedNow)
+func TestParse_DDMMYYYY(t *testing.T) {
+	got, err := Parse("15-04-2026", fixedNow, "02-01-2006")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "2026-04-15" {
+		t.Errorf("Parse(DD-MM-YYYY) = %q, want 2026-04-15", got)
+	}
+}
+
+func TestParse_AlternativeLayout(t *testing.T) {
+	// Verify the layout parameter is actually wired through and not ignored
+	// by exercising a format that would be invalid under the default.
+	got, err := Parse("04/15/2026", fixedNow, "01/02/2006")
+	if err != nil {
+		t.Fatalf("unexpected error with alternative layout: %v", err)
+	}
+	if got != "2026-04-15" {
+		t.Errorf("Parse(MM/DD/YYYY) = %q, want 2026-04-15", got)
+	}
+
+	// And the same input under the default layout must be rejected.
+	if _, err := Parse("04/15/2026", fixedNow, "02-01-2006"); err == nil {
+		t.Errorf("Parse(04/15/2026) under DD-MM-YYYY: expected error, got nil")
+	}
+}
+
+func TestParse_LegacyISOStillAccepted(t *testing.T) {
+	// After the layout flip, legacy ISO input from pre-existing scripts must
+	// still silently succeed and round-trip unchanged.
+	got, err := Parse("2026-05-01", fixedNow, "02-01-2006")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got != "2026-05-01" {
-		t.Errorf("Parse(ISO) = %q, want 2026-05-01", got)
+		t.Errorf("Parse(legacy ISO) = %q, want 2026-05-01", got)
 	}
 }
 
 func TestParse_Invalid(t *testing.T) {
 	for _, s := range []string{"garbage", "yesterday", "2026-13-01", ""} {
-		if _, err := Parse(s, fixedNow); err == nil {
+		_, err := Parse(s, fixedNow, "02-01-2006")
+		if err == nil {
 			t.Errorf("Parse(%q): expected error, got nil", s)
+			continue
 		}
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("Parse(%q) error = %v, want errors.Is(ErrInvalid)", s, err)
+		}
+	}
+}
+
+func TestFormatDisplay(t *testing.T) {
+	cases := []struct {
+		name   string
+		iso    string
+		layout string
+		want   string
+	}{
+		{name: "DDMMYYYY", iso: "2026-04-15", layout: "02-01-2006", want: "15-04-2026"},
+		{name: "alt_MMDDYYYY", iso: "2026-04-15", layout: "01/02/2006", want: "04/15/2026"},
+		{name: "empty_passthrough", iso: "", layout: "02-01-2006", want: ""},
+		{name: "bucket_passthrough", iso: "today", layout: "02-01-2006", want: "today"},
+		{name: "junk_passthrough", iso: "not-a-date", layout: "02-01-2006", want: "not-a-date"},
+		{name: "empty_layout_passthrough", iso: "2026-04-15", layout: "", want: "2026-04-15"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatDisplay(tc.iso, tc.layout); got != tc.want {
+				t.Errorf("FormatDisplay(%q, %q) = %q, want %q", tc.iso, tc.layout, got, tc.want)
+			}
+		})
 	}
 }
 

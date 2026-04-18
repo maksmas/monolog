@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -22,7 +23,7 @@ import (
 // expectSchedule resolves a bucket name to its ISO date for current now.
 func expectSchedule(t *testing.T, bucket string) string {
 	t.Helper()
-	got, err := schedule.Parse(bucket, time.Now())
+	got, err := schedule.Parse(bucket, time.Now(), config.DateFormat())
 	if err != nil {
 		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
 	}
@@ -3446,7 +3447,7 @@ func TestSeparatorRender_ContainsLabel(t *testing.T) {
 // helper: create a task with specific schedule bucket and tags.
 func makeTask(t *testing.T, id, title, bucket string, tags []string) model.Task {
 	t.Helper()
-	sched, err := schedule.Parse(bucket, time.Now())
+	sched, err := schedule.Parse(bucket, time.Now(), config.DateFormat())
 	if err != nil {
 		t.Fatalf("schedule.Parse(%q): %v", bucket, err)
 	}

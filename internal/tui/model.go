@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"gopkg.in/yaml.v3"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -1255,7 +1256,7 @@ func (m *Model) applyReschedule(sched string) tea.Cmd {
 		return nil
 	}
 	nowT := time.Now()
-	scheduleDate, err := schedule.Parse(sched, nowT)
+	scheduleDate, err := schedule.Parse(sched, nowT, config.DateFormat())
 	if err != nil {
 		m.err = err
 		return nil
@@ -1653,7 +1654,7 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 	if edit.Title == "" {
 		return model.Task{}, fmt.Errorf("title cannot be empty")
 	}
-	scheduleDate, err := schedule.Parse(edit.Schedule, now)
+	scheduleDate, err := schedule.Parse(edit.Schedule, now, config.DateFormat())
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -1992,7 +1993,7 @@ func (m *Model) commitGrab() tea.Cmd {
 			t.Status = "open"
 			if bucket != "" {
 				if schedule.Bucket(t.Schedule, nowT) != bucket {
-					scheduleDate, err := schedule.Parse(bucket, nowT)
+					scheduleDate, err := schedule.Parse(bucket, nowT, config.DateFormat())
 					if err == nil {
 						t.Schedule = scheduleDate
 					}
@@ -2009,7 +2010,7 @@ func (m *Model) commitGrab() tea.Cmd {
 			// bucket, otherwise dropping back into your current bucket would
 			// reset a custom-set date (e.g. a 3-day-out task in the Week tab).
 			if schedule.Bucket(t.Schedule, nowT) != targetTab.bucket {
-				scheduleDate, err := schedule.Parse(targetTab.bucket, nowT)
+				scheduleDate, err := schedule.Parse(targetTab.bucket, nowT, config.DateFormat())
 				if err == nil {
 					t.Schedule = scheduleDate
 				}
@@ -2173,7 +2174,7 @@ func (m *Model) createCmd(title string, tags []string, recur string) tea.Cmd {
 	repoPath := m.repoPath
 	return func() tea.Msg {
 		nowT := time.Now()
-		scheduleDate, err := schedule.Parse(bucket, nowT)
+		scheduleDate, err := schedule.Parse(bucket, nowT, config.DateFormat())
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("schedule: %w", err)}
 		}
