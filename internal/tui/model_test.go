@@ -243,6 +243,8 @@ func TestReschedule_CustomDate(t *testing.T) {
 	if m.rescheduleSub != 1 {
 		t.Fatalf("rescheduleSub = %d, want 1", m.rescheduleSub)
 	}
+	// Legacy ISO input is still accepted silently so existing muscle
+	// memory / scripts keep working after the format switch.
 	m = typeString(t, m, "2026-05-20")
 	m, cmd := key(t, m, "enter")
 	if cmd == nil {
@@ -260,6 +262,44 @@ func TestReschedule_CustomDate(t *testing.T) {
 	}
 }
 
+func TestReschedule_CustomDate_ConfiguredFormat(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "custom date cfg", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "r")
+	m, _ = key(t, m, "6")
+	// Enter the date in the configured DD-MM-YYYY layout. Stored value
+	// must still be ISO so we can round-trip back through FormatDisplay.
+	m = typeString(t, m, "20-05-2026")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter on valid DD-MM-YYYY date should save")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.Schedule != "2026-05-20" {
+		t.Errorf("Schedule = %q, want %q (DD-MM-YYYY input must store as ISO)",
+			task.Schedule, "2026-05-20")
+	}
+}
+
+func TestReschedule_Placeholder_UsesConfiguredLabel(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "placeholder check", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "r")
+	m, _ = key(t, m, "6")
+	if got, want := m.input.Placeholder, config.DateFormatLabel(); got != want {
+		t.Errorf("reschedule placeholder = %q, want %q", got, want)
+	}
+}
+
 func TestReschedule_InvalidCustomDateSurfacesError(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "bad date", Status: "open", Schedule: "today",
@@ -273,7 +313,11 @@ func TestReschedule_InvalidCustomDateSurfacesError(t *testing.T) {
 		t.Error("invalid date should not produce save cmd")
 	}
 	if m.err == nil {
-		t.Error("expected error on invalid date")
+		t.Fatal("expected error on invalid date")
+	}
+	if got := m.err.Error(); !strings.Contains(got, config.DateFormatLabel()) {
+		t.Errorf("error message should mention configured format %q, got %q",
+			config.DateFormatLabel(), got)
 	}
 }
 
@@ -741,6 +785,36 @@ func TestApplyEditedYAML_UpdatesUpdatedAt(t *testing.T) {
 	}
 	if got.UpdatedAt == orig.UpdatedAt {
 		t.Error("UpdatedAt should be refreshed after edit")
+	}
+}
+
+// TestMarshalTaskForEdit_ScheduleInConfiguredFormat ensures the YAML
+// edit buffer renders the schedule in the user-facing (DD-MM-YYYY)
+// layout even though the stored value is ISO. applyEditedYAML must be
+// able to round-trip that back to ISO.
+func TestMarshalTaskForEdit_ScheduleInConfiguredFormat(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "pay bills", Status: "open", Schedule: "2026-04-13",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The rendered YAML must contain the user-facing date, not the raw ISO.
+	if !strings.Contains(string(data), "schedule: 13-04-2026") {
+		t.Errorf("YAML should contain DD-MM-YYYY schedule, got:\n%s", string(data))
+	}
+	if strings.Contains(string(data), "schedule: 2026-04-13") {
+		t.Errorf("YAML should not contain raw ISO schedule, got:\n%s", string(data))
+	}
+	// Round-trip: applyEditedYAML must accept that rendering and
+	// produce the original ISO value.
+	got, err := applyEditedYAML(orig, data, time.Now())
+	if err != nil {
+		t.Fatalf("parse round-trip: %v", err)
+	}
+	if got.Schedule != "2026-04-13" {
+		t.Errorf("round-trip Schedule = %q, want %q", got.Schedule, "2026-04-13")
 	}
 }
 

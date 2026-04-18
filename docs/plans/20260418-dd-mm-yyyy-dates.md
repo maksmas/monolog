@@ -417,14 +417,14 @@ panels, YAML marshal, and the `monolog show` output.
 - Modify: `cmd/recurring_acceptance_test.go`
 - Modify: `cmd/show_test.go`
 
-- [ ] `cmd/ls.go`: update the `invalid schedule` error message to use
+- [x] `cmd/ls.go`: update the `invalid schedule` error message to use
       `config.DateFormatLabel()` instead of the hardcoded
       `"ISO date (YYYY-MM-DD)"`
-- [ ] `cmd/show.go` (line 46): render `task.Schedule` through
+- [x] `cmd/show.go` (line 46): render `task.Schedule` through
       `schedule.FormatDisplay(task.Schedule, config.DateFormat())` in
       the `Schedule:  <bucket> (<date>)` line so `monolog show`
       matches the rest of the UI
-- [ ] `internal/tui/model.go` reschedule modal: replace
+- [x] `internal/tui/model.go` reschedule modal: replace
       `m.input.Placeholder = "YYYY-MM-DD"` with
       `m.input.Placeholder = config.DateFormatLabel()`; replace the
       `"invalid date %q (want YYYY-MM-DD)"` error with one that
@@ -433,49 +433,59 @@ panels, YAML marshal, and the `monolog show` output.
       `schedule.Parse(date, now, config.DateFormat())` and rely on
       its validation + normalization (cleaner, aligns with how the
       add modal works, and automatically accepts the new format)
-- [ ] `internal/tui/model.go` detail panel header (~line 2503-2505):
+- [x] `internal/tui/model.go` detail panel header (~line 2503-2505):
       render `task.Schedule` through `schedule.FormatDisplay(t.Schedule,
       config.DateFormat())` so the user sees DD-MM-YYYY rather than ISO
-- [ ] `internal/tui/model.go` `marshalTaskForEdit` (~line 1630):
+- [x] `internal/tui/model.go` `marshalTaskForEdit` (~line 1630):
       convert `t.Schedule` to the configured layout via
       `schedule.FormatDisplay` before writing it into the YAML buffer.
       `applyEditedYAML` already calls `schedule.Parse` which (after
       Task 2) accepts the configured layout — no change needed on the
       parse side
-- [ ] update `cmd/done_recurring_test.go` assertions for the commit
+- [x] update `cmd/done_recurring_test.go` assertions for the commit
       message (`"done: <title> (recurring, next <date>)"`) and the
       `Spawned follow-up` note body to expect DD-MM-YYYY. Parses of
       `spawn.Schedule` via `"2006-01-02"` stay unchanged — stored
-      format
-- [ ] update `cmd/recurring_acceptance_test.go` if it asserts the
-      same commit-message/note text
-- [ ] update `cmd/show_test.go` to assert the new DD-MM-YYYY output
+      format (already updated in Task 4; commit-message assertion
+      uses a loose `"(recurring, next "` prefix match that works
+      under both formats)
+- [x] update `cmd/recurring_acceptance_test.go` if it asserts the
+      same commit-message/note text (already updated in Task 4 —
+      `Spawned follow-up` note body uses `spawnDateT.Format("02-01-2006")`)
+- [x] update `cmd/show_test.go` to assert the new DD-MM-YYYY output
       on the `Schedule:` line
-- [ ] update `internal/tui/model_test.go` for any custom-date
+- [x] update `internal/tui/model_test.go` for any custom-date
       reschedule test cases (inputs that were `"2026-04-13"` become
       DD-MM-YYYY equivalents; error-message assertions follow the
       new wording)
-- [ ] run `go test ./...` — must pass before next task
+- [x] run `go test ./...` — must pass before next task
 
 ### Task 6: Verify acceptance criteria end-to-end
 
-- [ ] verify `./monolog add "buy milk" --schedule 15-04-2026`
+- [x] verify `./monolog add "buy milk" --schedule 15-04-2026`
       round-trips: `monolog ls` shows the task with the correct bucket,
       stored JSON has `"schedule": "2026-04-15"`, the task-list date
       column shows the new compact format
-- [ ] verify legacy input `--schedule 2026-04-15` still works silently
+- [x] verify legacy input `--schedule 2026-04-15` still works silently
       (no error, same stored value)
-- [ ] verify `--schedule 32-04-2026` (invalid day) produces an error
+- [x] verify `--schedule 32-04-2026` (invalid day) produces an error
       mentioning `DD-MM-YYYY`
-- [ ] verify the TUI reschedule custom-date modal accepts `15-04-2026`
+- [x] verify the TUI reschedule custom-date modal accepts `15-04-2026`
       and rejects junk input with the new error wording
-- [ ] verify the TUI YAML editor shows the schedule as `DD-MM-YYYY` and
-      round-trips on save
-- [ ] verify recurrence spawn: complete a `weekly:mon` task and check
+      (verified via unit tests: TestReschedule_CustomDate_ConfiguredFormat,
+      TestReschedule_Placeholder_UsesConfiguredLabel,
+      TestReschedule_InvalidCustomDateSurfacesError; interactive TUI
+      smoke test skipped - not automatable)
+- [x] verify the TUI YAML editor shows the schedule as `DD-MM-YYYY` and
+      round-trips on save (verified via unit tests:
+      TestMarshalTaskForEdit_ScheduleInConfiguredFormat,
+      TestMarshalTaskForEdit_RoundTrip, TestApplyEditedYAML_AcceptsISODate;
+      interactive TUI smoke test skipped - not automatable)
+- [x] verify recurrence spawn: complete a `weekly:mon` task and check
       the commit message says `next DD-MM-YYYY` and the `Spawned
       follow-up` note uses DD-MM-YYYY
-- [ ] run full suite: `go test ./... && go vet ./...`
-- [ ] grep the codebase for any remaining `"YYYY-MM-DD"` user-facing
+- [x] run full suite: `go test ./... && go vet ./...`
+- [x] grep the codebase for any remaining `"YYYY-MM-DD"` user-facing
       strings and confirm each is either a storage-format reference in
       a comment, part of the legacy-parse tolerance in `schedule.Parse`,
       or otherwise intentional

@@ -1228,7 +1228,7 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "6":
 			m.rescheduleSub = 1
 			m.input.Width = m.modalInnerWidth() - 1
-			m.input.Placeholder = "YYYY-MM-DD"
+			m.input.Placeholder = config.DateFormatLabel()
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
@@ -1236,12 +1236,15 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Custom date input step.
+	// Custom date input step. schedule.Parse accepts bucket names, the
+	// configured format, and legacy ISO input (silent backward compat) —
+	// we rely on it for validation and normalization rather than IsISODate
+	// so the modal automatically follows the configured format.
 	switch msg.Type {
 	case tea.KeyEnter:
 		date := strings.TrimSpace(m.input.Value())
-		if !schedule.IsISODate(date) {
-			m.err = fmt.Errorf("invalid date %q (want YYYY-MM-DD)", date)
+		if _, err := schedule.Parse(date, time.Now(), config.DateFormat()); err != nil {
+			m.err = fmt.Errorf("invalid date %q (want %s)", date, config.DateFormatLabel())
 			return m, nil
 		}
 		return m, m.applyReschedule(date)
@@ -1626,12 +1629,15 @@ type editableFields struct {
 
 // marshalTaskForEdit renders a task into the YAML shown in the editor.
 // The reserved "active" tag is filtered out so the user only sees their own
-// tags; active state is preserved separately in applyEditedYAML.
+// tags; active state is preserved separately in applyEditedYAML. The
+// schedule field is rendered through FormatDisplay so the user sees
+// dates in the configured format (default DD-MM-YYYY); applyEditedYAML
+// round-trips it back to the stored ISO format via schedule.Parse.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
 	return yaml.Marshal(editableFields{
 		Title:      t.Title,
 		Body:       t.Body,
-		Schedule:   t.Schedule,
+		Schedule:   schedule.FormatDisplay(t.Schedule, config.DateFormat()),
 		Tags:       display.VisibleTags(t.Tags),
 		Recurrence: t.Recurrence,
 	})
@@ -2500,10 +2506,11 @@ func (m *Model) detailPanelView() string {
 	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
 
 	bucket := schedule.Bucket(task.Schedule, now)
+	displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
 	if bucket != task.Schedule {
-		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, task.Schedule))
+		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, displayDate))
 	} else {
-		header = append(header, "Schedule: "+task.Schedule)
+		header = append(header, "Schedule: "+displayDate)
 	}
 
 	if vt := display.VisibleTags(task.Tags); len(vt) > 0 {

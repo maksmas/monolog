@@ -56,7 +56,7 @@ func newLsCmd() *cobra.Command {
 				} else if schedule.IsISODate(scheduleFlag) {
 					exactDate = scheduleFlag
 				} else {
-					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or ISO date (YYYY-MM-DD)", scheduleFlag)
+					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or a date (%s)", scheduleFlag, config.DateFormatLabel())
 				}
 			case !all && !done && !(active && !scheduleChanged):
 				bucketFilter = schedule.Today
