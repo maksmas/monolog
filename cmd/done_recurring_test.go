@@ -221,8 +221,14 @@ func TestDone_Recurring_BidirectionalNotes(t *testing.T) {
 	// Reload old task.
 	old, _ := getTaskByID(t, dir, id)
 
-	// Old task body should end with the spawned-follow-up note.
-	wantForward := "Spawned follow-up: " + spawn.ID + " (scheduled " + spawn.Schedule + ")"
+	// Old task body should end with the spawned-follow-up note. The note
+	// uses the user-facing date format (DD-MM-YYYY) while spawn.Schedule
+	// is stored as ISO — convert one to the other for the assertion.
+	spawnDateT, parseErr := time.Parse("2006-01-02", spawn.Schedule)
+	if parseErr != nil {
+		t.Fatalf("parse spawn.Schedule %q: %v", spawn.Schedule, parseErr)
+	}
+	wantForward := "Spawned follow-up: " + spawn.ID + " (scheduled " + spawnDateT.Format("02-01-2006") + ")"
 	if !strings.Contains(old.Body, wantForward) {
 		t.Errorf("old Body missing forward note %q:\n%s", wantForward, old.Body)
 	}

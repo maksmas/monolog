@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/model"
 )
 
@@ -51,7 +52,7 @@ func (s *Store) Create(task model.Task) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("task %s already exists", task.ID)
 	}
-	task.NoteCount = model.CountNotes(task.Body)
+	task.NoteCount = model.CountNotes(task.Body, config.DateRegex())
 	return s.writeTask(path, task)
 }
 
@@ -68,7 +69,7 @@ func (s *Store) Update(task model.Task) error {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return ErrNotFound
 	}
-	task.NoteCount = model.CountNotes(task.Body)
+	task.NoteCount = model.CountNotes(task.Body, config.DateRegex())
 	return s.writeTask(path, task)
 }
 

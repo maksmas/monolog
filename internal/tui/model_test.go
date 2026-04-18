@@ -6566,7 +6566,7 @@ func TestDetailPanel_NoteSubmission_IncrementCount(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01INC", Title: "has notes", Status: "open",
 			Schedule: expectSchedule(t, "today"), Position: 1000,
-			Body:      "--- 2026-04-15 10:00:00 ---\nexisting note",
+			Body:      "--- 15-04-2026 10:00:00 ---\nexisting note",
 			NoteCount: 1,
 			UpdatedAt: "2026-04-13T00:00:00Z"},
 	)

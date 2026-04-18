@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/recurrence"
@@ -34,7 +35,7 @@ func newDoneCmd() *cobra.Command {
 				return nil
 			}
 
-			commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(s, &task, time.Now(), cmd.ErrOrStderr())
+			commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(s, &task, time.Now(), cmd.ErrOrStderr(), config.DateFormat())
 			if err != nil {
 				return err
 			}

@@ -359,28 +359,28 @@ would leave an intermediate state where `internal/recurrence/spawn.go`
 calls `AppendNote` with three args against a four-arg signature —
 broken build.
 
-- [ ] change `AppendNote` signature to `AppendNote(body, text string,
+- [x] change `AppendNote` signature to `AppendNote(body, text string,
       now time.Time, layout string) string` and format the separator
       with `now.Format(layout + " 15:04:05")`
-- [ ] change `CountNotes` signature to `CountNotes(body, dateRegex
+- [x] change `CountNotes` signature to `CountNotes(body, dateRegex
       string) int` and build the full matching regex as
       `^--- <dateRegex> \d{2}:\d{2}:\d{2} ---$` (anchored per line)
-- [ ] drop backward-compat for the old `YYYY-MM-DD HH:MM:SS`
+- [x] drop backward-compat for the old `YYYY-MM-DD HH:MM:SS`
       separator. A note body written by an older monolog version will
       stop contributing to `NoteCount` after this change. Document
       this decision in the function doc comment so future maintainers
       don't "fix" it. No migration script is shipped — the user
       accepted that trade-off
-- [ ] change `CompleteAndSpawn` (or equivalent exported spawn entry)
+- [x] change `CompleteAndSpawn` (or equivalent exported spawn entry)
       to take a new `dateFormat string` parameter and thread it down
       to: (a) `AppendNote` calls for both cross-reference notes and
       (b) the commit message's next-date formatting, while keeping
       `newTask.Schedule` formatted via `schedule.IsoLayout`
-- [ ] update `cmd/done.go` to pass `config.DateFormat()` to
+- [x] update `cmd/done.go` to pass `config.DateFormat()` to
       `CompleteAndSpawn`
-- [ ] update the TUI `d`-key handler in `internal/tui/model.go` to
+- [x] update the TUI `d`-key handler in `internal/tui/model.go` to
       pass `config.DateFormat()` to `CompleteAndSpawn`
-- [ ] update every AppendNote/CountNotes call site to pass the
+- [x] update every AppendNote/CountNotes call site to pass the
       configured layout / regex:
       - `cmd/note.go` (AppendNote) → `config.DateFormat()`
       - `internal/tui/model.go:1134` (detail-panel textarea append) →
@@ -390,14 +390,14 @@ broken build.
         `CompleteAndSpawn` parameter
       - `internal/store/store.go` (Create/Update paths recomputing
         `NoteCount`) → `config.DateRegex()`
-- [ ] update `TestAppendNote` and existing `CountNotes` tests to pass
+- [x] update `TestAppendNote` and existing `CountNotes` tests to pass
       the DD-MM-YYYY layout and expect new-format separators
-- [ ] add test cases that pass an alternative layout (via the Task 1
+- [x] add test cases that pass an alternative layout (via the Task 1
       test helper to add a second entry to `supported`) to confirm
       the parameter is wired through
-- [ ] verify the "separator-lookalike line must NOT count" cases still
+- [x] verify the "separator-lookalike line must NOT count" cases still
       fail for the right reasons under the new regex
-- [ ] run `go test ./internal/model/... ./internal/store/...
+- [x] run `go test ./internal/model/... ./internal/store/...
       ./internal/recurrence/... ./cmd/...` — must pass before next
       task
 

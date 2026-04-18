@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -36,7 +37,7 @@ func newNoteCmd() *cobra.Command {
 			}
 
 			now := time.Now()
-			task.Body = model.AppendNote(task.Body, text, now)
+			task.Body = model.AppendNote(task.Body, text, now, config.DateFormat())
 			task.UpdatedAt = now.UTC().Format(time.RFC3339)
 
 			if err := s.Update(task); err != nil {

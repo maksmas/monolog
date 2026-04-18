@@ -1132,7 +1132,7 @@ func (m *Model) submitNote() tea.Cmd {
 	}
 	t := *task
 	nowT := time.Now()
-	t.Body = model.AppendNote(t.Body, text, nowT)
+	t.Body = model.AppendNote(t.Body, text, nowT, config.DateFormat())
 	t.UpdatedAt = nowT.UTC().Format(time.RFC3339)
 	flat := flattenTitle(t.Title)
 
@@ -1166,7 +1166,7 @@ func (m *Model) doneSelected() tea.Cmd {
 		// warnBuf collects any recurrence warnings surfaced through the
 		// status bar (stderr has no natural home in the TUI).
 		var warnBuf strings.Builder
-		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf)
+		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf, config.DateFormat())
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("done: %w", err)}
 		}
