@@ -1720,14 +1720,27 @@ type editableFields struct {
 // schedule field is rendered through FormatDisplay so the user sees
 // dates in the configured format (default DD-MM-YYYY); applyEditedYAML
 // round-trips it back to the stored ISO format via schedule.Parse.
+//
+// A header comment line documenting the recurrence grammar is prepended to
+// the buffer so users discovering the recurrence field in $EDITOR do not need
+// to consult external help. The comment is always present (regardless of
+// whether Recurrence is set) so it also helps users who want to *add* a
+// recurrence rule via edit. yaml.Unmarshal ignores "#" comments, so
+// applyEditedYAML round-trips correctly whether or not the user preserves
+// this line.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
-	return yaml.Marshal(editableFields{
+	body, err := yaml.Marshal(editableFields{
 		Title:      t.Title,
 		Body:       t.Body,
 		Schedule:   schedule.FormatDisplay(t.Schedule, config.DateFormat()),
 		Tags:       display.VisibleTags(t.Tags),
 		Recurrence: t.Recurrence,
 	})
+	if err != nil {
+		return nil, err
+	}
+	header := "# recurrence rules: " + recurrence.GrammarHint + "\n"
+	return append([]byte(header), body...), nil
 }
 
 // applyEditedYAML parses the user's edited YAML and returns an updated task.

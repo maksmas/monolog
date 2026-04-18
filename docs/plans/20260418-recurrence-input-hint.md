@@ -190,12 +190,12 @@ on both `cmd/add.go:95` and `cmd/edit.go:116`.
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] in `marshalTaskForEdit`, prepend a `# recurrence rules: <GrammarHint>` header comment line above the marshaled YAML body
-- [ ] confirm `applyEditedYAML` still parses correctly (yaml.v3 ignores `#` comments) — no change expected, but add a regression test
-- [ ] write test: `marshalTaskForEdit` output contains `# recurrence rules: monthly:N | weekly:<day> | workdays | days:N`
-- [ ] write test: round-trip — marshal, prepend comment stays, apply with no user edits → original Task preserved including Recurrence field
-- [ ] write test: user removes the comment line in editor → apply still works
-- [ ] run tests - must pass before task 5: `go test ./internal/tui/`
+- [x] in `marshalTaskForEdit`, prepend a `# recurrence rules: <GrammarHint>` header comment line above the marshaled YAML body
+- [x] confirm `applyEditedYAML` still parses correctly (yaml.v3 ignores `#` comments) — no change expected, but add a regression test
+- [x] write test: `marshalTaskForEdit` output contains `# recurrence rules: monthly:N | weekly:<day> | workdays | days:N`
+- [x] write test: round-trip — marshal, prepend comment stays, apply with no user edits → original Task preserved including Recurrence field
+- [x] write test: user removes the comment line in editor → apply still works
+- [x] run tests - must pass before task 5: `go test ./internal/tui/`
 
 ### Task 5: Expand CLI `--recur` help text
 

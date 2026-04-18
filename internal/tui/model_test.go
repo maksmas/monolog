@@ -905,6 +905,99 @@ func TestMarshalApplyRoundTrip_RecurrencePreserved(t *testing.T) {
 	}
 }
 
+// TestMarshalTaskForEdit_IncludesGrammarHeader verifies the generated YAML
+// starts with a "# recurrence rules: ..." comment line so users discovering
+// the recurrence field in $EDITOR see the full grammar without needing help.
+func TestMarshalTaskForEdit_IncludesGrammarHeader(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "chore", Status: "open", Schedule: "2026-04-13",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := "# recurrence rules: monthly:N | weekly:<day> | workdays | days:N"
+	if !strings.Contains(string(data), want) {
+		t.Errorf("YAML should contain grammar header %q, got:\n%s", want, string(data))
+	}
+	// The comment should be the first line so it is visible immediately.
+	if !strings.HasPrefix(string(data), "# recurrence rules:") {
+		t.Errorf("grammar header should be the first line, got:\n%s", string(data))
+	}
+}
+
+// TestMarshalTaskForEdit_GrammarHeaderAlsoForRecurringTasks guards against
+// conditional emission — the header is informational for BOTH setting and
+// clearing a rule, so it must appear whether or not Recurrence is empty.
+func TestMarshalTaskForEdit_GrammarHeaderAlsoForRecurringTasks(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "pay bills", Status: "open", Schedule: "2026-04-13",
+		Recurrence: "monthly:1",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "# recurrence rules:") {
+		t.Errorf("grammar header should appear for recurring tasks too, got:\n%s", string(data))
+	}
+}
+
+// TestApplyEditedYAML_IgnoresGrammarComment guards the parsing half of the
+// round-trip: yaml.Unmarshal must treat the "#" header as a comment and not
+// choke on it. This is an explicit regression test for the Task 4 change.
+func TestApplyEditedYAML_IgnoresGrammarComment(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	body := "# recurrence rules: monthly:N | weekly:<day> | workdays | days:N\n" +
+		"title: new\nschedule: today\nrecurrence: weekly:mon\n"
+	got, err := applyEditedYAML(orig, []byte(body), time.Now())
+	if err != nil {
+		t.Fatalf("apply with header comment: %v", err)
+	}
+	if got.Title != "new" || got.Recurrence != "weekly:mon" {
+		t.Errorf("comment-prefixed YAML parsed incorrectly: %+v", got)
+	}
+}
+
+// TestMarshalApplyRoundTrip_WithGrammarHeader ensures the full round-trip
+// — including the auto-prepended comment — leaves the task unchanged when
+// the user makes no edits. This is the end-to-end guarantee.
+func TestMarshalApplyRoundTrip_WithGrammarHeader(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "chore", Status: "open", Schedule: "2026-04-13",
+		Tags:       []string{"home"},
+		Recurrence: "workdays",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := applyEditedYAML(orig, data, time.Now())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Title != orig.Title || got.Schedule != orig.Schedule ||
+		got.Recurrence != orig.Recurrence || !sliceEq(got.Tags, orig.Tags) {
+		t.Errorf("round-trip with header mismatch: got %+v, want %+v", got, orig)
+	}
+}
+
+// TestApplyEditedYAML_UserRemovesGrammarComment verifies that removing the
+// header line in $EDITOR does not break parsing — the comment is purely
+// informational and the buffer must remain valid YAML without it.
+func TestApplyEditedYAML_UserRemovesGrammarComment(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today", Recurrence: "monthly:1"}
+	// Simulate the user deleting the "# recurrence rules: ..." header line.
+	body := "title: old\nschedule: today\nrecurrence: monthly:1\n"
+	got, err := applyEditedYAML(orig, []byte(body), time.Now())
+	if err != nil {
+		t.Fatalf("apply without header: %v", err)
+	}
+	if got.Recurrence != "monthly:1" {
+		t.Errorf("Recurrence = %q, want monthly:1", got.Recurrence)
+	}
+}
+
 func TestResolveEditor(t *testing.T) {
 	t.Setenv("VISUAL", "emacs")
 	t.Setenv("EDITOR", "nano")
