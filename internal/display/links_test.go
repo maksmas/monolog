@@ -1,0 +1,145 @@
+package display
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestLinkify(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		want     string
+		contains []string // substrings expected in the output
+	}{
+		{
+			name: "no urls unchanged",
+			in:   "just a plain string",
+			want: "just a plain string",
+		},
+		{
+			name: "empty string unchanged",
+			in:   "",
+			want: "",
+		},
+		{
+			name:     "single https url",
+			in:       "https://example.com",
+			contains: []string{"\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"},
+		},
+		{
+			name:     "single http url",
+			in:       "http://example.com",
+			contains: []string{"\x1b]8;;http://example.com\x1b\\http://example.com\x1b]8;;\x1b\\"},
+		},
+		{
+			name: "multiple urls",
+			in:   "see https://a.example and https://b.example",
+			contains: []string{
+				"\x1b]8;;https://a.example\x1b\\https://a.example\x1b]8;;\x1b\\",
+				"\x1b]8;;https://b.example\x1b\\https://b.example\x1b]8;;\x1b\\",
+			},
+		},
+		{
+			name:     "url at end of string",
+			in:       "final: https://example.com/path",
+			contains: []string{"\x1b]8;;https://example.com/path\x1b\\https://example.com/path\x1b]8;;\x1b\\"},
+		},
+		{
+			name:     "trailing dot is stripped",
+			in:       "See https://example.com/foo.",
+			contains: []string{"\x1b]8;;https://example.com/foo\x1b\\https://example.com/foo\x1b]8;;\x1b\\."},
+		},
+		{
+			name:     "trailing closing paren is stripped",
+			in:       "(see https://example.com/foo)",
+			contains: []string{"\x1b]8;;https://example.com/foo\x1b\\https://example.com/foo\x1b]8;;\x1b\\)"},
+		},
+		{
+			name:     "trailing comma is stripped",
+			in:       "https://example.com/foo, and more",
+			contains: []string{"\x1b]8;;https://example.com/foo\x1b\\https://example.com/foo\x1b]8;;\x1b\\,"},
+		},
+		{
+			name:     "trailing semicolon is stripped",
+			in:       "https://example.com/foo;",
+			contains: []string{"\x1b]8;;https://example.com/foo\x1b\\https://example.com/foo\x1b]8;;\x1b\\;"},
+		},
+		{
+			name:     "trailing question mark is stripped",
+			in:       "did you see https://example.com/foo?",
+			contains: []string{"\x1b]8;;https://example.com/foo\x1b\\https://example.com/foo\x1b]8;;\x1b\\?"},
+		},
+		{
+			name:     "trailing exclamation is stripped",
+			in:       "https://example.com/foo!",
+			contains: []string{"\x1b]8;;https://example.com/foo\x1b\\https://example.com/foo\x1b]8;;\x1b\\!"},
+		},
+		{
+			name:     "url inside surrounding text",
+			in:       "before https://example.com/x after",
+			contains: []string{"\x1b]8;;https://example.com/x\x1b\\https://example.com/x\x1b]8;;\x1b\\"},
+		},
+		{
+			name:     "multiple trailing punct stripped",
+			in:       "https://example.com/foo).",
+			contains: []string{"\x1b]8;;https://example.com/foo\x1b\\https://example.com/foo\x1b]8;;\x1b\\)."},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Linkify(tc.in)
+			if tc.want != "" && got != tc.want {
+				t.Errorf("Linkify(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			for _, sub := range tc.contains {
+				if !strings.Contains(got, sub) {
+					t.Errorf("Linkify(%q) = %q, missing substring %q", tc.in, got, sub)
+				}
+			}
+		})
+	}
+}
+
+func TestLinkifyNoLinksEnv(t *testing.T) {
+	t.Setenv("MONOLOG_NO_LINKS", "1")
+	in := "click https://example.com/foo for details"
+	got := Linkify(in)
+	if got != in {
+		t.Errorf("Linkify with MONOLOG_NO_LINKS=1 = %q, want %q", got, in)
+	}
+	if strings.Contains(got, "\x1b]8;;") {
+		t.Errorf("Linkify with MONOLOG_NO_LINKS=1 still contains OSC 8 escape: %q", got)
+	}
+}
+
+func TestLinkifySingleCloserPerURL(t *testing.T) {
+	// The closer is "\x1b]8;;\x1b\\" — one per URL, no double-wrapping.
+	in := "https://a.example and https://b.example and https://c.example"
+	got := Linkify(in)
+	closer := "\x1b]8;;\x1b\\"
+	count := strings.Count(got, closer)
+	if count != 3 {
+		t.Errorf("expected 3 OSC 8 closers, got %d in %q", count, got)
+	}
+	// And the opener prefix "\x1b]8;;http" should also appear exactly 3 times
+	// (once per URL — the closer uses an empty URL so it matches "\x1b]8;;\x1b" not "\x1b]8;;http").
+	opener := "\x1b]8;;http"
+	if c := strings.Count(got, opener); c != 3 {
+		t.Errorf("expected 3 OSC 8 openers, got %d in %q", c, got)
+	}
+}
+
+func TestLinkifyPureStripLeavesUnchanged(t *testing.T) {
+	// A string that matches the regex but whose entire match strips to empty
+	// should not produce a broken escape. Our regex requires `https?://\S+`
+	// so the match always has at least one char after `://`; `https://.`
+	// strips the trailing dot leaving `https://` as the URL. That's not a
+	// valid URL but the function should still produce a well-formed escape.
+	in := "edge https://a."
+	got := Linkify(in)
+	if !strings.Contains(got, "\x1b]8;;https://a\x1b\\https://a\x1b]8;;\x1b\\.") {
+		t.Errorf("edge case produced unexpected output: %q", got)
+	}
+}

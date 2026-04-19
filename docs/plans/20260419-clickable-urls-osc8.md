@@ -109,15 +109,15 @@ Single env read at the top of `Linkify`. Cheap; only active when the user opts o
 - Create: `internal/display/links.go`
 - Create: `internal/display/links_test.go`
 
-- [ ] create `internal/display/links.go` with `Linkify(s string) string`
-- [ ] implement URL regex (`https?://\S+`) and trailing-punctuation stripping (`.,;:!?)`)
-- [ ] wrap each URL match in OSC 8: `\x1b]8;;<URL>\x1b\\<URL>\x1b]8;;\x1b\\`
-- [ ] respect `MONOLOG_NO_LINKS=1` env (no-op short-circuit at the top of the function)
-- [ ] write tests for: no URLs, single `https://` URL, single `http://` URL, multiple URLs in one string, URL at end of string, URL followed by `.`, URL followed by `)`, URL followed by `,`, URL inside surrounding text
-- [ ] write test for `MONOLOG_NO_LINKS=1` — input returned unchanged (use `t.Setenv`)
-- [ ] write test that the OSC 8 closer appears exactly once per URL (no double-wrapping)
-- [ ] run `go test ./internal/display/` — must pass before next task
-- [ ] run `go vet ./...` — must pass before next task
+- [x] create `internal/display/links.go` with `Linkify(s string) string`
+- [x] implement URL regex (`https?://\S+`) and trailing-punctuation stripping (`.,;:!?)`)
+- [x] wrap each URL match in OSC 8: `\x1b]8;;<URL>\x1b\\<URL>\x1b]8;;\x1b\\`
+- [x] respect `MONOLOG_NO_LINKS=1` env (no-op short-circuit at the top of the function)
+- [x] write tests for: no URLs, single `https://` URL, single `http://` URL, multiple URLs in one string, URL at end of string, URL followed by `.`, URL followed by `)`, URL followed by `,`, URL inside surrounding text
+- [x] write test for `MONOLOG_NO_LINKS=1` — input returned unchanged (use `t.Setenv`)
+- [x] write test that the OSC 8 closer appears exactly once per URL (no double-wrapping)
+- [x] run `go test ./internal/display/` — must pass before next task
+- [x] run `go vet ./...` — must pass before next task
 
 ### Task 2: Wire `Linkify` into the detail panel
 
