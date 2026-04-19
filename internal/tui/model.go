@@ -165,9 +165,11 @@ type Model struct {
 	detailScroll int
 	noteArea     textarea.Model
 
-	// Tag autocomplete state. Only one modal is open at a time, so a single
-	// pair of fields is shared between add and retag modals.
-	suggestions   []string // current filtered tag suggestions (max 5)
+	// Autocomplete state shared between the tag field (add/retag modals) and
+	// the recurrence field (add modal). Only one modal is open at a time and
+	// only one field is focused at a time, so a single pair of fields serves
+	// both use cases.
+	suggestions   []string // current filtered suggestions (max 5) — tags or recurrence forms depending on focused field
 	suggestionIdx int      // selected suggestion index; -1 = none selected
 
 	// Active tasks panel: tasks that carry the "active" tag, shown in a
@@ -1073,8 +1075,8 @@ func (m *Model) closeDetailPanel() {
 
 // updateModal routes keys based on the current modal.
 func (m *Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc: when tag suggestions are visible, clear them instead of closing the
-	// modal. Let the modal handler decide.
+	// Esc: when the suggestion dropdown (tag or recurrence) is visible, clear
+	// it instead of closing the modal. Let the modal handler decide.
 	if msg.Type == tea.KeyEsc {
 		if len(m.suggestions) > 0 && (m.mode == modeAdd || m.mode == modeRetag) {
 			m.suggestions = nil
@@ -1417,6 +1419,15 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Recur field suggestion navigation: Up/Down navigate, Tab accepts
+	// (replaces input with the selected suggestion). Enter is intentionally
+	// NOT consumed here — it must submit the modal even when the dropdown is
+	// visible, since the recur field is the last in the Tab cycle and users
+	// who do not need autocomplete should not be forced to dismiss a dropdown.
+	if recurFocused && m.handleRecurSuggestionNav(msg) {
+		return m, nil
+	}
+
 	// Tab: cycle focus title -> tags -> recur -> title.
 	if msg.Type == tea.KeyTab {
 		switch m.addFocus {
@@ -1430,15 +1441,20 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tagInput.Blur()
 			m.recurInput.Focus()
 			m.titleArea.Blur()
-			// Clear suggestions when leaving the tag field — they are not
-			// interactable from the recur field.
-			m.suggestions = nil
-			m.suggestionIdx = -1
+			// Clear any lingering tag suggestions, then populate recurrence
+			// suggestions based on whatever is already in the recur field so
+			// the dropdown appears immediately on Tab-into-recur.
+			m.refreshRecurSuggestions(m.recurInput.Value())
 		default: // addFocusRecur
 			m.addFocus = addFocusTitle
 			m.recurInput.Blur()
 			m.tagInput.Blur()
 			m.titleArea.Focus()
+			// Clear suggestions. Reachable in two cases:
+			//   1. Dropdown was empty (no matches for current input).
+			//   2. Highlighted suggestion already equals the recur input
+			//      verbatim, so handleRecurSuggestionNav deliberately falls
+			//      through to let Tab cycle focus (self-match escape hatch).
 			m.suggestions = nil
 			m.suggestionIdx = -1
 		}
@@ -1467,6 +1483,8 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if recurFocused {
 		m.recurInput, cmd = m.recurInput.Update(msg)
+		// Refresh suggestions after every keystroke in the recur field.
+		m.refreshRecurSuggestions(m.recurInput.Value())
 	} else if tagsFocused {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 		// Refresh suggestions after every keystroke in the tag field.
@@ -1526,6 +1544,8 @@ func (m *Model) handleSuggestionNav(msg tea.KeyMsg, ti *textinput.Model) bool {
 
 // refreshSuggestions updates m.suggestions from knownTags based on the current
 // tag field value. Resets suggestionIdx to 0 if there are results, -1 otherwise.
+// See refreshRecurSuggestions for the parallel helper that populates the same
+// state from recurrence-grammar completions when the recur field is focused.
 func (m *Model) refreshSuggestions(fieldValue string) {
 	m.suggestions = model.FilterTags(m.knownTags, fieldValue)
 	if len(m.suggestions) > 0 {
@@ -1533,6 +1553,75 @@ func (m *Model) refreshSuggestions(fieldValue string) {
 	} else {
 		m.suggestionIdx = -1
 	}
+}
+
+// refreshRecurSuggestions updates m.suggestions with recurrence-grammar
+// completions for the current recur input value. Mirrors refreshSuggestions
+// but uses recurrence.Suggest (a pure function) and is invoked only when the
+// recur field is focused.
+func (m *Model) refreshRecurSuggestions(fieldValue string) {
+	m.suggestions = recurrence.Suggest(fieldValue)
+	if len(m.suggestions) > 0 {
+		m.suggestionIdx = 0
+	} else {
+		m.suggestionIdx = -1
+	}
+}
+
+// handleRecurSuggestionNav handles suggestion navigation for the recur field:
+// Up/Down navigate and Tab accepts (replaces the input with the selected
+// suggestion). Enter is deliberately NOT consumed here — it must submit the
+// modal even when the dropdown is visible. Returns true when the key was
+// consumed.
+func (m *Model) handleRecurSuggestionNav(msg tea.KeyMsg) bool {
+	hasSuggestions := len(m.suggestions) > 0
+
+	// Up/Down navigate suggestions.
+	if hasSuggestions && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
+		if msg.Type == tea.KeyUp {
+			if m.suggestionIdx > 0 {
+				m.suggestionIdx--
+			}
+		} else {
+			if m.suggestionIdx < len(m.suggestions)-1 {
+				m.suggestionIdx++
+			}
+		}
+		return true
+	}
+
+	// Tab accepts the highlighted suggestion (replaces the whole input, since
+	// recurrence is a single value — unlike the comma-appended tag field).
+	// BUT: if the highlighted suggestion already matches the current input
+	// (case-insensitively — e.g. user typed "WEEKLY:MON" and Suggest returns
+	// the canonical lowercase ["weekly:mon"]), do NOT consume Tab. Fall
+	// through to the focus-cycle handler so the user can move on without
+	// first pressing Esc to dismiss the self-matching dropdown, and without
+	// Tab silently rewriting their typed case.
+	if msg.Type == tea.KeyTab && hasSuggestions && m.suggestionIdx >= 0 {
+		if strings.EqualFold(m.suggestions[m.suggestionIdx], m.recurInput.Value()) {
+			return false
+		}
+		m.acceptRecurSuggestion()
+		return true
+	}
+
+	return false
+}
+
+// acceptRecurSuggestion replaces the recur input text with the currently
+// selected suggestion and refreshes the suggestion list. Recurrence is a
+// single value, so the accept semantics are "replace", not "append".
+func (m *Model) acceptRecurSuggestion() {
+	if m.suggestionIdx < 0 || m.suggestionIdx >= len(m.suggestions) {
+		return
+	}
+	selected := m.suggestions[m.suggestionIdx]
+	m.recurInput.SetValue(selected)
+	m.recurInput.CursorEnd()
+	// Recompute suggestions for the new value (e.g. accepting "weekly:" should
+	// immediately show the weekday completions).
+	m.refreshRecurSuggestions(m.recurInput.Value())
 }
 
 // acceptSuggestion replaces the current fragment in the given textinput with
@@ -1649,14 +1738,27 @@ type editableFields struct {
 // schedule field is rendered through FormatDisplay so the user sees
 // dates in the configured format (default DD-MM-YYYY); applyEditedYAML
 // round-trips it back to the stored ISO format via schedule.Parse.
+//
+// A header comment line documenting the recurrence grammar is prepended to
+// the buffer so users discovering the recurrence field in $EDITOR do not need
+// to consult external help. The comment is always present (regardless of
+// whether Recurrence is set) so it also helps users who want to *add* a
+// recurrence rule via edit. yaml.Unmarshal ignores "#" comments, so
+// applyEditedYAML round-trips correctly whether or not the user preserves
+// this line.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
-	return yaml.Marshal(editableFields{
+	body, err := yaml.Marshal(editableFields{
 		Title:      t.Title,
 		Body:       t.Body,
 		Schedule:   schedule.FormatDisplay(t.Schedule, config.DateFormat()),
 		Tags:       display.VisibleTags(t.Tags),
 		Recurrence: t.Recurrence,
 	})
+	if err != nil {
+		return nil, err
+	}
+	header := "# recurrence rules: " + recurrence.GrammarHint + "\n"
+	return append([]byte(header), body...), nil
 }
 
 // applyEditedYAML parses the user's edited YAML and returns an updated task.
@@ -2838,9 +2940,22 @@ func (m *Model) modalView() string {
 		// The textarea's View() spans titleArea.Height() lines; align the "Title:"
 		// label with its first line so taller boxes still read naturally.
 		titleView := indentContinuation(m.titleArea.View(), "       ")
-		sugLines := m.renderSuggestions()
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n\n(Alt+Enter = newline, Enter = save)",
-			t.label, titleView, m.tagInput.View(), sugLines, m.recurInput.View()), iw)
+		// Tag suggestions render below the Tags line only when the tag field is
+		// focused; recurrence suggestions render below the Recur hint only when
+		// the recur field is focused. This prevents recur completions from
+		// leaking under the Tags row (and vice-versa).
+		var tagSug, recurSug string
+		switch m.addFocus {
+		case addFocusTags:
+			tagSug = m.renderSuggestions()
+		case addFocusRecur:
+			recurSug = m.renderSuggestions()
+		}
+		// GrammarHint is always visible under the Recur input as a dim-styled
+		// reminder of the accepted grammar.
+		hintLine := "       " + suggestionDimStyle.Render("("+recurrence.GrammarHint+")")
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n%s%s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View(), tagSug, m.recurInput.View(), hintLine, recurSug), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""

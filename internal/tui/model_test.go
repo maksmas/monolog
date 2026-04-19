@@ -905,6 +905,99 @@ func TestMarshalApplyRoundTrip_RecurrencePreserved(t *testing.T) {
 	}
 }
 
+// TestMarshalTaskForEdit_IncludesGrammarHeader verifies the generated YAML
+// starts with a "# recurrence rules: ..." comment line so users discovering
+// the recurrence field in $EDITOR see the full grammar without needing help.
+func TestMarshalTaskForEdit_IncludesGrammarHeader(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "chore", Status: "open", Schedule: "2026-04-13",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := "# recurrence rules: monthly:N | weekly:<day> | workdays | days:N"
+	if !strings.Contains(string(data), want) {
+		t.Errorf("YAML should contain grammar header %q, got:\n%s", want, string(data))
+	}
+	// The comment should be the first line so it is visible immediately.
+	if !strings.HasPrefix(string(data), "# recurrence rules:") {
+		t.Errorf("grammar header should be the first line, got:\n%s", string(data))
+	}
+}
+
+// TestMarshalTaskForEdit_GrammarHeaderAlsoForRecurringTasks guards against
+// conditional emission — the header is informational for BOTH setting and
+// clearing a rule, so it must appear whether or not Recurrence is empty.
+func TestMarshalTaskForEdit_GrammarHeaderAlsoForRecurringTasks(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "pay bills", Status: "open", Schedule: "2026-04-13",
+		Recurrence: "monthly:1",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "# recurrence rules:") {
+		t.Errorf("grammar header should appear for recurring tasks too, got:\n%s", string(data))
+	}
+}
+
+// TestApplyEditedYAML_IgnoresGrammarComment guards the parsing half of the
+// round-trip: yaml.Unmarshal must treat the "#" header as a comment and not
+// choke on it. This is an explicit regression test for the Task 4 change.
+func TestApplyEditedYAML_IgnoresGrammarComment(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today"}
+	body := "# recurrence rules: monthly:N | weekly:<day> | workdays | days:N\n" +
+		"title: new\nschedule: today\nrecurrence: weekly:mon\n"
+	got, err := applyEditedYAML(orig, []byte(body), time.Now())
+	if err != nil {
+		t.Fatalf("apply with header comment: %v", err)
+	}
+	if got.Title != "new" || got.Recurrence != "weekly:mon" {
+		t.Errorf("comment-prefixed YAML parsed incorrectly: %+v", got)
+	}
+}
+
+// TestMarshalApplyRoundTrip_WithGrammarHeader ensures the full round-trip
+// — including the auto-prepended comment — leaves the task unchanged when
+// the user makes no edits. This is the end-to-end guarantee.
+func TestMarshalApplyRoundTrip_WithGrammarHeader(t *testing.T) {
+	orig := model.Task{
+		ID: "01A", Title: "chore", Status: "open", Schedule: "2026-04-13",
+		Tags:       []string{"home"},
+		Recurrence: "workdays",
+	}
+	data, err := marshalTaskForEdit(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := applyEditedYAML(orig, data, time.Now())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Title != orig.Title || got.Schedule != orig.Schedule ||
+		got.Recurrence != orig.Recurrence || !sliceEq(got.Tags, orig.Tags) {
+		t.Errorf("round-trip with header mismatch: got %+v, want %+v", got, orig)
+	}
+}
+
+// TestApplyEditedYAML_UserRemovesGrammarComment verifies that removing the
+// header line in $EDITOR does not break parsing — the comment is purely
+// informational and the buffer must remain valid YAML without it.
+func TestApplyEditedYAML_UserRemovesGrammarComment(t *testing.T) {
+	orig := model.Task{ID: "01A", Title: "old", Schedule: "today", Recurrence: "monthly:1"}
+	// Simulate the user deleting the "# recurrence rules: ..." header line.
+	body := "title: old\nschedule: today\nrecurrence: monthly:1\n"
+	got, err := applyEditedYAML(orig, []byte(body), time.Now())
+	if err != nil {
+		t.Fatalf("apply without header: %v", err)
+	}
+	if got.Recurrence != "monthly:1" {
+		t.Errorf("Recurrence = %q, want monthly:1", got.Recurrence)
+	}
+}
+
 func TestResolveEditor(t *testing.T) {
 	t.Setenv("VISUAL", "emacs")
 	t.Setenv("EDITOR", "nano")
@@ -1964,7 +2057,12 @@ func TestAdd_RecurrenceClearedOnCloseModal(t *testing.T) {
 	if m.recurInput.Value() != "workdays" {
 		t.Fatalf("recurInput = %q, want 'workdays'", m.recurInput.Value())
 	}
-	// Esc closes the modal; reopening must start fresh.
+	// "workdays" populates recur suggestions, so the first Esc clears them
+	// (mirroring the tag-field dismiss behavior) and the second Esc closes
+	// the modal. Reopening must start fresh.
+	if len(m.suggestions) > 0 {
+		m, _ = key(t, m, "esc")
+	}
 	m, _ = key(t, m, "esc")
 	if m.mode != modeNormal {
 		t.Fatalf("mode after esc = %v, want modeNormal", m.mode)
@@ -2633,6 +2731,522 @@ func TestAdd_ModalViewSuggestionHighlightChangesOnNavigation(t *testing.T) {
 	view2 := m.modalView()
 	if !strings.Contains(view2, "> "+m.suggestions[1]) {
 		t.Errorf("second suggestion should be highlighted after down, got:\n%s", view2)
+	}
+}
+
+// --- recurrence autocomplete tests -----------------------------------------
+
+// TestAdd_RecurSuggestionsAppearOnWeeklyPrefix verifies that typing "week"
+// in the recur field populates m.suggestions with recurrence completions.
+func TestAdd_RecurSuggestionsAppearOnWeeklyPrefix(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")   // open add
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	m = typeString(t, m, "week")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'week'")
+	}
+	// "week" should match "weekly:" from topLevelCandidates.
+	found := false
+	for _, s := range m.suggestions {
+		if s == "weekly:" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("suggestions = %v, want to contain 'weekly:'", m.suggestions)
+	}
+}
+
+// TestAdd_RecurTabAcceptsSuggestionReplacesInput verifies Tab accepts a recur
+// suggestion and replaces the full input text (not appended, unlike tags).
+func TestAdd_RecurTabAcceptsSuggestionReplacesInput(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "week")
+	// suggestions should be populated.
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before accept")
+	}
+	m, _ = key(t, m, "tab") // accept highlighted suggestion
+	got := m.recurInput.Value()
+	if got != "weekly:" {
+		t.Errorf("recurInput = %q, want %q (Tab should replace full input)", got, "weekly:")
+	}
+	// After accepting "weekly:", suggestions should immediately show weekdays.
+	if len(m.suggestions) == 0 {
+		t.Errorf("expected weekday suggestions after accepting 'weekly:', got empty")
+	}
+	// Focus should still be on recur (accept does not switch focus).
+	if m.addFocus != addFocusRecur {
+		t.Errorf("addFocus = %v, want addFocusRecur after accept", m.addFocus)
+	}
+}
+
+// TestAdd_RecurWeeklyColonSuggestionsIncludeWeekdays verifies that the
+// completion set after "weekly:" contains canonical weekday forms (capped
+// at 5 by the pure Suggest function).
+func TestAdd_RecurWeeklyColonSuggestionsIncludeWeekdays(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "weekly:")
+	// The suggester caps results at 5 to match the tag-autocomplete convention.
+	// The exact cap is pinned in recurrence's TestSuggest_CapAndOrderingForWeekly;
+	// here we only assert non-empty and within-cap to keep TUI tests decoupled.
+	if n := len(m.suggestions); n == 0 || n > 5 {
+		t.Fatalf("suggestions len = %d, want in [1,5], got %v", n, m.suggestions)
+	}
+	// First one should be weekly:mon, after accepting it input becomes "weekly:mon".
+	m, _ = key(t, m, "tab") // accept first (weekly:mon)
+	got := m.recurInput.Value()
+	if got != "weekly:mon" {
+		t.Errorf("recurInput = %q, want %q", got, "weekly:mon")
+	}
+}
+
+// TestAdd_RecurEnterSubmitsEvenWithVisibleDropdown is the key divergence from
+// tag autocomplete: Enter on the recur field always submits the modal, even
+// when a suggestion is highlighted. The user's typed text is used as-is (after
+// canonicalization), not replaced by the highlighted suggestion.
+//
+// This test uses "monthly:1" with the highlighted template "monthly:N" so
+// that accept and submit would produce divergent outcomes — proving Enter
+// chose submit (preserving the typed "monthly:1"), not accept (which would
+// have replaced the input with the non-canonical template "monthly:N" and
+// failed canonicalization, leaving the modal open with an error).
+func TestAdd_RecurEnterSubmitsEvenWithVisibleDropdown(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "pay rent")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	// Type a concrete monthly rule; Suggest returns the template "monthly:N"
+	// for any "monthly:<...>" prefix, so the highlighted suggestion diverges
+	// from the typed value.
+	m = typeString(t, m, "monthly:1")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions while typing 'monthly:1'")
+	}
+	if m.suggestions[m.suggestionIdx] != "monthly:N" {
+		t.Fatalf("highlighted suggestion = %q, want %q (divergent accept/submit outcomes are the whole point of this test)",
+			m.suggestions[m.suggestionIdx], "monthly:N")
+	}
+	// Enter must submit with the typed value "monthly:1" — NOT replace it
+	// with the highlighted template "monthly:N". The real oracle for "did it
+	// submit" is m.mode returning to modeNormal after the command runs;
+	// runCmd itself fatals on nil cmd, so no separate nil check is needed.
+	m, cmd := key(t, m, "enter")
+	m = runCmd(t, m, cmd)
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal after submit (err=%v)", m.mode, m.err)
+	}
+	items := m.lists[0].Items()
+	if len(items) != 1 {
+		t.Fatalf("Today items = %d, want 1", len(items))
+	}
+	task := items[0].(item).task
+	if task.Recurrence != "monthly:1" {
+		t.Errorf("Recurrence = %q, want %q (accept would have produced %q)",
+			task.Recurrence, "monthly:1", "monthly:N")
+	}
+}
+
+// TestAdd_RecurTabAfterFullCanonicalFormCyclesFocus guards the self-match
+// escape hatch in handleRecurSuggestionNav: when the highlighted suggestion
+// equals the current input verbatim (e.g. user typed the full canonical form
+// "weekly:mon" and Suggest returns ["weekly:mon"]), Tab must fall through to
+// the focus-cycle handler instead of being consumed as a no-op accept.
+// Without this, users cannot Tab-out without first pressing Esc.
+func TestAdd_RecurTabAfterFullCanonicalFormCyclesFocus(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	// Type the full canonical form; Suggest returns exactly ["weekly:mon"].
+	m = typeString(t, m, "weekly:mon")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "weekly:mon" {
+		t.Fatalf("suggestions = %v, want exactly [weekly:mon] for self-match precondition", m.suggestions)
+	}
+	if m.recurInput.Value() != "weekly:mon" {
+		t.Fatalf("recurInput.Value() = %q, want %q", m.recurInput.Value(), "weekly:mon")
+	}
+	// Tab must cycle focus back to title (not be consumed as a no-op accept).
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle (Tab must fall through on self-match)", m.addFocus)
+	}
+	// Suggestions should be cleared by the focus-cycle handler.
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty after Tab-out", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx = %d, want -1 after Tab-out", m.suggestionIdx)
+	}
+	// Recur value preserved (accept path was NOT invoked).
+	if m.recurInput.Value() != "weekly:mon" {
+		t.Errorf("recurInput.Value() = %q, want %q preserved after Tab-out",
+			m.recurInput.Value(), "weekly:mon")
+	}
+}
+
+// TestAdd_RecurTabAfterUppercaseCanonicalFormCyclesFocus pins the
+// case-insensitive self-match behavior: a user typing "WEEKLY:MON" sees
+// Suggest return the lowercase canonical ["weekly:mon"]. Tab must fall
+// through to the focus-cycle handler (cycling to title) AND preserve the
+// user's uppercase typed value rather than silently normalizing it. This
+// matches user intent: they typed a valid rule, pressing Tab means "move
+// on", not "rewrite my input".
+func TestAdd_RecurTabAfterUppercaseCanonicalFormCyclesFocus(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	// Type the full canonical form in uppercase; Suggest canonicalizes to
+	// lowercase so the returned list is ["weekly:mon"].
+	m = typeString(t, m, "WEEKLY:MON")
+	if len(m.suggestions) != 1 || m.suggestions[0] != "weekly:mon" {
+		t.Fatalf("suggestions = %v, want exactly [weekly:mon] for self-match precondition", m.suggestions)
+	}
+	if m.recurInput.Value() != "WEEKLY:MON" {
+		t.Fatalf("recurInput.Value() = %q, want %q (uppercase preserved pre-Tab)",
+			m.recurInput.Value(), "WEEKLY:MON")
+	}
+	// Tab must cycle focus back to title (not consume the key as an accept).
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle (case-insensitive self-match must fall through)", m.addFocus)
+	}
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %v, want empty after Tab-out", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx = %d, want -1 after Tab-out", m.suggestionIdx)
+	}
+	// Crucially, the uppercase typed value is preserved — Tab must not
+	// silently rewrite the user's input to the canonical lowercase form.
+	// Canonicalization happens at submit via recurrence.Canonicalize.
+	if m.recurInput.Value() != "WEEKLY:MON" {
+		t.Errorf("recurInput.Value() = %q, want %q preserved (Tab must NOT rewrite case)",
+			m.recurInput.Value(), "WEEKLY:MON")
+	}
+}
+
+// TestAdd_RecurTabCyclesFocusWhenDropdownEmpty verifies that when the
+// dropdown is empty (no input, no matches), Tab on the recur field cycles
+// focus back to title rather than consuming the key for suggestion accept.
+func TestAdd_RecurTabCyclesFocusWhenDropdownEmpty(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	// Recur field is empty — no suggestions.
+	if len(m.suggestions) != 0 {
+		t.Fatalf("expected empty suggestions on empty recur field, got %v", m.suggestions)
+	}
+	m, _ = key(t, m, "tab") // should cycle focus back to title
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle (Tab should cycle when dropdown empty)", m.addFocus)
+	}
+}
+
+// TestAdd_RecurTabCyclesFocusWithInvalidPrefix verifies that a recur-field
+// input that has no matching suggestions (e.g. "xyz") still allows Tab to
+// cycle focus, since no suggestion is available to accept.
+func TestAdd_RecurTabCyclesFocusWithInvalidPrefix(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "xyz")
+	if len(m.suggestions) != 0 {
+		t.Fatalf("expected no suggestions for 'xyz', got %v", m.suggestions)
+	}
+	m, _ = key(t, m, "tab") // should cycle focus back to title
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus = %v, want addFocusTitle when no matches", m.addFocus)
+	}
+}
+
+// TestAdd_RecurUpDownNavigatesSuggestions verifies Up/Down navigation works
+// on the recur field using the shared suggestionIdx plumbing.
+func TestAdd_RecurUpDownNavigatesSuggestions(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "weekly:")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected weekday suggestions")
+	}
+	if m.suggestionIdx != 0 {
+		t.Fatalf("initial suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "down")
+	if m.suggestionIdx != 1 {
+		t.Errorf("after down: suggestionIdx = %d, want 1", m.suggestionIdx)
+	}
+	m, _ = key(t, m, "up")
+	if m.suggestionIdx != 0 {
+		t.Errorf("after up: suggestionIdx = %d, want 0", m.suggestionIdx)
+	}
+	// Down past the last clamps.
+	for i := 0; i < 10; i++ {
+		m, _ = key(t, m, "down")
+	}
+	if m.suggestionIdx != len(m.suggestions)-1 {
+		t.Errorf("suggestionIdx = %d, want %d (clamped at end)", m.suggestionIdx, len(m.suggestions)-1)
+	}
+}
+
+// TestAdd_RecurEscClearsSuggestions verifies Esc dismisses the dropdown on
+// the recur field, mirroring the existing tag-field Esc behavior.
+func TestAdd_RecurEscClearsSuggestions(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "week")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions before Esc")
+	}
+	// First Esc clears suggestions.
+	m, _ = key(t, m, "esc")
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after Esc = %v, want empty", m.suggestions)
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode after first Esc = %v, want modeAdd (should not close)", m.mode)
+	}
+	// Second Esc closes the modal.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("mode after second Esc = %v, want modeNormal", m.mode)
+	}
+}
+
+// TestAdd_RecurSuggestionsClearedOnTabAwayFromRecur verifies that after
+// interacting with the recur dropdown (typing a valid prefix to populate
+// suggestions, then erasing the input so the dropdown is empty), Tab-ing
+// focus away from recur leaves the suggestion state fully clean
+// (suggestions empty AND suggestionIdx reset). Driven through realistic
+// keystrokes — no synthetic state.
+func TestAdd_RecurSuggestionsClearedOnTabAwayFromRecur(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	// Populate suggestions by typing a valid prefix.
+	m = typeString(t, m, "week")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected suggestions after typing 'week'")
+	}
+	if m.suggestionIdx != 0 {
+		t.Fatalf("suggestionIdx after typing = %d, want 0", m.suggestionIdx)
+	}
+	// Erase input via backspace so the dropdown empties out — ensures Tab
+	// below is not consumed as an accept and instead cycles focus. Loop is
+	// value-driven so the test stays correct if the typed literal above
+	// changes length.
+	for m.recurInput.Value() != "" {
+		m, _ = key(t, m, "backspace")
+	}
+	if m.recurInput.Value() != "" {
+		t.Fatalf("recurInput after backspaces = %q, want empty", m.recurInput.Value())
+	}
+	if len(m.suggestions) != 0 {
+		t.Fatalf("suggestions after erasing input = %v, want empty", m.suggestions)
+	}
+	// Tab away from recur — focus cycles to title and suggestion state stays clean.
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTitle {
+		t.Fatalf("addFocus = %v, want addFocusTitle", m.addFocus)
+	}
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions after Tab away from recur = %v, want empty", m.suggestions)
+	}
+	if m.suggestionIdx != -1 {
+		t.Errorf("suggestionIdx after Tab away from recur = %d, want -1", m.suggestionIdx)
+	}
+}
+
+// TestAdd_TagSuggestionsStillAcceptOnEnter is a regression guard confirming
+// that the tag field retains its original behavior: both Tab and Enter accept
+// a suggestion (append with ", "). Only the recur field diverges.
+func TestAdd_TagSuggestionsStillAcceptOnEnter(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m = typeString(t, m, "a title")
+	m, _ = key(t, m, "tab") // -> tags
+	m = typeString(t, m, "wo")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected tag suggestions")
+	}
+	// Enter on tags accepts the suggestion (does NOT submit).
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("Enter on tag field with suggestion should accept, not submit")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode = %v, want modeAdd (should still be in modal)", m.mode)
+	}
+	got := m.tagInput.Value()
+	if got != "work, " {
+		t.Errorf("tagInput = %q, want %q (Enter should accept with append)", got, "work, ")
+	}
+}
+
+// --- recurrence hint / view tests ------------------------------------------
+
+// normalizeView collapses all whitespace (spaces, tabs, newlines) into single
+// spaces so tests can assert on hint substrings without being affected by the
+// modal's soft-wrapping at narrow terminal widths. Box-drawing characters
+// that delimit the modal frame are also stripped so they don't break up the
+// hint on wrapped lines.
+func normalizeView(s string) string {
+	// ansi.Strip removes styling so dim/bold markers don't hide substrings.
+	plain := ansi.Strip(s)
+	// Strip the rounded-border glyphs used by modalBox so a wrapped hint like
+	// "(monthly:N | weekly:<day> |\n│ workdays | days:N)" collapses cleanly.
+	replacer := strings.NewReplacer(
+		"│", " ",
+		"╭", " ",
+		"╮", " ",
+		"╰", " ",
+		"╯", " ",
+		"─", " ",
+	)
+	return strings.Join(strings.Fields(replacer.Replace(plain)), " ")
+}
+
+// TestAdd_ModalViewContainsRecurrenceHint verifies the GrammarHint string is
+// always rendered in the add modal — regardless of which field is focused —
+// as a discoverability affordance under the Recur input. Uses a normalized
+// view to tolerate the box-wrap line break inserted by lipgloss when the
+// modal is drawn at its minimum width.
+func TestAdd_ModalViewContainsRecurrenceHint(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	view := normalizeView(m.modalView())
+	// The literal grammar hint must appear in the rendered view (whitespace-
+	// normalized to tolerate soft-wrap in narrow modal boxes).
+	if !strings.Contains(view, "monthly:N | weekly:<day> | workdays | days:N") {
+		t.Errorf("modalView should contain the grammar hint literal; got:\n%s", view)
+	}
+}
+
+// TestAdd_ModalViewHintVisibleWithRecurFocus confirms that the hint remains
+// visible even after Tab-ing into the recur field (not hidden or consumed by
+// other decorations).
+func TestAdd_ModalViewHintVisibleWithRecurFocus(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	view := normalizeView(m.modalView())
+	if !strings.Contains(view, "monthly:N | weekly:<day> | workdays | days:N") {
+		t.Errorf("modalView with recur focus should still contain the grammar hint; got:\n%s", view)
+	}
+}
+
+// TestAdd_ModalViewRecurSuggestionsRendered verifies that when the recur field
+// is focused and a matching prefix is typed, suggestion lines appear in the
+// rendered view (with the highlighted item prefixed by "> ").
+func TestAdd_ModalViewRecurSuggestionsRendered(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	m = typeString(t, m, "weekly:")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected weekday suggestions")
+	}
+	view := m.modalView()
+	// At least the first weekday completion (weekly:mon) should render.
+	if !strings.Contains(view, "weekly:mon") {
+		t.Errorf("modalView should contain 'weekly:mon' suggestion; got:\n%s", view)
+	}
+	// The highlighted suggestion is prefixed with "> ".
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("modalView should contain highlighted marker '> %s'; got:\n%s", m.suggestions[0], view)
+	}
+}
+
+// TestAdd_ModalViewTagFocusRendersTagSuggestionsNotRecur verifies the
+// field-owned rendering contract: real tag completions render under the Tags
+// row when the tag field is focused, and no recur-style suggestion leaks
+// into the view.
+func TestAdd_ModalViewTagFocusRendersTagSuggestionsNotRecur(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "writing"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m = typeString(t, m, "w")
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected tag suggestions after typing 'w'")
+	}
+	// Confirm the suggestions are tag-shaped (no colon like recur completions).
+	for _, s := range m.suggestions {
+		if strings.Contains(s, ":") {
+			t.Fatalf("unexpected recur-looking suggestion in tag-focus: %q", s)
+		}
+	}
+	view := m.modalView()
+	// The highlighted tag should render.
+	if !strings.Contains(view, "> "+m.suggestions[0]) {
+		t.Errorf("expected highlighted tag suggestion in view, got:\n%s", view)
+	}
+	// No weekly: / workdays / days: / monthly: recur-style marker should appear.
+	for _, leak := range []string{"> weekly:", "> workdays", "> days:N", "> monthly:N"} {
+		if strings.Contains(view, leak) {
+			t.Errorf("tag-focused view should not leak recur suggestion %q, got:\n%s", leak, view)
+		}
+	}
+}
+
+// TestAdd_ModalViewEmptyRecurHasNoSuggestionLines confirms an empty recur
+// input with the recur field focused shows the hint but no suggestion list
+// (since Suggest returns nil for empty input).
+func TestAdd_ModalViewEmptyRecurHasNoSuggestionLines(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // -> tags
+	m, _ = key(t, m, "tab") // -> recur
+	rawView := m.modalView()
+	// No suggestion markers should be rendered for an empty recur field
+	// (the seven-space indent followed by "> " is the suggestion marker).
+	if strings.Contains(rawView, "       > ") {
+		t.Errorf("modalView on empty recur should not contain suggestion markers; got:\n%s", rawView)
+	}
+	// But the hint MUST still be there.
+	view := normalizeView(rawView)
+	if !strings.Contains(view, "monthly:N | weekly:<day> | workdays | days:N") {
+		t.Errorf("modalView on empty recur should contain hint; got:\n%s", view)
 	}
 }
 
