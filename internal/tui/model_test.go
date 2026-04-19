@@ -6985,6 +6985,77 @@ func TestDetailPanelView_NoTagsLine(t *testing.T) {
 	}
 }
 
+// TestDetailPanelView_LinkifiesBodyURL pins that URLs in the task body are
+// wrapped in OSC 8 hyperlink escapes by the detail panel renderer.
+func TestDetailPanelView_LinkifiesBodyURL(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01LINK1", Title: "url in body", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "see https://example.com for details",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "\x1b]8;;https://example.com") {
+		t.Errorf("detail panel body should contain OSC 8 opener for URL; got %q", panel)
+	}
+	if !strings.Contains(panel, "\x1b]8;;\x1b\\") {
+		t.Errorf("detail panel body should contain OSC 8 closer; got %q", panel)
+	}
+}
+
+// TestDetailPanelView_LinkifiesTitleURL pins that URLs in the task title are
+// wrapped in OSC 8 hyperlink escapes by the detail panel header renderer.
+func TestDetailPanelView_LinkifiesTitleURL(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01LINK2", Title: "Fix https://example.com/bug", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "\x1b]8;;https://example.com/bug") {
+		t.Errorf("detail panel header should contain OSC 8 opener for title URL; got %q", panel)
+	}
+}
+
+// TestDetailPanelView_MONOLOG_NO_LINKS_DisablesLinkify confirms the env
+// escape hatch suppresses OSC 8 wrapping in both the title and body.
+func TestDetailPanelView_MONOLOG_NO_LINKS_DisablesLinkify(t *testing.T) {
+	t.Setenv("MONOLOG_NO_LINKS", "1")
+
+	m := newTestModel(t,
+		model.Task{ID: "01LINK3", Title: "Fix https://example.com/bug", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "see https://example.com for details",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if strings.Contains(panel, "\x1b]8;;") {
+		t.Errorf("detail panel should not contain OSC 8 when MONOLOG_NO_LINKS=1; got %q", panel)
+	}
+	// The URL text itself should still be rendered as plain text.
+	if !strings.Contains(panel, "https://example.com") {
+		t.Errorf("detail panel should still display URL text as plain; got %q", panel)
+	}
+}
+
 func TestDetailPanel_ListNarrowsWhenOpen(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "task one", Status: "open",

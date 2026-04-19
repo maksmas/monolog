@@ -125,13 +125,13 @@ Single env read at the top of `Linkify`. Cheap; only active when the user opts o
 - Modify: `internal/tui/model.go` (inside `detailPanelView`, around lines 2624 and 2674)
 - Modify: `internal/tui/model_test.go`
 
-- [ ] at line ~2624, wrap the truncated title with `display.Linkify` before passing to `titleStyle.Render`
-- [ ] at line ~2674, apply `display.Linkify` to each element of `bodyLines` after `wrapText` (loop, or a small helper local to the function)
-- [ ] add TUI test: render `detailPanelView()` for a task whose `Body` contains `"https://example.com"` and assert the rendered string contains `"\x1b]8;;https://example.com"`
-- [ ] add TUI test: render `detailPanelView()` for a task whose `Title` is `"Fix https://example.com/bug"` and assert the header section contains an OSC 8 opener with the URL
-- [ ] add TUI test: with `t.Setenv("MONOLOG_NO_LINKS", "1")`, confirm the rendered string does NOT contain `"\x1b]8;;"`
-- [ ] run `go test ./...` — must pass before next task
-- [ ] run `go vet ./...` — must pass before next task
+- [x] at line ~2624, wrap the truncated title with `display.Linkify` before passing to `titleStyle.Render`
+- [x] at line ~2674, apply `display.Linkify` to each element of `bodyLines` after `wrapText` (loop, or a small helper local to the function)
+- [x] add TUI test: render `detailPanelView()` for a task whose `Body` contains `"https://example.com"` and assert the rendered string contains `"\x1b]8;;https://example.com"`
+- [x] add TUI test: render `detailPanelView()` for a task whose `Title` is `"Fix https://example.com/bug"` and assert the header section contains an OSC 8 opener with the URL
+- [x] add TUI test: with `t.Setenv("MONOLOG_NO_LINKS", "1")`, confirm the rendered string does NOT contain `"\x1b]8;;"`
+- [x] run `go test ./...` — must pass before next task
+- [x] run `go vet ./...` — must pass before next task
 
 ### Task 3: Wire `Linkify` into the task list row
 

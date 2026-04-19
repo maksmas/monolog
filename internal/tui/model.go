@@ -2621,7 +2621,7 @@ func (m *Model) detailPanelView() string {
 	// --- header section ---
 	titleStyle := lipgloss.NewStyle().Bold(true)
 	var header []string
-	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
+	header = append(header, titleStyle.Render(display.Linkify(truncateTitle(task.Title, iw))))
 
 	bucket := schedule.Bucket(task.Schedule, now)
 	displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
@@ -2686,6 +2686,12 @@ func (m *Model) detailPanelView() string {
 	// Truncate to fit available body height.
 	if len(bodyLines) > bodyH {
 		bodyLines = bodyLines[:bodyH]
+	}
+
+	// Linkify URLs in the visible body lines — applied after wrap/scroll/truncate
+	// so the OSC 8 opener and closer always bracket a complete fragment.
+	for i, line := range bodyLines {
+		bodyLines[i] = display.Linkify(line)
 	}
 
 	// --- assemble panel content ---
