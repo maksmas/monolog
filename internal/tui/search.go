@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -548,7 +549,7 @@ func (m *Model) renderSearchMeta() string {
 	res := m.search.results[m.search.cursor]
 	task := m.search.haystack[res.docIdx].task
 	bucket := schedule.Bucket(task.Schedule, time.Now())
-	created := display.FormatRelDate(time.Now(), task.CreatedAt)
+	created := display.FormatRelDate(time.Now(), task.CreatedAt, config.DateFormat())
 	parts := []string{bucket, task.Status}
 	if created != "" {
 		parts = append(parts, "created "+created)

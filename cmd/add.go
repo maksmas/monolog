@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -29,8 +31,11 @@ func newAddCmd() *cobra.Command {
 			title := args[0]
 
 			now := time.Now()
-			scheduleDate, err := schedule.Parse(scheduleArg, now)
+			scheduleDate, err := schedule.Parse(scheduleArg, now, config.DateFormat())
 			if err != nil {
+				if errors.Is(err, schedule.ErrInvalid) {
+					return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or %s", scheduleArg, config.DateFormatLabel())
+				}
 				return err
 			}
 
@@ -90,9 +95,9 @@ func newAddCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", "Schedule: today, tomorrow, week, month, someday, or ISO date")
+	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", fmt.Sprintf("Schedule: today, tomorrow, week, month, someday, or %s", config.DateFormatLabel()))
 	cmd.Flags().StringVarP(&tags, "tags", "t", "", "Comma-separated tags")
-	cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: monthly:N, weekly:<day>, workdays, days:N")
+	cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: "+recurrence.GrammarHint+" (e.g. monthly:1, weekly:mon, workdays, days:7)")
 
 	return cmd
 }

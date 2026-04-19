@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"gopkg.in/yaml.v3"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -163,9 +165,11 @@ type Model struct {
 	detailScroll int
 	noteArea     textarea.Model
 
-	// Tag autocomplete state. Only one modal is open at a time, so a single
-	// pair of fields is shared between add and retag modals.
-	suggestions   []string // current filtered tag suggestions (max 5)
+	// Autocomplete state shared between the tag field (add/retag modals) and
+	// the recurrence field (add modal). Only one modal is open at a time and
+	// only one field is focused at a time, so a single pair of fields serves
+	// both use cases.
+	suggestions   []string // current filtered suggestions (max 5) — tags or recurrence forms depending on focused field
 	suggestionIdx int      // selected suggestion index; -1 = none selected
 
 	// Active tasks panel: tasks that carry the "active" tag, shown in a
@@ -215,12 +219,14 @@ func (i item) Description() string {
 		parts = append(parts, fmt.Sprintf("[%d]", i.task.NoteCount))
 	}
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
-		parts = append(parts, i.task.Schedule)
+		// Render stored ISO schedule in the configured user-facing layout
+		// (default DD-MM-YYYY). Legacy bucket strings pass through unchanged.
+		parts = append(parts, schedule.FormatDisplay(i.task.Schedule, config.DateFormat()))
 	}
 	if vt := display.VisibleTags(i.task.Tags); len(vt) > 0 {
 		parts = append(parts, "["+strings.Join(vt, ", ")+"]")
 	}
-	if dates := display.FormatTaskDates(i.now, i.task); dates != "" {
+	if dates := display.FormatTaskDates(i.now, i.task, config.DateFormat()); dates != "" {
 		parts = append(parts, dates)
 	}
 	return strings.Join(parts, "  ")
@@ -1069,8 +1075,8 @@ func (m *Model) closeDetailPanel() {
 
 // updateModal routes keys based on the current modal.
 func (m *Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc: when tag suggestions are visible, clear them instead of closing the
-	// modal. Let the modal handler decide.
+	// Esc: when the suggestion dropdown (tag or recurrence) is visible, clear
+	// it instead of closing the modal. Let the modal handler decide.
 	if msg.Type == tea.KeyEsc {
 		if len(m.suggestions) > 0 && (m.mode == modeAdd || m.mode == modeRetag) {
 			m.suggestions = nil
@@ -1131,7 +1137,7 @@ func (m *Model) submitNote() tea.Cmd {
 	}
 	t := *task
 	nowT := time.Now()
-	t.Body = model.AppendNote(t.Body, text, nowT)
+	t.Body = model.AppendNote(t.Body, text, nowT, config.DateFormat())
 	t.UpdatedAt = nowT.UTC().Format(time.RFC3339)
 	flat := flattenTitle(t.Title)
 
@@ -1165,7 +1171,7 @@ func (m *Model) doneSelected() tea.Cmd {
 		// warnBuf collects any recurrence warnings surfaced through the
 		// status bar (stderr has no natural home in the TUI).
 		var warnBuf strings.Builder
-		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf)
+		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(storeRef, &t, time.Now(), &warnBuf, config.DateFormat())
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("done: %w", err)}
 		}
@@ -1219,15 +1225,22 @@ func (m *Model) openReschedule() tea.Cmd {
 
 func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.rescheduleSub == 0 {
-		// Picker step.
+		// Picker step. Presets are bucket names; resolve them once here
+		// rather than again inside applyReschedule.
 		switch msg.String() {
 		case "1", "2", "3", "4", "5":
 			n := int(msg.String()[0] - '1')
-			return m, m.applyReschedule(reschedulePresets[n])
+			preset := reschedulePresets[n]
+			iso, err := schedule.Parse(preset, time.Now(), config.DateFormat())
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			return m, m.applyReschedule(iso, preset)
 		case "6":
 			m.rescheduleSub = 1
 			m.input.Width = m.modalInnerWidth() - 1
-			m.input.Placeholder = "YYYY-MM-DD"
+			m.input.Placeholder = config.DateFormatLabel()
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
@@ -1235,36 +1248,45 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Custom date input step.
+	// Custom date input step. schedule.Parse accepts bucket names, the
+	// configured format, and legacy ISO input (silent backward compat) —
+	// we rely on it for validation and normalization rather than IsISODate
+	// so the modal automatically follows the configured format. The parsed
+	// ISO is threaded into applyReschedule so we do not re-parse the same
+	// input twice.
 	switch msg.Type {
 	case tea.KeyEnter:
 		date := strings.TrimSpace(m.input.Value())
-		if !schedule.IsISODate(date) {
-			m.err = fmt.Errorf("invalid date %q (want YYYY-MM-DD)", date)
+		iso, err := schedule.Parse(date, time.Now(), config.DateFormat())
+		if err != nil {
+			if errors.Is(err, schedule.ErrInvalid) {
+				m.err = fmt.Errorf("invalid date %q (want %s)", date, config.DateFormatLabel())
+			} else {
+				m.err = err
+			}
 			return m, nil
 		}
-		return m, m.applyReschedule(date)
+		return m, m.applyReschedule(iso, date)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
-func (m *Model) applyReschedule(sched string) tea.Cmd {
+// applyReschedule moves m.modalTask to scheduleISO (already-parsed storage
+// format) and emits a save command. displayLabel is the user-facing string
+// to surface in commit message / status bar — typically either a bucket
+// name (for presets) or the raw user input (for custom dates).
+func (m *Model) applyReschedule(scheduleISO, displayLabel string) tea.Cmd {
 	if m.modalTask == nil {
 		return nil
 	}
 	nowT := time.Now()
-	scheduleDate, err := schedule.Parse(sched, nowT)
-	if err != nil {
-		m.err = err
-		return nil
-	}
 	t := *m.modalTask
 	oldBucket := schedule.Bucket(m.modalTask.Schedule, nowT)
-	t.Schedule = scheduleDate
+	t.Schedule = scheduleISO
 	t.UpdatedAt = now()
-	newBucket := schedule.Bucket(scheduleDate, nowT)
+	newBucket := schedule.Bucket(scheduleISO, nowT)
 	// Position it at the bottom of the new bucket if the bucket changed.
 	if newBucket != oldBucket {
 		others, err := bucketSiblings(m.store, t.Schedule, nowT)
@@ -1274,8 +1296,8 @@ func (m *Model) applyReschedule(sched string) tea.Cmd {
 	}
 	m.closeModal()
 	flat := flattenTitle(t.Title)
-	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", flat, sched),
-		fmt.Sprintf("Rescheduled: %s -> %s", flat, sched))
+	return m.saveCmd(t, fmt.Sprintf("reschedule: %s -> %s", flat, displayLabel),
+		fmt.Sprintf("Rescheduled: %s -> %s", flat, displayLabel))
 }
 
 // bucketSiblings returns all open tasks that fall into the same bucket as the
@@ -1397,6 +1419,15 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Recur field suggestion navigation: Up/Down navigate, Tab accepts
+	// (replaces input with the selected suggestion). Enter is intentionally
+	// NOT consumed here — it must submit the modal even when the dropdown is
+	// visible, since the recur field is the last in the Tab cycle and users
+	// who do not need autocomplete should not be forced to dismiss a dropdown.
+	if recurFocused && m.handleRecurSuggestionNav(msg) {
+		return m, nil
+	}
+
 	// Tab: cycle focus title -> tags -> recur -> title.
 	if msg.Type == tea.KeyTab {
 		switch m.addFocus {
@@ -1410,15 +1441,20 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tagInput.Blur()
 			m.recurInput.Focus()
 			m.titleArea.Blur()
-			// Clear suggestions when leaving the tag field — they are not
-			// interactable from the recur field.
-			m.suggestions = nil
-			m.suggestionIdx = -1
+			// Clear any lingering tag suggestions, then populate recurrence
+			// suggestions based on whatever is already in the recur field so
+			// the dropdown appears immediately on Tab-into-recur.
+			m.refreshRecurSuggestions(m.recurInput.Value())
 		default: // addFocusRecur
 			m.addFocus = addFocusTitle
 			m.recurInput.Blur()
 			m.tagInput.Blur()
 			m.titleArea.Focus()
+			// Clear suggestions. Reachable in two cases:
+			//   1. Dropdown was empty (no matches for current input).
+			//   2. Highlighted suggestion already equals the recur input
+			//      verbatim, so handleRecurSuggestionNav deliberately falls
+			//      through to let Tab cycle focus (self-match escape hatch).
 			m.suggestions = nil
 			m.suggestionIdx = -1
 		}
@@ -1447,6 +1483,8 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if recurFocused {
 		m.recurInput, cmd = m.recurInput.Update(msg)
+		// Refresh suggestions after every keystroke in the recur field.
+		m.refreshRecurSuggestions(m.recurInput.Value())
 	} else if tagsFocused {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 		// Refresh suggestions after every keystroke in the tag field.
@@ -1506,6 +1544,8 @@ func (m *Model) handleSuggestionNav(msg tea.KeyMsg, ti *textinput.Model) bool {
 
 // refreshSuggestions updates m.suggestions from knownTags based on the current
 // tag field value. Resets suggestionIdx to 0 if there are results, -1 otherwise.
+// See refreshRecurSuggestions for the parallel helper that populates the same
+// state from recurrence-grammar completions when the recur field is focused.
 func (m *Model) refreshSuggestions(fieldValue string) {
 	m.suggestions = model.FilterTags(m.knownTags, fieldValue)
 	if len(m.suggestions) > 0 {
@@ -1513,6 +1553,75 @@ func (m *Model) refreshSuggestions(fieldValue string) {
 	} else {
 		m.suggestionIdx = -1
 	}
+}
+
+// refreshRecurSuggestions updates m.suggestions with recurrence-grammar
+// completions for the current recur input value. Mirrors refreshSuggestions
+// but uses recurrence.Suggest (a pure function) and is invoked only when the
+// recur field is focused.
+func (m *Model) refreshRecurSuggestions(fieldValue string) {
+	m.suggestions = recurrence.Suggest(fieldValue)
+	if len(m.suggestions) > 0 {
+		m.suggestionIdx = 0
+	} else {
+		m.suggestionIdx = -1
+	}
+}
+
+// handleRecurSuggestionNav handles suggestion navigation for the recur field:
+// Up/Down navigate and Tab accepts (replaces the input with the selected
+// suggestion). Enter is deliberately NOT consumed here — it must submit the
+// modal even when the dropdown is visible. Returns true when the key was
+// consumed.
+func (m *Model) handleRecurSuggestionNav(msg tea.KeyMsg) bool {
+	hasSuggestions := len(m.suggestions) > 0
+
+	// Up/Down navigate suggestions.
+	if hasSuggestions && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
+		if msg.Type == tea.KeyUp {
+			if m.suggestionIdx > 0 {
+				m.suggestionIdx--
+			}
+		} else {
+			if m.suggestionIdx < len(m.suggestions)-1 {
+				m.suggestionIdx++
+			}
+		}
+		return true
+	}
+
+	// Tab accepts the highlighted suggestion (replaces the whole input, since
+	// recurrence is a single value — unlike the comma-appended tag field).
+	// BUT: if the highlighted suggestion already matches the current input
+	// (case-insensitively — e.g. user typed "WEEKLY:MON" and Suggest returns
+	// the canonical lowercase ["weekly:mon"]), do NOT consume Tab. Fall
+	// through to the focus-cycle handler so the user can move on without
+	// first pressing Esc to dismiss the self-matching dropdown, and without
+	// Tab silently rewriting their typed case.
+	if msg.Type == tea.KeyTab && hasSuggestions && m.suggestionIdx >= 0 {
+		if strings.EqualFold(m.suggestions[m.suggestionIdx], m.recurInput.Value()) {
+			return false
+		}
+		m.acceptRecurSuggestion()
+		return true
+	}
+
+	return false
+}
+
+// acceptRecurSuggestion replaces the recur input text with the currently
+// selected suggestion and refreshes the suggestion list. Recurrence is a
+// single value, so the accept semantics are "replace", not "append".
+func (m *Model) acceptRecurSuggestion() {
+	if m.suggestionIdx < 0 || m.suggestionIdx >= len(m.suggestions) {
+		return
+	}
+	selected := m.suggestions[m.suggestionIdx]
+	m.recurInput.SetValue(selected)
+	m.recurInput.CursorEnd()
+	// Recompute suggestions for the new value (e.g. accepting "weekly:" should
+	// immediately show the weekday completions).
+	m.refreshRecurSuggestions(m.recurInput.Value())
 }
 
 // acceptSuggestion replaces the current fragment in the given textinput with
@@ -1625,15 +1734,31 @@ type editableFields struct {
 
 // marshalTaskForEdit renders a task into the YAML shown in the editor.
 // The reserved "active" tag is filtered out so the user only sees their own
-// tags; active state is preserved separately in applyEditedYAML.
+// tags; active state is preserved separately in applyEditedYAML. The
+// schedule field is rendered through FormatDisplay so the user sees
+// dates in the configured format (default DD-MM-YYYY); applyEditedYAML
+// round-trips it back to the stored ISO format via schedule.Parse.
+//
+// A header comment line documenting the recurrence grammar is prepended to
+// the buffer so users discovering the recurrence field in $EDITOR do not need
+// to consult external help. The comment is always present (regardless of
+// whether Recurrence is set) so it also helps users who want to *add* a
+// recurrence rule via edit. yaml.Unmarshal ignores "#" comments, so
+// applyEditedYAML round-trips correctly whether or not the user preserves
+// this line.
 func marshalTaskForEdit(t model.Task) ([]byte, error) {
-	return yaml.Marshal(editableFields{
+	body, err := yaml.Marshal(editableFields{
 		Title:      t.Title,
 		Body:       t.Body,
-		Schedule:   t.Schedule,
+		Schedule:   schedule.FormatDisplay(t.Schedule, config.DateFormat()),
 		Tags:       display.VisibleTags(t.Tags),
 		Recurrence: t.Recurrence,
 	})
+	if err != nil {
+		return nil, err
+	}
+	header := "# recurrence rules: " + recurrence.GrammarHint + "\n"
+	return append([]byte(header), body...), nil
 }
 
 // applyEditedYAML parses the user's edited YAML and returns an updated task.
@@ -1653,7 +1778,7 @@ func applyEditedYAML(orig model.Task, data []byte, now time.Time) (model.Task, e
 	if edit.Title == "" {
 		return model.Task{}, fmt.Errorf("title cannot be empty")
 	}
-	scheduleDate, err := schedule.Parse(edit.Schedule, now)
+	scheduleDate, err := schedule.Parse(edit.Schedule, now, config.DateFormat())
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -1992,7 +2117,7 @@ func (m *Model) commitGrab() tea.Cmd {
 			t.Status = "open"
 			if bucket != "" {
 				if schedule.Bucket(t.Schedule, nowT) != bucket {
-					scheduleDate, err := schedule.Parse(bucket, nowT)
+					scheduleDate, err := schedule.Parse(bucket, nowT, config.DateFormat())
 					if err == nil {
 						t.Schedule = scheduleDate
 					}
@@ -2009,7 +2134,7 @@ func (m *Model) commitGrab() tea.Cmd {
 			// bucket, otherwise dropping back into your current bucket would
 			// reset a custom-set date (e.g. a 3-day-out task in the Week tab).
 			if schedule.Bucket(t.Schedule, nowT) != targetTab.bucket {
-				scheduleDate, err := schedule.Parse(targetTab.bucket, nowT)
+				scheduleDate, err := schedule.Parse(targetTab.bucket, nowT, config.DateFormat())
 				if err == nil {
 					t.Schedule = scheduleDate
 				}
@@ -2173,7 +2298,7 @@ func (m *Model) createCmd(title string, tags []string, recur string) tea.Cmd {
 	repoPath := m.repoPath
 	return func() tea.Msg {
 		nowT := time.Now()
-		scheduleDate, err := schedule.Parse(bucket, nowT)
+		scheduleDate, err := schedule.Parse(bucket, nowT, config.DateFormat())
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("schedule: %w", err)}
 		}
@@ -2499,21 +2624,23 @@ func (m *Model) detailPanelView() string {
 	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
 
 	bucket := schedule.Bucket(task.Schedule, now)
+	displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
 	if bucket != task.Schedule {
-		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, task.Schedule))
+		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, displayDate))
 	} else {
-		header = append(header, "Schedule: "+task.Schedule)
+		header = append(header, "Schedule: "+displayDate)
 	}
 
 	if vt := display.VisibleTags(task.Tags); len(vt) > 0 {
 		header = append(header, "Tags: "+strings.Join(vt, ", "))
 	}
 
-	created := display.FormatRelDate(now, task.CreatedAt)
+	layout := config.DateFormat()
+	created := display.FormatRelDate(now, task.CreatedAt, layout)
 	if created != "" {
 		dateLine := "Created: " + created
 		if task.CompletedAt != "" {
-			completed := display.FormatRelDate(now, task.CompletedAt)
+			completed := display.FormatRelDate(now, task.CompletedAt, layout)
 			if completed != "" {
 				dateLine += "  Completed: " + completed
 			}
@@ -2813,9 +2940,22 @@ func (m *Model) modalView() string {
 		// The textarea's View() spans titleArea.Height() lines; align the "Title:"
 		// label with its first line so taller boxes still read naturally.
 		titleView := indentContinuation(m.titleArea.View(), "       ")
-		sugLines := m.renderSuggestions()
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n\n(Alt+Enter = newline, Enter = save)",
-			t.label, titleView, m.tagInput.View(), sugLines, m.recurInput.View()), iw)
+		// Tag suggestions render below the Tags line only when the tag field is
+		// focused; recurrence suggestions render below the Recur hint only when
+		// the recur field is focused. This prevents recur completions from
+		// leaking under the Tags row (and vice-versa).
+		var tagSug, recurSug string
+		switch m.addFocus {
+		case addFocusTags:
+			tagSug = m.renderSuggestions()
+		case addFocusRecur:
+			recurSug = m.renderSuggestions()
+		}
+		// GrammarHint is always visible under the Recur input as a dim-styled
+		// reminder of the accepted grammar.
+		hintLine := "       " + suggestionDimStyle.Render("("+recurrence.GrammarHint+")")
+		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n%s%s\n\n(Alt+Enter = newline, Enter = save)",
+			t.label, titleView, m.tagInput.View(), tagSug, m.recurInput.View(), hintLine, recurSug), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""

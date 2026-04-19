@@ -92,8 +92,14 @@ func TestAcceptance_AddRecurDoneSpawnsAndSingleCommit(t *testing.T) {
 		t.Errorf("spawn Body missing 'Spawned from %s':\n%s", oldID, spawn.Body)
 	}
 
-	// Old task: "Spawned follow-up: <new> (scheduled <date>)" note.
-	wantForward := "Spawned follow-up: " + spawn.ID + " (scheduled " + spawn.Schedule + ")"
+	// Old task: "Spawned follow-up: <new> (scheduled <date>)" note. The
+	// note renders the date in user-facing DD-MM-YYYY format; convert
+	// spawn.Schedule (stored ISO) to that layout for the assertion.
+	spawnDateT, parseErr := time.Parse(schedule.IsoLayout, spawn.Schedule)
+	if parseErr != nil {
+		t.Fatalf("parse spawn.Schedule %q: %v", spawn.Schedule, parseErr)
+	}
+	wantForward := "Spawned follow-up: " + spawn.ID + " (scheduled " + spawnDateT.Format("02-01-2006") + ")"
 	if !strings.Contains(old.Body, wantForward) {
 		t.Errorf("old Body missing %q:\n%s", wantForward, old.Body)
 	}

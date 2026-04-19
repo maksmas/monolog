@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/spf13/cobra"
@@ -41,9 +42,19 @@ func newShowCmd() *cobra.Command {
 			// Status
 			fmt.Fprintf(w, "Status:    %s\n", task.Status)
 
-			// Schedule (show bucket name for readability)
+			// Schedule (show bucket name for readability). The date portion
+			// is rendered through FormatDisplay so it matches the configured
+			// user-facing format (default DD-MM-YYYY), while the stored
+			// schedule on disk stays ISO. When the stored schedule is itself
+			// a legacy bucket string, bucket == task.Schedule and showing it
+			// twice is redundant — mirror the TUI detail panel guard.
 			bucket := schedule.Bucket(task.Schedule, now)
-			fmt.Fprintf(w, "Schedule:  %s (%s)\n", bucket, task.Schedule)
+			displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
+			if bucket == task.Schedule {
+				fmt.Fprintf(w, "Schedule:  %s\n", bucket)
+			} else {
+				fmt.Fprintf(w, "Schedule:  %s (%s)\n", bucket, displayDate)
+			}
 
 			// Recurrence (only when set)
 			if task.Recurrence != "" {

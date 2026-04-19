@@ -15,7 +15,7 @@ var fixedNow = time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
 
 func TestFormatTasks_Empty(t *testing.T) {
 	var buf bytes.Buffer
-	FormatTasks(&buf, nil, fixedNow)
+	FormatTasks(&buf, nil, fixedNow, ddmmyyyy)
 	output := buf.String()
 	if output != "No tasks.\n" {
 		t.Errorf("expected 'No tasks.\\n', got %q", output)
@@ -35,7 +35,7 @@ func TestFormatTasks_SingleTask(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 
 	// Should contain short ID (first 8 chars)
@@ -70,7 +70,7 @@ func TestFormatTasks_WithTags(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 
 	if !strings.Contains(output, "work") {
@@ -108,7 +108,7 @@ func TestFormatTasks_MultipleTasks(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 
@@ -141,7 +141,7 @@ func TestFormatTasks_NoTags(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 
 	// Should still produce valid output without tags
@@ -162,7 +162,7 @@ func TestFormatTasks_DoneStatus(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 
 	// Done tasks should show "x" as the leading marker column
@@ -204,7 +204,7 @@ func TestFormatTasks_OpenWithRecentDate(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 
 	// Should contain the compact date "2d" for a task created 2 days ago
@@ -214,8 +214,8 @@ func TestFormatTasks_OpenWithRecentDate(t *testing.T) {
 }
 
 func TestPadRight_MaxWidthDates(t *testing.T) {
-	// Worst-case dates column: cross-year created + cross-year done = "YY-MM-DD→YY-MM-DD" = 17 runes.
-	maxDates := "25-01-15→26-04-13"
+	// Worst-case dates column: cross-year created + cross-year done = "DD-MM-YY→DD-MM-YY" = 17 runes.
+	maxDates := "15-01-25→13-04-26"
 	padded := padRight(maxDates, 17)
 	if runeLen := utf8.RuneCountInString(padded); runeLen != 17 {
 		t.Errorf("padRight(%q, 17) has %d runes, want 17", maxDates, runeLen)
@@ -248,11 +248,11 @@ func TestFormatTasks_CrossYearDoneDatesAlignment(t *testing.T) {
 
 	// Use a now in 2026 so both timestamps are cross-year.
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 
-	// Should contain the max-width dates "25-01-15→25-12-20".
-	want := "25-01-15→25-12-20"
+	// Should contain the max-width dates "15-01-25→20-12-25" (DD-MM-YY).
+	want := "15-01-25→20-12-25"
 	if !strings.Contains(output, want) {
 		t.Errorf("output should contain %q, got:\n%s", want, output)
 	}
@@ -303,7 +303,7 @@ func TestFormatTasks_LongTitleAlignment(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 	// Split on newline but do NOT TrimSpace the whole output, because
 	// lines start with a 2-char active marker ("  " for non-active) and
@@ -358,7 +358,7 @@ func TestFormatTasks_DoneWithBothDates(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	output := buf.String()
 
 	// Should contain the compact dates "5d→1h" for a done task
@@ -387,7 +387,7 @@ func TestFormatTasks_ActiveMarker(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatTasks(&buf, tasks, fixedNow)
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
 	// Split on newline directly (do not TrimSpace — it strips the leading
 	// "  " active-marker prefix on inactive rows). Drop trailing empty
 	// elements from the final newline, matching the LongTitleAlignment pattern.
@@ -413,6 +413,97 @@ func TestFormatTasks_ActiveMarker(t *testing.T) {
 	// The star marker should not appear on the non-active line's prefix
 	if strings.HasPrefix(lines[1], "* ") {
 		t.Errorf("non-active task should not have '* ' prefix, got: %q", lines[1])
+	}
+}
+
+// TestFormatTasks_AlternativeLayout proves the layout parameter flows all
+// the way from FormatTasks through FormatTaskDates into the rendered output.
+func TestFormatTasks_AlternativeLayout(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Old task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow, yyyymmdd)
+	output := buf.String()
+
+	// With layout "2006-01-02" same-year strips the year -> "03-01".
+	if !strings.Contains(output, "03-01") {
+		t.Errorf("output should contain '03-01' (MM-DD) under YYYY-MM-DD layout, got:\n%s", output)
+	}
+	// Must NOT contain the default DD-MM rendering "01-03".
+	// (We can't just check absence of "01-03" because the schedule column
+	// could incidentally contain those characters; check the dates column
+	// rendering directly.)
+	dates := FormatTaskDates(fixedNow, tasks[0], yyyymmdd)
+	if dates != "03-01" {
+		t.Errorf("FormatTaskDates under YYYY-MM-DD = %q, want %q", dates, "03-01")
+	}
+}
+
+// TestFormatTasks_ISOScheduleRendersInConfiguredLayout verifies that stored
+// ISO schedules are rendered through schedule.FormatDisplay in the configured
+// user-facing layout (the plan's stated goal — do not leak ISO storage format
+// into the schedule column).
+func TestFormatTasks_ISOScheduleRendersInConfiguredLayout(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:       "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:    "Dated task",
+			Schedule: "2030-04-15",
+			Status:   "open",
+			Position: 1000,
+		},
+	}
+
+	// Under the default DD-MM-YYYY layout the schedule must render as
+	// 15-04-2030, NOT as the stored 2030-04-15.
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+	if !strings.Contains(output, "15-04-2030") {
+		t.Errorf("output should contain schedule in DD-MM-YYYY (15-04-2030), got:\n%s", output)
+	}
+	if strings.Contains(output, "2030-04-15") {
+		t.Errorf("output should NOT contain stored ISO schedule 2030-04-15, got:\n%s", output)
+	}
+
+	// Under an alternative layout the schedule must render in that layout,
+	// proving the parameter is wired through (not hardcoded).
+	buf.Reset()
+	FormatTasks(&buf, tasks, fixedNow, "01/02/2006")
+	output = buf.String()
+	if !strings.Contains(output, "04/15/2030") {
+		t.Errorf("output should contain schedule in MM/DD/YYYY (04/15/2030), got:\n%s", output)
+	}
+}
+
+// TestFormatTasks_BucketSchedulePassesThrough verifies that legacy bucket
+// strings (e.g. "today") render unchanged in the schedule column — they are
+// not valid ISO dates, so FormatDisplay returns them as-is.
+func TestFormatTasks_BucketSchedulePassesThrough(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:       "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:    "Bucket task",
+			Schedule: "tomorrow",
+			Status:   "open",
+			Position: 1000,
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasks(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+	if !strings.Contains(output, "tomorrow") {
+		t.Errorf("output should contain legacy bucket schedule 'tomorrow' unchanged, got:\n%s", output)
 	}
 }
 

@@ -41,7 +41,8 @@ func TestShowCommand_DisplaysTaskDetail(t *testing.T) {
 		t.Errorf("output should contain status, got:\n%s", output)
 	}
 
-	// Schedule (should show bucket and ISO date)
+	// Schedule (should show bucket name + date in the configured format,
+	// e.g. "today (<DD-MM-YYYY>)").
 	if !strings.Contains(output, "Schedule:") {
 		t.Errorf("output should contain schedule, got:\n%s", output)
 	}
@@ -368,8 +369,85 @@ func TestShowCommand_ScheduleDisplay(t *testing.T) {
 		t.Errorf("output should show 'today' bucket name in schedule, got:\n%s", output)
 	}
 
-	// Should also contain the ISO date in parentheses
+	// Should also contain a date in parentheses
 	if !strings.Contains(output, "(") || !strings.Contains(output, ")") {
-		t.Errorf("output should show ISO date in parentheses, got:\n%s", output)
+		t.Errorf("output should show date in parentheses, got:\n%s", output)
+	}
+}
+
+// TestShowCommand_ScheduleLegacyBucketNoRedundantDate verifies that when
+// the stored schedule is a legacy bucket string (e.g. "today"), the Schedule
+// line does not render a redundant "(today)" suffix — matching the TUI
+// detail panel behavior.
+func TestShowCommand_ScheduleLegacyBucketNoRedundantDate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Legacy bucket task")
+
+	// Force a legacy bucket string as the stored schedule, which is what
+	// older monolog versions wrote to disk.
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	task.Schedule = "today"
+	writeTestTask(t, dir, task)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"show", id[:8]})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("show command error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Schedule:  today\n") {
+		t.Errorf("output should show 'Schedule:  today' without parenthetical, got:\n%s", output)
+	}
+	if strings.Contains(output, "today (today)") {
+		t.Errorf("output should not duplicate bucket name, got:\n%s", output)
+	}
+}
+
+// TestShowCommand_ScheduleRendersConfiguredFormat verifies the Schedule
+// date inside the parentheses is rendered in the configured user-facing
+// format (DD-MM-YYYY by default), not the stored ISO form.
+func TestShowCommand_ScheduleRendersConfiguredFormat(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Fixed date schedule")
+
+	// Force a concrete far-future schedule so the output is deterministic
+	// regardless of when the test runs (buckets for "today" would shift).
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	task.Schedule = "2030-04-15"
+	writeTestTask(t, dir, task)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"show", id[:8]})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("show command error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	// DD-MM-YYYY rendering must appear.
+	if !strings.Contains(output, "15-04-2030") {
+		t.Errorf("output should show DD-MM-YYYY date '15-04-2030', got:\n%s", output)
+	}
+	// Raw ISO must not leak into the Schedule line.
+	if strings.Contains(output, "(2030-04-15)") {
+		t.Errorf("Schedule line should render in configured format, not raw ISO, got:\n%s", output)
 	}
 }

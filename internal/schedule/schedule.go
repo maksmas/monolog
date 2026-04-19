@@ -1,19 +1,36 @@
 // Package schedule converts between bucket names and ISO dates and computes
 // which virtual bucket a stored schedule date falls into.
 //
-// Tasks store schedule as an ISO date (YYYY-MM-DD). The five bucket names
-// (today, tomorrow, week, month, someday) exist only as input shorthand and
-// as display-time predicates over schedule vs. today's date. Legacy bucket
-// strings written by older versions are tolerated by Bucket and Normalize so
-// that on-disk data migrates lazily as tasks are touched.
+// Storage vs. user-facing format split:
+//   - Storage: Task.Schedule on disk is always ISO (YYYY-MM-DD / IsoLayout).
+//     This format is fixed and never changes.
+//   - User-facing: the canonical input layout and display format are
+//     configurable via internal/config (default DD-MM-YYYY). Parse accepts
+//     the caller-provided layout as an explicit parameter so this package
+//     does not depend on internal/config. FormatDisplay renders a stored
+//     ISO date into a caller-chosen layout for user-facing output.
+//
+// Parse tolerates legacy ISO input silently (in addition to the configured
+// layout) so pre-existing scripts keep working after a format switch.
+//
+// The five bucket names (today, tomorrow, week, month, someday) exist only
+// as input shorthand and as display-time predicates over schedule vs.
+// today's date. Legacy bucket strings written by older versions are
+// tolerated by Bucket and Normalize so that on-disk data migrates lazily as
+// tasks are touched.
 package schedule
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
 
-// IsoLayout is the on-disk schedule date format.
+// IsoLayout is the on-disk schedule date format. It serves two roles:
+//   - canonical storage format for Task.Schedule in JSON files on disk;
+//   - silent legacy-fallback input parser inside Parse, so scripts or
+//     user input still using ISO continue to work after the user-facing
+//     format is switched via internal/config.
 const IsoLayout = "2006-01-02"
 
 // Bucket names. These are valid Parse inputs and possible Bucket outputs.
@@ -34,7 +51,15 @@ func IsBucket(s string) bool {
 	return false
 }
 
-// IsISODate reports whether s parses as YYYY-MM-DD.
+// IsISODate reports whether s parses as the on-disk storage format
+// (YYYY-MM-DD / IsoLayout). This is a storage-format validation helper,
+// not a user-input validator — callers that need to accept the user-facing
+// layout (configurable via internal/config) must use Parse instead, which
+// accepts both the configured layout and legacy ISO input. Normalize,
+// Bucket, and FormatDisplay do not route through IsISODate; they call
+// time.Parse(IsoLayout, ...) directly. Kept exported as a stable API entry
+// point for external callers and test coverage, even though the in-tree
+// production call sites have all migrated to schedule.Parse.
 func IsISODate(s string) bool {
 	_, err := time.Parse(IsoLayout, s)
 	return err == nil
@@ -46,10 +71,29 @@ func todayDate(now time.Time) time.Time {
 	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-// Parse turns user input (a bucket name or ISO date) into an ISO date string.
-// Bucket names are resolved relative to now: today, today+1, today+7, today+31,
-// today+365.
-func Parse(input string, now time.Time) (string, error) {
+// ErrInvalid is the sentinel error returned by Parse when the input is
+// neither a bucket name, a date in the passed layout, nor a legacy ISO
+// date. Callers wrap it into their own user-facing message so they can
+// reference the currently configured format label (via config.DateFormatLabel)
+// without dragging a config dependency into this package.
+var ErrInvalid = errors.New("invalid schedule")
+
+// Parse turns user input into an ISO date string. Accepts, in order:
+//
+//  1. one of the five bucket names (today, tomorrow, week, month, someday),
+//     resolved relative to now: today, today+1, today+7, today+31, today+365;
+//  2. a date in the passed layout (the caller typically passes
+//     config.DateFormat());
+//  3. a legacy ISO date (silent backward compat so pre-existing scripts
+//     continue to work after a format switch).
+//
+// layout == "" means "ISO-only": the configured-layout attempt is skipped
+// and only bucket names and legacy ISO input are accepted (used internally
+// by Normalize where the layout is irrelevant to bucket resolution).
+//
+// On failure it returns ErrInvalid wrapped with the offending input, so
+// callers can use errors.Is and format the user-facing message themselves.
+func Parse(input string, now time.Time, layout string) (string, error) {
 	today := todayDate(now)
 	switch input {
 	case Today:
@@ -63,10 +107,35 @@ func Parse(input string, now time.Time) (string, error) {
 	case Someday:
 		return today.AddDate(0, 0, 365).Format(IsoLayout), nil
 	}
-	if IsISODate(input) {
-		return input, nil
+	// Try the configured layout first. If the caller's layout happens to
+	// equal IsoLayout, the subsequent legacy-ISO branch covers the same
+	// input, so we skip the duplicate attempt. If the configured layout
+	// parse fails, the legacy-ISO branch still gives the input a chance.
+	if layout != "" && layout != IsoLayout {
+		if t, err := time.Parse(layout, input); err == nil {
+			return t.Format(IsoLayout), nil
+		}
 	}
-	return "", fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or ISO date (YYYY-MM-DD)", input)
+	if t, err := time.Parse(IsoLayout, input); err == nil {
+		return t.Format(IsoLayout), nil
+	}
+	return "", fmt.Errorf("%w: %q", ErrInvalid, input)
+}
+
+// FormatDisplay renders an ISO date string in the given layout for display.
+// Empty input, bucket names, or anything else not parseable as an ISO date
+// passes through unchanged so callers don't need to guard; this keeps the
+// helper safe to call on raw task.Schedule values which may still hold a
+// legacy bucket string.
+func FormatDisplay(iso, layout string) string {
+	t, err := time.Parse(IsoLayout, iso)
+	if err != nil {
+		return iso
+	}
+	if layout == "" {
+		return iso
+	}
+	return t.Format(layout)
 }
 
 // Bucket returns the virtual bucket (today/tomorrow/week/month/someday) that
@@ -109,7 +178,9 @@ func MatchesBucket(schedule, bucket string, now time.Time) bool {
 // caller can decide what to do.
 func Normalize(schedule string, now time.Time) string {
 	if IsBucket(schedule) {
-		s, _ := Parse(schedule, now)
+		// Bucket names are resolved by Parse before the layout branch runs,
+		// so we pass "" to make the irrelevance of the layout explicit.
+		s, _ := Parse(schedule, now, "")
 		return s
 	}
 	return schedule

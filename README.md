@@ -35,15 +35,15 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 
 | Flag | Description |
 |------|-------------|
-| `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or ISO date |
+| `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or a date (default format `DD-MM-YYYY`; legacy ISO `YYYY-MM-DD` is still accepted) |
 | `-t, --tags` | Comma-separated tags |
-| `--recur` | Recurrence rule: `monthly:N`, `weekly:<day>`, `workdays`, or `days:N` (see [Recurring tasks](#recurring-tasks)) |
+| `--recur` | Recurrence rule: `monthly:N` \| `weekly:<day>` \| `workdays` \| `days:N` (e.g. `monthly:1`, `weekly:mon`, `workdays`, `days:7` — see [Recurring tasks](#recurring-tasks)) |
 
 If the title starts with `tag: ...` and that tag already exists on another task, it is automatically added as a tag. For example, if a task already has the tag `jean`, running `monolog add "jean: create integration"` will auto-tag the new task with `jean`. The title is kept as-is. Duplicate tags are not created if the same tag is also passed via `--tags`.
 
 ### `monolog ls`
 
-Lists today's open tasks by default. Each row includes a compact dates column: relative for recent tasks (`5m`, `3h`, `2d`), `MM-DD` for older same-year tasks, and `YY-MM-DD` for cross-year. Done tasks show `created→done` (e.g. `5d→1h`). Active tasks are marked with a leading `*`.
+Lists today's open tasks by default. Each row includes a compact dates column: relative for recent tasks (`5m`, `3h`, `2d`), a short date for older same-year tasks (`DD-MM` under the default format), and a year-qualified short date for cross-year (`DD-MM-YY` under the default). Done tasks show `created→done` (e.g. `5d→1h`). Active tasks are marked with a leading `*`.
 
 | Flag | Description |
 |------|-------------|
@@ -87,7 +87,7 @@ Reorder a task within its schedule group. Exactly one flag required:
 
 ### `monolog note <id-prefix> <text>`
 
-Append a timestamped note to a task. The note is stored inside the task's body using `--- YYYY-MM-DD HH:MM:SS ---` separators. Empty text is rejected.
+Append a timestamped note to a task. The note is stored inside the task's body using `--- DD-MM-YYYY HH:MM:SS ---` separators (the date portion follows the configured display format; see [Date format](#date-format)). Empty text is rejected.
 
 ### `monolog show <id-prefix>`
 
@@ -152,12 +152,12 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `1`–`6` | Jump to tab by number |
 | `↑`/`↓` | Move within list |
 | `Enter` | Toggle detail/notes panel for the focused task |
-| `c` | Open the add-task modal (title + tags + recur fields, Tab to cycle) |
+| `c` | Open the add-task modal (title + tags + recur fields, Tab to cycle). The Recur field shows a grammar hint (`monthly:N \| weekly:<day> \| workdays \| days:N`) and inline autocomplete as you type — Tab accepts the highlighted suggestion (replaces the field), Enter always submits the modal, Esc dismisses the dropdown. |
 | `d` | Mark focused task as done (if it has a recurrence rule, auto-spawns the next occurrence — see [Recurring tasks](#recurring-tasks)) |
 | `a` | Toggle active on the focused task |
 | `r` | Reschedule (modal with 1–5 presets or 6 for custom date) |
 | `t` | Retag focused task |
-| `e` | Edit in `$EDITOR` (YAML round-trip; the YAML includes a `recurrence:` field you can set or clear) |
+| `e` | Edit in `$EDITOR` (YAML round-trip; the YAML includes a `recurrence:` field you can set or clear, with a `# recurrence rules:` grammar header comment at the top) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
 | `v` | Toggle between schedule view and tag view |
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
@@ -170,6 +170,14 @@ Active tasks render in green in the list and appear in a dedicated panel above t
 ## How it works
 
 Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-commits to git. Ordering uses fractional positions with automatic rebalancing.
+
+## Date format
+
+User-facing dates default to `DD-MM-YYYY` — this covers CLI `--schedule` input, TUI reschedule/YAML-edit input, the task-list date column, the detail panel, recurrence commit messages and cross-reference notes, note separators inside task bodies, and error messages. Legacy ISO input (`YYYY-MM-DD`) is still accepted silently so older scripts keep working.
+
+On-disk storage always stays ISO (`"schedule": "2026-04-15"` in the JSON) regardless of the display format — this keeps `.monolog/` repos portable and sync-safe.
+
+The format is a compile-time default today, owned by `internal/config`. A future release will expose it as a configurable setting; at that point adding e.g. `YYYY-MM-DD` or `MM/DD/YYYY` will only touch the config package.
 
 ## Task lookup
 

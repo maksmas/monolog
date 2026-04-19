@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -39,8 +41,11 @@ func newEditCmd() *cobra.Command {
 			now := time.Now()
 			var newSchedule string
 			if cmd.Flags().Changed("schedule") {
-				ns, err := schedule.Parse(scheduleArg, now)
+				ns, err := schedule.Parse(scheduleArg, now, config.DateFormat())
 				if err != nil {
+					if errors.Is(err, schedule.ErrInvalid) {
+						return fmt.Errorf("invalid schedule %q: must be today, tomorrow, week, month, someday, or %s", scheduleArg, config.DateFormatLabel())
+					}
 					return err
 				}
 				newSchedule = ns
@@ -110,10 +115,10 @@ func newEditCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&body, "body", "", "New body text")
-	cmd.Flags().StringVar(&scheduleArg, "schedule", "", "New schedule (today, tomorrow, week, month, someday, or ISO date)")
+	cmd.Flags().StringVar(&scheduleArg, "schedule", "", fmt.Sprintf("New schedule (today, tomorrow, week, month, someday, or %s)", config.DateFormatLabel()))
 	cmd.Flags().StringVar(&tags, "tags", "", "New comma-separated tags")
 	cmd.Flags().BoolVar(&active, "active", false, "Mark as active (use --active=false to deactivate)")
-	cmd.Flags().StringVar(&recur, "recur", "", "New recurrence rule: monthly:N, weekly:<day>, workdays, days:N (pass \"\" to clear)")
+	cmd.Flags().StringVar(&recur, "recur", "", "New recurrence rule: "+recurrence.GrammarHint+" (e.g. monthly:1, weekly:mon, workdays, days:7; pass \"\" to clear)")
 
 	return cmd
 }
