@@ -3319,8 +3319,15 @@ func truncateTitlePreservingURLs(s string, width int) string {
 		cutByte += sz
 	}
 	for _, m := range matches {
-		if cutByte > m[0] && cutByte < m[1] {
+		if cutByte <= m[0] {
+			// Matches are in order; once we pass the cut, no later match
+			// can contain it either. Normal truncation is safe.
+			break
+		}
+		if cutByte < m[1] {
 			// Normal cut would slice this URL in half. Keep it atomic.
+			// At most one match can contain the cut offset, so no need
+			// to look further.
 			return composeURLTruncation(s, m[0], m[1], width)
 		}
 	}

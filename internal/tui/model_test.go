@@ -8875,3 +8875,45 @@ func TestRenderListItem_ActiveRowWithURLComposesStyleAndLink(t *testing.T) {
 		t.Errorf("active row should contain at least one SGR escape;\n rendered=%q", out)
 	}
 }
+
+// TestVlistItemHeight_MatchesRenderedLinesForLongURL is a regression test
+// for the vlist / renderListItem height contract: vlist.itemHeight must
+// mirror whatever wrap helper renderListItem uses so row-height prediction
+// stays aligned with the rendered output. A title containing a URL wider
+// than the column and with no internal spaces is the canonical case —
+// wrapText would hard-break it into several rows while wrapTextPreservingURLs
+// (which the renderer uses) keeps it on a single row.
+func TestVlistItemHeight_MatchesRenderedLinesForLongURL(t *testing.T) {
+	longURL := "https://example.com/some/very/long/path/to/a/resource/that/exceeds/the/column"
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longURL, Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(30, 20)
+	items := m.lists[0].Items()
+	if len(items) == 0 {
+		t.Fatalf("expected at least one list item; got 0")
+	}
+
+	predicted := m.lists[0].itemHeight(0)
+	rendered := m.renderListItem(0, items[0], false)
+	// renderListItem returns "<title>\n<desc>\n" — trailing newline produces
+	// an empty final element in strings.Split, matching itemHeight's +2
+	// (desc + blank separator).
+	actual := len(strings.Split(rendered, "\n"))
+
+	if predicted != actual {
+		t.Errorf("vlist.itemHeight must match rendered line count;\n"+
+			" predicted = %d\n actual    = %d\n rendered  = %q",
+			predicted, actual, rendered)
+	}
+
+	// Sanity: with wrapText (the pre-fix helper), a 76-rune URL in a 28-rune
+	// column would wrap to at least 3 rows. Assert we're actually exercising
+	// the URL-aware path — predicted should be 3 (1 title row + 1 desc + 1
+	// trailing blank), not more.
+	if predicted != 3 {
+		t.Errorf("URL-aware wrap should keep long URL on a single title row "+
+			"(expected height = 1 title + 1 desc + 1 blank = 3); got %d", predicted)
+	}
+}

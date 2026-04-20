@@ -68,7 +68,13 @@ func Linkify(s string) string {
 		return s
 	}
 	if strings.Contains(s, osc8Opener) {
-		// Already linkified — skip to avoid double-wrapping.
+		// Already linkified — skip to avoid double-wrapping. Trade-off:
+		// if raw user-entered text ever legitimately contains the literal
+		// byte sequence `\x1b]8;;` we silently pass it through unlinkified.
+		// That payload is not representable through any normal input path
+		// (the ESC byte isn't on a keyboard, and the TUI's textinput /
+		// textarea widgets filter control bytes), so we accept the simpler
+		// check over a stricter "confirm opener is followed by ST" parse.
 		return s
 	}
 	return urlRE.ReplaceAllStringFunc(s, func(match string) string {
