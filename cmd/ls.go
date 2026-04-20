@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/config"
@@ -20,6 +21,7 @@ func newLsCmd() *cobra.Command {
 		tag          string
 		done         bool
 		active       bool
+		full         bool
 	)
 
 	cmd := &cobra.Command{
@@ -84,11 +86,18 @@ func newLsCmd() *cobra.Command {
 				tasks = filterActive(tasks)
 			}
 
+			if full {
+				return withPager(cmd.OutOrStdout(), func(w io.Writer) error {
+					display.FormatTasksFull(w, tasks, now, config.DateFormat())
+					return nil
+				})
+			}
 			display.FormatTasks(cmd.OutOrStdout(), tasks, now, config.DateFormat())
 			return nil
 		},
 	}
 
+	cmd.Flags().BoolVarP(&full, "full", "f", false, "Show each task as a multi-line detail block")
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "Show all open tasks across all schedules")
 	cmd.Flags().StringVarP(&scheduleFlag, "schedule", "s", "", fmt.Sprintf("Filter by schedule (today, tomorrow, week, month, someday, or %s)", config.DateFormatLabel()))
 	cmd.Flags().StringVarP(&tag, "tag", "t", "", "Filter by tag")

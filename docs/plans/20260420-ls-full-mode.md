@@ -121,21 +121,21 @@ is piped through `$PAGER` (default: `less -FR`) so long lists are scrollable.
 - Modify: `cmd/ls.go`
 - Modify: `cmd/ls_test.go`
 
-- [ ] add `full bool` local var and `--full` / `-f` flag registration in `newLsCmd()`
-- [ ] in `RunE`: when `full` is true, call `withPager(cmd.OutOrStdout(), func(w) { FormatTasksFull(w, tasks, now, config.DateFormat()); return nil })`; otherwise keep existing `FormatTasks` call
-- [ ] write `TestLsCommand_FullFlag_ShowsMetadata` — tasks with body/tags; `ls --full --all` output contains indented metadata keys and separator line
-- [ ] write `TestLsCommand_FullFlag_Empty` — `ls --full` on empty store → "No tasks.\n"
-- [ ] write `TestLsCommand_FullFlag_WithBody` — task with body; verify body appears in `--full` output but not in default compact output
-- [ ] run `go test ./cmd/ -run TestLsCommand_Full` — must pass before task 4
+- [x] add `full bool` local var and `--full` / `-f` flag registration in `newLsCmd()`
+- [x] in `RunE`: when `full` is true, call `withPager(cmd.OutOrStdout(), func(w) { FormatTasksFull(w, tasks, now, config.DateFormat()); return nil })`; otherwise keep existing `FormatTasks` call
+- [x] write `TestLsCommand_FullFlag_ShowsMetadata` — tasks with body/tags; `ls --full --all` output contains indented metadata keys and separator line
+- [x] write `TestLsCommand_FullFlag_Empty` — `ls --full` on empty store → "No tasks.\n"
+- [x] write `TestLsCommand_FullFlag_WithBody` — task with body; verify body appears in `--full` output but not in default compact output
+- [x] run `go test ./cmd/ -run TestLsCommand_Full` — must pass before task 4
 
 ### Task 4: Verify acceptance criteria
 
-- [ ] verify all three tasks above are complete and `[x]`
-- [ ] run full test suite: `go test ./...`
-- [ ] run `go vet ./...`
-- [ ] verify compact mode (`ls` with no flags) output is unchanged
-- [ ] verify `ls --full --all` renders multi-line blocks with separator lines
-- [ ] verify `ls --full` is composable with existing filters (`--schedule`, `--tag`, `--done`, `--active`)
+- [x] verify all three tasks above are complete and `[x]`
+- [x] run full test suite: `go test ./...`
+- [x] run `go vet ./...`
+- [x] verify compact mode (`ls` with no flags) output is unchanged
+- [x] verify `ls --full --all` renders multi-line blocks with separator lines
+- [x] verify `ls --full` is composable with existing filters (`--schedule`, `--tag`, `--done`, `--active`)
 
 ### Task 5: [Final] Update documentation
 
