@@ -143,8 +143,8 @@ is piped through `$PAGER` (default: `less -FR`) so long lists are scrollable.
 - Modify: `CLAUDE.md`
 - Move: this plan to `docs/plans/completed/`
 
-- [ ] add `--full` flag description to the `ls` command section in `CLAUDE.md` if a CLI surface summary exists (check first — avoid adding docs that don't exist yet)
-- [ ] move this plan to `docs/plans/completed/20260420-ls-full-mode.md`
+- [x] add `--full` flag description to the `ls` command section in `CLAUDE.md` if a CLI surface summary exists (check first — avoid adding docs that don't exist yet)
+- [x] move this plan to `docs/plans/completed/20260420-ls-full-mode.md`
 
 ## Post-Completion
 
