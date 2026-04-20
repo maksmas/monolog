@@ -11,6 +11,9 @@ import (
 	"github.com/mmaksmas/monolog/internal/schedule"
 )
 
+// separatorLine is the horizontal rule printed after each task block in full mode.
+const separatorLine = "────────────────────────────────────────────────────────────"
+
 // titleColWidth is the fixed rune width for the title column in `ls` output.
 // Longer titles are truncated with a trailing "…".
 const titleColWidth = 40
@@ -62,6 +65,82 @@ func VisibleTags(tags []string) []string {
 		}
 	}
 	return out
+}
+
+// FormatTasksFull writes tasks as multi-line detail blocks to w.
+// Each block mirrors the layout of `monolog show` — header line, indented
+// metadata, optional body — followed by a horizontal separator rule.
+// When tasks is empty it writes "No tasks.\n" (same as FormatTasks).
+// layout is the configured date format (Go layout), e.g. config.DateFormat().
+func FormatTasksFull(w io.Writer, tasks []model.Task, now time.Time, layout string) {
+	if len(tasks) == 0 {
+		fmt.Fprintln(w, "No tasks.")
+		return
+	}
+
+	for i, task := range tasks {
+		activeMarker := "  "
+		if task.IsActive() {
+			activeMarker = "* "
+		}
+
+		marker := fmt.Sprintf("%d", i+1)
+		if task.Status == "done" {
+			marker = "x"
+		}
+
+		// Header: active marker + position/done indicator + short ID + full title (no truncation)
+		fmt.Fprintf(w, "%s%-4s %-8s  %s\n",
+			activeMarker,
+			marker,
+			ShortID(task.ID),
+			task.Title,
+		)
+
+		// Metadata — 10-char label field matching show.go style.
+		fmt.Fprintf(w, "   %-10s %s\n", "Status:", task.Status)
+
+		bucket := schedule.Bucket(task.Schedule, now)
+		displayDate := schedule.FormatDisplay(task.Schedule, layout)
+		if bucket == task.Schedule {
+			fmt.Fprintf(w, "   %-10s %s\n", "Schedule:", bucket)
+		} else {
+			fmt.Fprintf(w, "   %-10s %s (%s)\n", "Schedule:", bucket, displayDate)
+		}
+
+		if task.Recurrence != "" {
+			fmt.Fprintf(w, "   %-10s %s\n", "Recur:", task.Recurrence)
+		}
+
+		if vt := VisibleTags(task.Tags); len(vt) > 0 {
+			fmt.Fprintf(w, "   %-10s %s\n", "Tags:", strings.Join(vt, ", "))
+		}
+
+		fmt.Fprintf(w, "   %-10s %s\n", "Created:", task.CreatedAt)
+
+		if task.UpdatedAt != "" {
+			fmt.Fprintf(w, "   %-10s %s\n", "Updated:", task.UpdatedAt)
+		}
+
+		if task.CompletedAt != "" {
+			fmt.Fprintf(w, "   %-10s %s\n", "Completed:", task.CompletedAt)
+		}
+
+		if task.NoteCount > 0 {
+			fmt.Fprintf(w, "   %-10s %d\n", "Notes:", task.NoteCount)
+		}
+
+		// Body (indented, blank line before)
+		if task.Body != "" {
+			fmt.Fprintln(w)
+			for _, line := range strings.Split(task.Body, "\n") {
+				fmt.Fprintf(w, "   %s\n", line)
+			}
+		}
+
+		// Separator
+		fmt.Fprintln(w, separatorLine)
+	}
 }
 
 // FormatTasks writes tasks as a clean terminal table to w.

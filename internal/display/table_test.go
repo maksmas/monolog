@@ -534,3 +534,149 @@ func TestVisibleTags(t *testing.T) {
 		})
 	}
 }
+
+// ---- FormatTasksFull tests ----
+
+func TestFormatTasksFull_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, nil, fixedNow, ddmmyyyy)
+	if buf.String() != "No tasks.\n" {
+		t.Errorf("empty slice: expected 'No tasks.\\n', got %q", buf.String())
+	}
+}
+
+func TestFormatTasksFull_SingleTask(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Fix login bug",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Add(-24 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	// Title must appear untruncated
+	if !strings.Contains(output, "Fix login bug") {
+		t.Errorf("output should contain full title, got:\n%s", output)
+	}
+	// Short ID
+	if !strings.Contains(output, "01ABCDEF") {
+		t.Errorf("output should contain short ID '01ABCDEF', got:\n%s", output)
+	}
+	// Status metadata line
+	if !strings.Contains(output, "Status:") {
+		t.Errorf("output should contain 'Status:' label, got:\n%s", output)
+	}
+	// Schedule metadata line
+	if !strings.Contains(output, "Schedule:") {
+		t.Errorf("output should contain 'Schedule:' label, got:\n%s", output)
+	}
+	// Separator line
+	if !strings.Contains(output, separatorLine) {
+		t.Errorf("output should contain separator line, got:\n%s", output)
+	}
+}
+
+func TestFormatTasksFull_WithBody(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Task with body",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+			Body:      "Line one\nLine two",
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	// Body lines should appear indented
+	if !strings.Contains(output, "   Line one") {
+		t.Errorf("output should contain indented body line 'Line one', got:\n%s", output)
+	}
+	if !strings.Contains(output, "   Line two") {
+		t.Errorf("output should contain indented body line 'Line two', got:\n%s", output)
+	}
+	// Separator must follow
+	if !strings.Contains(output, separatorLine) {
+		t.Errorf("output should contain separator line, got:\n%s", output)
+	}
+}
+
+func TestFormatTasksFull_Omitempty(t *testing.T) {
+	// Recur/Tags/Updated/Completed/NoteCount should be absent when unset.
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Minimal task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	for _, absent := range []string{"Recur:", "Tags:", "Updated:", "Completed:", "Notes:"} {
+		if strings.Contains(output, absent) {
+			t.Errorf("output should NOT contain %q when field is unset, got:\n%s", absent, output)
+		}
+	}
+}
+
+func TestFormatTasksFull_ActiveMarker(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01AAAAAAAAAAAAAAAAAAAAAAAA",
+			Title:     "Active task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+			Tags:      []string{model.ActiveTag, "work"},
+		},
+		{
+			ID:        "01BBBBBBBBBBBBBBBBBBBBBBBB",
+			Title:     "Inactive task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  2000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	lines := strings.Split(buf.String(), "\n")
+
+	// First non-empty line should be the active task header starting with "* "
+	var firstHeader, secondHeader string
+	for _, l := range lines {
+		if strings.Contains(l, "Active task") {
+			firstHeader = l
+		}
+		if strings.Contains(l, "Inactive task") {
+			secondHeader = l
+		}
+	}
+
+	if !strings.HasPrefix(firstHeader, "* ") {
+		t.Errorf("active task header should start with '* ', got: %q", firstHeader)
+	}
+	if strings.HasPrefix(secondHeader, "* ") {
+		t.Errorf("inactive task header should NOT start with '* ', got: %q", secondHeader)
+	}
+}

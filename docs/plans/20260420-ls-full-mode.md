@@ -87,18 +87,18 @@ is piped through `$PAGER` (default: `less -FR`) so long lists are scrollable.
 - Modify: `internal/display/table.go`
 - Modify: `internal/display/table_test.go`
 
-- [ ] add `FormatTasksFull(w io.Writer, tasks []model.Task, now time.Time, layout string)` to `internal/display/table.go`
-- [ ] render header line: active marker + position/done marker + short ID + full title (no truncation)
-- [ ] render indented metadata lines: Status, Schedule (bucket + display date, mirroring show.go logic), Recur (omitempty), Tags (omitempty), Created, Updated (omitempty), Completed (omitempty), Notes count (omitempty)
-- [ ] render blank line + indented body lines when Body is non-empty
-- [ ] render `strings.Repeat("─", 60)` separator after each task block
-- [ ] emit `"No tasks.\n"` when slice is empty (same as FormatTasks)
-- [ ] write `TestFormatTasksFull_Empty` — empty slice → "No tasks.\n"
-- [ ] write `TestFormatTasksFull_SingleTask` — verify title, ID, status, schedule appear; no truncation
-- [ ] write `TestFormatTasksFull_WithBody` — task with Body shows body lines indented; separator present
-- [ ] write `TestFormatTasksFull_Omitempty` — Recur/Tags/Updated/Completed absent when unset
-- [ ] write `TestFormatTasksFull_ActiveMarker` — active task shows `* ` prefix
-- [ ] run `go test ./internal/display/` — must pass before task 2
+- [x] add `FormatTasksFull(w io.Writer, tasks []model.Task, now time.Time, layout string)` to `internal/display/table.go`
+- [x] render header line: active marker + position/done marker + short ID + full title (no truncation)
+- [x] render indented metadata lines: Status, Schedule (bucket + display date, mirroring show.go logic), Recur (omitempty), Tags (omitempty), Created, Updated (omitempty), Completed (omitempty), Notes count (omitempty)
+- [x] render blank line + indented body lines when Body is non-empty
+- [x] render `strings.Repeat("─", 60)` separator after each task block
+- [x] emit `"No tasks.\n"` when slice is empty (same as FormatTasks)
+- [x] write `TestFormatTasksFull_Empty` — empty slice → "No tasks.\n"
+- [x] write `TestFormatTasksFull_SingleTask` — verify title, ID, status, schedule appear; no truncation
+- [x] write `TestFormatTasksFull_WithBody` — task with Body shows body lines indented; separator present
+- [x] write `TestFormatTasksFull_Omitempty` — Recur/Tags/Updated/Completed absent when unset
+- [x] write `TestFormatTasksFull_ActiveMarker` — active task shows `* ` prefix
+- [x] run `go test ./internal/display/` — must pass before task 2
 
 ### Task 2: Add pager helper in cmd/pager.go
 
