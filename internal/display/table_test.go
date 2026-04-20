@@ -534,3 +534,278 @@ func TestVisibleTags(t *testing.T) {
 		})
 	}
 }
+
+// ---- FormatTasksFull tests ----
+
+func TestFormatTasksFull_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, nil, fixedNow, ddmmyyyy)
+	if buf.String() != "No tasks.\n" {
+		t.Errorf("empty slice: expected 'No tasks.\\n', got %q", buf.String())
+	}
+}
+
+func TestFormatTasksFull_SingleTask(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Fix login bug",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Add(-24 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	// Title must appear untruncated
+	if !strings.Contains(output, "Fix login bug") {
+		t.Errorf("output should contain full title, got:\n%s", output)
+	}
+	// Short ID
+	if !strings.Contains(output, "01ABCDEF") {
+		t.Errorf("output should contain short ID '01ABCDEF', got:\n%s", output)
+	}
+	// Status metadata line
+	if !strings.Contains(output, "Status:") {
+		t.Errorf("output should contain 'Status:' label, got:\n%s", output)
+	}
+	// Schedule metadata line
+	if !strings.Contains(output, "Schedule:") {
+		t.Errorf("output should contain 'Schedule:' label, got:\n%s", output)
+	}
+	// Separator line
+	if !strings.Contains(output, separatorLine) {
+		t.Errorf("output should contain separator line, got:\n%s", output)
+	}
+}
+
+func TestFormatTasksFull_WithBody(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Task with body",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+			Body:      "Line one\nLine two",
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	// Body lines should appear indented
+	if !strings.Contains(output, "   Line one") {
+		t.Errorf("output should contain indented body line 'Line one', got:\n%s", output)
+	}
+	if !strings.Contains(output, "   Line two") {
+		t.Errorf("output should contain indented body line 'Line two', got:\n%s", output)
+	}
+	// Separator must follow
+	if !strings.Contains(output, separatorLine) {
+		t.Errorf("output should contain separator line, got:\n%s", output)
+	}
+}
+
+func TestFormatTasksFull_Omitempty(t *testing.T) {
+	// Recur/Tags/Updated/Completed/NoteCount should be absent when unset.
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Minimal task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	for _, absent := range []string{"Recur:", "Tags:", "Updated:", "Completed:", "Notes:"} {
+		if strings.Contains(output, absent) {
+			t.Errorf("output should NOT contain %q when field is unset, got:\n%s", absent, output)
+		}
+	}
+}
+
+func TestFormatTasksFull_ActiveMarker(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01AAAAAAAAAAAAAAAAAAAAAAAA",
+			Title:     "Active task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+			Tags:      []string{model.ActiveTag, "work"},
+		},
+		{
+			ID:        "01BBBBBBBBBBBBBBBBBBBBBBBB",
+			Title:     "Inactive task",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  2000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	lines := strings.Split(buf.String(), "\n")
+
+	// First non-empty line should be the active task header starting with "* "
+	var firstHeader, secondHeader string
+	for _, l := range lines {
+		if strings.Contains(l, "Active task") {
+			firstHeader = l
+		}
+		if strings.Contains(l, "Inactive task") {
+			secondHeader = l
+		}
+	}
+
+	if !strings.HasPrefix(firstHeader, "* ") {
+		t.Errorf("active task header should start with '* ', got: %q", firstHeader)
+	}
+	if strings.HasPrefix(secondHeader, "* ") {
+		t.Errorf("inactive task header should NOT start with '* ', got: %q", secondHeader)
+	}
+	// Inactive header must start with two spaces (not a star).
+	if !strings.HasPrefix(secondHeader, "  ") {
+		t.Errorf("inactive task header should start with '  ' (two spaces), got: %q", secondHeader)
+	}
+}
+
+// TestFormatTasksFull_ISOScheduleRendersInConfiguredLayout verifies that the
+// layout parameter is wired through: a stored ISO schedule should render in the
+// configured user-facing format, not as the raw ISO storage string.
+func TestFormatTasksFull_ISOScheduleRendersInConfiguredLayout(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Future task",
+			Schedule:  "2030-04-15",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	// Under DD-MM-YYYY the stored ISO "2030-04-15" must render as "15-04-2030".
+	if !strings.Contains(output, "15-04-2030") {
+		t.Errorf("output should contain schedule in DD-MM-YYYY (15-04-2030), got:\n%s", output)
+	}
+	if strings.Contains(output, "2030-04-15") {
+		t.Errorf("output should NOT contain raw ISO schedule 2030-04-15, got:\n%s", output)
+	}
+}
+
+// TestFormatTasksFull_DoneStatus verifies that a done task renders the "x"
+// marker, shows "done" in the Status line, and shows a Completed: line.
+func TestFormatTasksFull_DoneStatus(t *testing.T) {
+	completedAt := fixedNow.Add(-1 * time.Hour).Format(time.RFC3339)
+	tasks := []model.Task{
+		{
+			ID:          "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:       "Done task",
+			Schedule:    "today",
+			Status:      "done",
+			Position:    1000,
+			CreatedAt:   fixedNow.Add(-24 * time.Hour).Format(time.RFC3339),
+			CompletedAt: completedAt,
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+	lines := strings.Split(output, "\n")
+
+	// Find header line (contains title)
+	var headerLine string
+	for _, l := range lines {
+		if strings.Contains(l, "Done task") {
+			headerLine = l
+			break
+		}
+	}
+	// Header should start with "  x " (inactive done task)
+	if !strings.HasPrefix(headerLine, "  x ") {
+		t.Errorf("done task header should start with '  x ', got: %q", headerLine)
+	}
+	// Status metadata must say "done"
+	if !strings.Contains(output, "Status:") {
+		t.Errorf("output should contain 'Status:' label, got:\n%s", output)
+	}
+	// Completed: line must be present
+	if !strings.Contains(output, "Completed:") {
+		t.Errorf("output should contain 'Completed:' for done task, got:\n%s", output)
+	}
+	// Status value must be "done"
+	if !strings.Contains(output, "done") {
+		t.Errorf("output should contain 'done' as status value, got:\n%s", output)
+	}
+}
+
+// TestFormatTasksFull_NoteCount verifies that a positive NoteCount renders a
+// "Notes:" line with the correct count.
+func TestFormatTasksFull_NoteCount(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Task with notes",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+			NoteCount: 3,
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	if !strings.Contains(output, "Notes:") {
+		t.Errorf("output should contain 'Notes:' label for NoteCount>0, got:\n%s", output)
+	}
+	if !strings.Contains(output, "3") {
+		t.Errorf("output should contain note count '3', got:\n%s", output)
+	}
+}
+
+// TestFormatTasksFull_SingleTask_CreatedLine verifies that the Created: metadata
+// line is always present (it is not omitempty).
+func TestFormatTasksFull_SingleTask_CreatedLine(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:        "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:     "Task with created",
+			Schedule:  "today",
+			Status:    "open",
+			Position:  1000,
+			CreatedAt: fixedNow.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	FormatTasksFull(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+
+	if !strings.Contains(output, "Created:") {
+		t.Errorf("output should always contain 'Created:' metadata line, got:\n%s", output)
+	}
+}

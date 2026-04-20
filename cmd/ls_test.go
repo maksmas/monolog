@@ -527,6 +527,129 @@ func TestLs_ActiveWithDoneFlag(t *testing.T) {
 	}
 }
 
+// TestLsCommand_FullFlag_ShowsMetadata verifies that ls --full --all shows
+// indented metadata keys (Status, Schedule, Tags) and separator lines.
+func TestLsCommand_FullFlag_ShowsMetadata(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	addTask(t, "Work task", "-t", "work,backend", "-s", "today")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--full", "--all"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --full --all error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Work task") {
+		t.Errorf("output should contain task title, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Status:") {
+		t.Errorf("output should contain 'Status:' metadata label, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Schedule:") {
+		t.Errorf("output should contain 'Schedule:' metadata label, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Tags:") {
+		t.Errorf("output should contain 'Tags:' metadata label, got:\n%s", output)
+	}
+	if !strings.Contains(output, "work") {
+		t.Errorf("output should contain tag 'work', got:\n%s", output)
+	}
+	// Separator line: 60 × U+2500 BOX DRAWINGS LIGHT HORIZONTAL, must match display.separatorLine.
+	if !strings.Contains(output, "────────────────────────────────────────────────────────────") {
+		t.Errorf("output should contain separator line, got:\n%s", output)
+	}
+}
+
+// TestLsCommand_FullFlag_Empty verifies that ls --full on empty store → "No tasks.\n"
+func TestLsCommand_FullFlag_Empty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"ls", "--full"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ls --full error = %v\noutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "No tasks.") {
+		t.Errorf("ls --full on empty store should show 'No tasks.', got:\n%s", output)
+	}
+}
+
+// TestLsCommand_FullFlag_WithBody verifies that a task with body text is shown
+// indented in --full mode but body content does not appear in compact mode.
+func TestLsCommand_FullFlag_WithBody(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Add a task, then inject a plain body directly on disk rather than via
+	// "monolog note", which would prepend a date separator (--- DD-MM-YYYY HH:MM:SS ---)
+	// and test body-rendering of notes with separators — a different concern.
+	// The bypass is intentional: NoteCount recalculation in store.Update is not
+	// exercised here; this test focuses solely on indented body rendering in --full mode.
+	id := addTestTask(t, dir, "Task with body")
+	path := filepath.Join(dir, ".monolog", "tasks", id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read task file: %v", err)
+	}
+	var task model.Task
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	task.Body = "This is the body content."
+	data, err = json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	// Full mode: body should appear.
+	rootCmdFull := NewRootCmd()
+	bufFull := new(bytes.Buffer)
+	rootCmdFull.SetOut(bufFull)
+	rootCmdFull.SetErr(bufFull)
+	rootCmdFull.SetArgs([]string{"ls", "--full"})
+
+	if err := rootCmdFull.Execute(); err != nil {
+		t.Fatalf("ls --full error = %v\noutput: %s", err, bufFull.String())
+	}
+	fullOutput := bufFull.String()
+	if !strings.Contains(fullOutput, "This is the body content.") {
+		t.Errorf("ls --full should show body content, got:\n%s", fullOutput)
+	}
+
+	// Compact mode: body should NOT appear.
+	rootCmdCompact := NewRootCmd()
+	bufCompact := new(bytes.Buffer)
+	rootCmdCompact.SetOut(bufCompact)
+	rootCmdCompact.SetErr(bufCompact)
+	rootCmdCompact.SetArgs([]string{"ls"})
+
+	if err := rootCmdCompact.Execute(); err != nil {
+		t.Fatalf("ls (compact) error = %v\noutput: %s", err, bufCompact.String())
+	}
+	compactOutput := bufCompact.String()
+	if strings.Contains(compactOutput, "This is the body content.") {
+		t.Errorf("ls (compact) should NOT show body content, got:\n%s", compactOutput)
+	}
+}
+
 func TestFilterActive(t *testing.T) {
 	tests := []struct {
 		name string

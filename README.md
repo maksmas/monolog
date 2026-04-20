@@ -52,6 +52,7 @@ Lists today's open tasks by default. Each row includes a compact dates column: r
 | `-t, --tag` | Filter by tag |
 | `-d, --done` | Show completed tasks |
 | `--active` | Show only active tasks (lifts the default today filter unless `--schedule` is also given) |
+| `-f, --full` | Show each task as a multi-line detail block (title + metadata + body), piped through `$PAGER` when stdout is a TTY |
 
 ### `monolog done <id-prefix>`
 
