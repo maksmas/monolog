@@ -3138,14 +3138,15 @@ func wrapLinePreservingURLs(s string, width int) []string {
 	// include leading/trailing whitespace; whitespace runs collapse to
 	// single spaces in the output, matching wrapLine's word-break semantics.
 	placeText := func(seg string) {
-		// Tokenize on spaces; we preserve the "first token may be empty"
-		// signal (seg started with space) by looking at seg[0].
+		// `leadingSpace` captures whether seg began with a space so the first
+		// word joins the current line with a separator; `trailingSpace` keeps
+		// a separator for the next URL token.
 		if seg == "" {
 			return
 		}
-		leadingSpace := len(seg) > 0 && seg[0] == ' '
+		leadingSpace := seg[0] == ' '
 		words := strings.Fields(seg)
-		trailingSpace := len(seg) > 0 && seg[len(seg)-1] == ' '
+		trailingSpace := seg[len(seg)-1] == ' '
 		for idx, w := range words {
 			wantSep := curW > 0 && (idx > 0 || leadingSpace)
 			wWidth := utf8.RuneCountInString(w)

@@ -241,9 +241,9 @@ func TestStripURLTrailingPunct(t *testing.T) {
 		{"https://example.com/\u65e5.", "https://example.com/\u65e5", "."},
 	}
 	for _, tc := range cases {
-		gotURL, gotTail := StripURLTrailingPunct(tc.in)
+		gotURL, gotTail := stripURLTrailingPunct(tc.in)
 		if gotURL != tc.wantURL || gotTail != tc.wantTail {
-			t.Errorf("StripURLTrailingPunct(%q) = (%q, %q), want (%q, %q)",
+			t.Errorf("stripURLTrailingPunct(%q) = (%q, %q), want (%q, %q)",
 				tc.in, gotURL, gotTail, tc.wantURL, tc.wantTail)
 		}
 	}

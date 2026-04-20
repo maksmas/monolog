@@ -23,6 +23,9 @@ const trailingPunct = ".,;:!?)"
 // (the regex treats `\x1b`, `]`, `\\` as non-whitespace).
 const osc8Opener = "\x1b]8;;"
 
+// osc8ST is the String Terminator that closes each OSC 8 segment.
+const osc8ST = "\x1b\\"
+
 // FindURLSpans returns the [start, end) byte offsets of every URL match in
 // s, using the same pattern Linkify uses. Callers need this for layout
 // decisions (e.g., wrapping or truncating a title without splitting a URL
@@ -30,11 +33,11 @@ const osc8Opener = "\x1b]8;;"
 // area. Returns nil when s contains no URLs.
 func FindURLSpans(s string) [][]int { return urlRE.FindAllStringIndex(s, -1) }
 
-// StripURLTrailingPunct splits a raw URL match into the link target and
+// stripURLTrailingPunct splits a raw URL match into the link target and
 // any trailing sentence punctuation (`.,;:!?)`) that should render
 // outside the link. Works correctly on any ASCII trailing-punct run;
 // uses utf8.DecodeLastRuneInString so it is safe on multi-byte runes.
-func StripURLTrailingPunct(match string) (url, tail string) {
+func stripURLTrailingPunct(match string) (url, tail string) {
 	url = match
 	for len(url) > 0 {
 		r, size := utf8.DecodeLastRuneInString(url)
@@ -78,10 +81,10 @@ func Linkify(s string) string {
 		return s
 	}
 	return urlRE.ReplaceAllStringFunc(s, func(match string) string {
-		url, tail := StripURLTrailingPunct(match)
+		url, tail := stripURLTrailingPunct(match)
 		if url == "" {
 			return match
 		}
-		return "\x1b]8;;" + url + "\x1b\\" + url + "\x1b]8;;\x1b\\" + tail
+		return osc8Opener + url + osc8ST + url + osc8Opener + osc8ST + tail
 	})
 }
