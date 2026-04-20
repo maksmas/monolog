@@ -106,14 +106,14 @@ is piped through `$PAGER` (default: `less -FR`) so long lists are scrollable.
 - Create: `cmd/pager.go`
 - Create: `cmd/pager_test.go`
 
-- [ ] create `cmd/pager.go` with `withPager(w io.Writer, fn func(io.Writer) error) error`
-- [ ] detect TTY: type-assert `w` to `*os.File`, then `term.IsTerminal(int(f.Fd()))` — if either fails, call `fn(w)` directly
-- [ ] resolve pager command: `os.Getenv("PAGER")`; if empty default to `"less -FR"`
-- [ ] start pager subprocess (stdin=pipe, stdout=w, stderr=os.Stderr); on exec error fall back to `fn(w)`
-- [ ] write to pipe via `fn(pw)`, close pipe, call `cmd.Wait()`
-- [ ] check whether `golang.org/x/term` is already in `go.sum`; if not, add via `go get golang.org/x/term`
-- [ ] write `TestWithPager_NoOpWhenNotFile` — pass `bytes.Buffer`; verify fn is called with buffer directly, no subprocess spawned
-- [ ] run `go test ./cmd/ -run TestWithPager` — must pass before task 3
+- [x] create `cmd/pager.go` with `withPager(w io.Writer, fn func(io.Writer) error) error`
+- [x] detect TTY: type-assert `w` to `*os.File`, then `term.IsTerminal(int(f.Fd()))` — if either fails, call `fn(w)` directly
+- [x] resolve pager command: `os.Getenv("PAGER")`; if empty default to `"less -FR"`
+- [x] start pager subprocess (stdin=pipe, stdout=w, stderr=os.Stderr); on exec error fall back to `fn(w)`
+- [x] write to pipe via `fn(pw)`, close pipe, call `cmd.Wait()`
+- [x] check whether `golang.org/x/term` is already in `go.sum`; if not, add via `go get golang.org/x/term` (used `github.com/charmbracelet/x/term` — already an indirect dep, promoted to direct)
+- [x] write `TestWithPager_NoOpWhenNotFile` — pass `bytes.Buffer`; verify fn is called with buffer directly, no subprocess spawned
+- [x] run `go test ./cmd/ -run TestWithPager` — must pass before task 3
 
 ### Task 3: Wire --full flag into cmd/ls.go
 
