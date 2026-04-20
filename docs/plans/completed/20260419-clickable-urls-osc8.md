@@ -160,8 +160,8 @@ Single env read at the top of `Linkify`. Cheap; only active when the user opts o
 
 ### Task 5: Update documentation and move plan to completed
 
-- [ ] update `CLAUDE.md` with a short bullet under Key Design Decisions describing clickable URLs via OSC 8 and the `MONOLOG_NO_LINKS` escape hatch
-- [ ] move this plan to `docs/plans/completed/20260419-clickable-urls-osc8.md`
+- [x] update `CLAUDE.md` with a short bullet under Key Design Decisions describing clickable URLs via OSC 8 and the `MONOLOG_NO_LINKS` escape hatch
+- [x] move this plan to `docs/plans/completed/20260419-clickable-urls-osc8.md`
 
 ## Post-Completion
 
