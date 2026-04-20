@@ -6744,6 +6744,82 @@ func TestTruncateTitlePreservingURLs_LinkifiedOutputHasFullURLTarget(t *testing.
 	}
 }
 
+// TestTruncateTitlePreservingURLs_MultiURL pins the multi-URL regression:
+// when the prefix before the "main" URL (the one containing the natural
+// cut) itself contains an earlier URL, the naive "keep first budget-1
+// runes of prefix + …" path can slice that earlier URL, producing visible
+// text like "https://s…https://longer.example/...". Linkify's
+// `https?://\S+` regex then greedily spans across the literal ellipsis
+// and emits a broken concatenated URL as the OSC 8 target. Every URL
+// span in the final linkified output must resolve to one of the original
+// input URLs — never a concatenation with "…".
+func TestTruncateTitlePreservingURLs_MultiURL(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		width    int
+		wantURLs []string // URLs that must appear verbatim as OSC 8 targets
+	}{
+		{
+			name:     "canonical reproduction (plan-phase-4 bug)",
+			in:       "x https://short.ex y https://longer.example/path/a/b/c",
+			width:    45,
+			wantURLs: []string{"https://longer.example/path/a/b/c"},
+		},
+		{
+			name:     "narrow width drops both prefix text and first URL",
+			in:       "x https://short.ex y https://longer.example/path/a/b/c",
+			width:    30,
+			wantURLs: []string{"https://longer.example/path/a/b/c"},
+		},
+		{
+			name:     "three URLs with cut inside the third",
+			in:       "aaa https://x.ex bbb https://y.ex ccc https://target.example/path",
+			width:    50,
+			wantURLs: []string{"https://target.example/path"},
+		},
+		{
+			name:     "back-to-back URLs preserves the second",
+			in:       "https://a.example and https://b.example",
+			width:    30,
+			wantURLs: []string{"https://b.example"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateTitlePreservingURLs(tc.in, tc.width)
+			linkified := display.Linkify(got)
+
+			// Invariant 1: no OSC 8 target may contain an ellipsis — that
+			// would mean a URL span got sliced and Linkify wrapped the
+			// broken string. Scan every OSC 8 opener "\x1b]8;;<URL>\x1b\\".
+			// We look for "\u2026\x1b\\" which is the closing ST preceded
+			// by an ellipsis; "\u2026" inside an opener ending in "\x1b\\"
+			// is the signature of a broken target.
+			if strings.Contains(linkified, "\u2026\x1b\\") {
+				t.Errorf("OSC 8 target contains an ellipsis (broken URL):\n linkified = %q", linkified)
+			}
+
+			// Invariant 2: the visible text must not contain the pattern
+			// <URL-fragment>…<URL> where the ellipsis is directly adjacent
+			// to a URL fragment. Concretely: "…https://" is safe (nothing
+			// precedes the h so the regex match starts cleanly at "h"),
+			// but "s…https://" is not — the regex starts matching at an
+			// earlier "h" or spans through the ellipsis.
+			// We detect this by checking every match's leading context:
+			// if "\S+" extends from before a known original URL, Linkify
+			// has emitted a broken target.
+			for _, wantURL := range tc.wantURLs {
+				wantOpener := "\x1b]8;;" + wantURL + "\x1b\\"
+				if !strings.Contains(linkified, wantOpener) {
+					t.Errorf("expected OSC 8 opener for %q not found\n truncated = %q\n linkified = %q",
+						wantURL, got, linkified)
+				}
+			}
+		})
+	}
+}
+
 func TestFlattenTitle(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -7264,6 +7340,46 @@ func TestDetailPanelView_LinkifiesTitleURL_TruncatedTitleKeepsFullURL(t *testing
 	// And no OSC 8 target should end in an ellipsis (broken URL marker).
 	if strings.Contains(panel, "\u2026\x1b\\") {
 		t.Errorf("detail panel OSC 8 target contains an ellipsis (broken URL):\n panel = %q", panel)
+	}
+}
+
+// TestDetailPanelView_MultiURLTitle_NoBrokenOSC8Target pins the same
+// plan-line-68 contract as _LinkifiesTitleURL_TruncatedTitleKeepsFullURL,
+// but for titles that contain multiple URLs. Before the multi-URL fix,
+// narrow-panel truncation could emit visible text like
+// "x https://s…https://longer.example/..." where Linkify's greedy regex
+// spanned the literal ellipsis and produced a broken concatenated URL
+// as the OSC 8 target. The invariants: the second (surviving) URL must
+// still appear as an OSC 8 target, and no OSC 8 target may contain an
+// ellipsis.
+func TestDetailPanelView_MultiURLTitle_NoBrokenOSC8Target(t *testing.T) {
+	short := "https://short.ex"
+	long := "https://longer.example/path/a/b/c"
+	title := "x " + short + " y " + long
+	m := newTestModel(t,
+		model.Task{ID: "01MULTIURL", Title: title, Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Narrow terminal → narrow detail panel inner width → forces the
+	// natural cut to land inside the second URL, with the first URL
+	// living in the prefix and at risk of being sliced.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	// The second URL must survive whole as the OSC 8 target.
+	wantOpener := "\x1b]8;;" + long + "\x1b\\"
+	if !strings.Contains(panel, wantOpener) {
+		t.Errorf("multi-URL detail panel must keep surviving URL whole (plan line 68);\n panel = %q\n wantOpener = %q",
+			panel, wantOpener)
+	}
+	// No OSC 8 target may contain an ellipsis — that is the signature of
+	// a concatenated/broken target from Linkify spanning an earlier URL.
+	if strings.Contains(panel, "\u2026\x1b\\") {
+		t.Errorf("multi-URL detail panel OSC 8 target contains an ellipsis (broken URL):\n panel = %q", panel)
 	}
 }
 

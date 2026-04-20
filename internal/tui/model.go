@@ -3343,6 +3343,16 @@ func truncateTitlePreservingURLs(s string, width int) string {
 //   - Prefix + URL fits in width exactly → prefix + URL (suffix dropped).
 //   - Prefix too long to fit alongside URL → ellipsized prefix + URL.
 //
+// Multi-URL safety: the prefix may itself contain one or more earlier URLs.
+// The naive "keep first budget-1 runes of prefix" can slice one of those
+// earlier URLs, producing output like "https://s…https://longer.example/..."
+// where Linkify's `https?://\S+` regex greedily spans the literal ellipsis
+// and emits a broken concatenated URL as the OSC 8 target. To prevent
+// that, when the prefix cut lands inside an earlier URL span, shift the
+// cut back to the start of that URL so the earlier URL is dropped whole
+// and the resulting ellipsis is adjacent only to whitespace / regular
+// text, never to a URL fragment.
+//
 // Note: the caller (truncateTitlePreservingURLs) only invokes this helper
 // when the natural cut lands strictly inside the URL, which implies
 // prefixW + urlW >= width. So the "room to spare" case (prefixW+urlW
@@ -3370,6 +3380,37 @@ func composeURLTruncation(s string, urlStart, urlEnd, width int) string {
 		// No room for even "…" + URL — emit URL alone.
 		return url
 	}
+
+	// Compute the byte offset of the natural prefix-cut at rune index
+	// budget-1. If it lands inside an earlier URL span within the prefix,
+	// pull the cut back to that URL's start so we never slice an earlier
+	// URL in half. Skipping URLs one at a time handles the (rare but
+	// possible) case where the shifted cut still lands inside an even
+	// earlier URL span.
 	preRunes := []rune(prefix)
-	return string(preRunes[:budget-1]) + "…" + url
+	keepRunes := budget - 1
+	cutByte := 0
+	for i := 0; i < keepRunes && cutByte < len(prefix); i++ {
+		_, sz := utf8.DecodeRuneInString(prefix[cutByte:])
+		cutByte += sz
+	}
+	prefixURLs := display.FindURLSpans(prefix)
+	for i := len(prefixURLs) - 1; i >= 0; i-- {
+		m := prefixURLs[i]
+		if cutByte > m[0] && cutByte < m[1] {
+			cutByte = m[0]
+		}
+	}
+	if cutByte == 0 {
+		// Nothing left of the prefix after avoiding earlier URLs.
+		// Emit URL alone — no ellipsis adjacent to the URL (which would
+		// otherwise be safe here since nothing precedes the ellipsis,
+		// but suppressing it keeps the output cleaner).
+		return url
+	}
+	// Convert cutByte back to rune count for the preRunes slice. Using
+	// runes throughout keeps behaviour consistent with the rune-based
+	// width accounting elsewhere in this file.
+	keptRunes := utf8.RuneCountInString(prefix[:cutByte])
+	return string(preRunes[:keptRunes]) + "…" + url
 }
