@@ -59,6 +59,12 @@ func (vl *vlist) isSep(i int) bool {
 // itemHeight returns the display-line count for the item at index i.
 // Separators occupy 1 line; regular items occupy wrapped-title lines + 1 desc
 // + 1 blank separator line.
+//
+// Must mirror renderListItem's wrapping exactly — renderListItem uses
+// wrapTextPreservingURLs so a URL wider than the column stays atomic on one
+// line. Using wrapText here (which hard-breaks mid-URL) would over-count rows
+// for URL-bearing titles and desync cursorSpan / clampScroll / PageUp/Down /
+// Render with the actual rendered output.
 func (vl *vlist) itemHeight(i int) int {
 	it, ok := vl.items[i].(item)
 	if !ok || it.isSeparator {
@@ -68,7 +74,7 @@ func (vl *vlist) itemHeight(i int) int {
 	if tw <= 0 {
 		return 3
 	}
-	return len(wrapText(it.Title(), tw)) + 2 // +1 desc, +1 blank line
+	return len(wrapTextPreservingURLs(it.Title(), tw)) + 2 // +1 desc, +1 blank line
 }
 
 // ensureVisible adjusts yOffset so the cursor item is fully within the

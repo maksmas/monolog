@@ -291,7 +291,18 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 	// Text width after bullet prefix ("▸ " / "· " = 2 chars).
 	textWidth := m.lists[m.activeTab].Width() - 2
 
-	titleLines := wrapText(i.Title(), textWidth)
+	// Use the URL-aware wrap so a URL longer than textWidth stays on a
+	// single line rather than getting hard-broken mid-URL — otherwise
+	// Linkify below would see only the first truncated fragment and wrap
+	// it with an OSC 8 target pointing at a broken prefix.
+	titleLines := wrapTextPreservingURLs(i.Title(), textWidth)
+
+	// Linkify URLs in each wrapped title line — applied after wrap so the
+	// OSC 8 opener and closer always bracket a complete fragment, and before
+	// the bullet/indent prefix is added so prefixes remain plain text.
+	for j := range titleLines {
+		titleLines[j] = display.Linkify(titleLines[j])
+	}
 
 	// Prepend bullet on first line, indent continuation lines.
 	bullet := "· "
@@ -2621,7 +2632,10 @@ func (m *Model) detailPanelView() string {
 	// --- header section ---
 	titleStyle := lipgloss.NewStyle().Bold(true)
 	var header []string
-	header = append(header, titleStyle.Render(truncateTitle(task.Title, iw)))
+	// Use URL-aware truncation so a URL never gets cut mid-string — otherwise
+	// Linkify would wrap the truncated fragment (including the trailing "…")
+	// as the OSC 8 target and Cmd-click would navigate to a broken URL.
+	header = append(header, titleStyle.Render(display.Linkify(truncateTitlePreservingURLs(task.Title, iw))))
 
 	bucket := schedule.Bucket(task.Schedule, now)
 	displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
@@ -2671,7 +2685,9 @@ func (m *Model) detailPanelView() string {
 
 	var bodyLines []string
 	if task.Body != "" {
-		bodyLines = wrapText(task.Body, iw)
+		// URL-aware wrap so a URL longer than iw stays on a single line
+		// and the OSC 8 target below matches the full URL.
+		bodyLines = wrapTextPreservingURLs(task.Body, iw)
 	}
 
 	// Clamp scroll offset to valid range so we never wrap to top.
@@ -2686,6 +2702,12 @@ func (m *Model) detailPanelView() string {
 	// Truncate to fit available body height.
 	if len(bodyLines) > bodyH {
 		bodyLines = bodyLines[:bodyH]
+	}
+
+	// Linkify URLs in the visible body lines — applied after wrap/scroll/truncate
+	// so the OSC 8 opener and closer always bracket a complete fragment.
+	for i, line := range bodyLines {
+		bodyLines[i] = display.Linkify(line)
 	}
 
 	// --- assemble panel content ---
@@ -3046,6 +3068,144 @@ func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// wrapTextPreservingURLs wraps s like wrapText but treats each detected
+// URL as an atomic, unbreakable token. A URL never splits across lines:
+// if it doesn't fit on the current line, it starts a new one; if the URL
+// itself is wider than width, it occupies its own line in full (the
+// terminal will visually wrap a single long "word" — but the OSC 8 link
+// target remains correct because Linkify on the resulting line sees the
+// full URL).
+//
+// Non-URL segments wrap by ordinary word boundaries via wrapLine. This is
+// the helper used for any render path where Linkify will run on the
+// wrapped output (task list titles, detail-panel body) — without it, a
+// hard-break mid-URL would leave Linkify with a truncated URL and the
+// resulting OSC 8 target would point at a broken prefix.
+func wrapTextPreservingURLs(s string, width int) []string {
+	if !strings.Contains(s, "\n") {
+		return wrapLinePreservingURLs(s, width)
+	}
+	var lines []string
+	for _, ln := range strings.Split(s, "\n") {
+		lines = append(lines, wrapLinePreservingURLs(ln, width)...)
+	}
+	return lines
+}
+
+// wrapLinePreservingURLs is the single-line variant of wrapTextPreservingURLs.
+// It tokenizes the line into URL and non-URL segments via display.FindURLSpans()
+// and then walks the tokens streaming output lines. URLs are atomic and
+// never split across lines (if a URL is wider than width it occupies its
+// own line in full — the terminal will visually wrap the long "word",
+// but Linkify on the resulting line sees the full URL and the OSC 8
+// target is correct). Non-URL text wraps at word boundaries.
+func wrapLinePreservingURLs(s string, width int) []string {
+	if width <= 0 || utf8.RuneCountInString(s) <= width {
+		return []string{s}
+	}
+	matches := display.FindURLSpans(s)
+	if len(matches) == 0 {
+		return wrapLine(s, width)
+	}
+
+	var lines []string
+	cur := ""
+	curW := 0
+
+	flush := func() {
+		lines = append(lines, cur)
+		cur = ""
+		curW = 0
+	}
+	// placeURL emits a URL token atomically.
+	placeURL := func(url string) {
+		urlW := utf8.RuneCountInString(url)
+		if curW == 0 {
+			cur = url
+			curW = urlW
+			return
+		}
+		if curW+urlW <= width {
+			cur += url
+			curW += urlW
+			return
+		}
+		flush()
+		cur = url
+		curW = urlW
+	}
+	// placeText wraps a non-URL segment word-by-word. The segment may
+	// include leading/trailing whitespace; whitespace runs collapse to
+	// single spaces in the output, matching wrapLine's word-break semantics.
+	placeText := func(seg string) {
+		// `leadingSpace` captures whether seg began with a space so the first
+		// word joins the current line with a separator; `trailingSpace` keeps
+		// a separator for the next URL token.
+		if seg == "" {
+			return
+		}
+		leadingSpace := seg[0] == ' '
+		words := strings.Fields(seg)
+		trailingSpace := seg[len(seg)-1] == ' '
+		for idx, w := range words {
+			wantSep := curW > 0 && (idx > 0 || leadingSpace)
+			wWidth := utf8.RuneCountInString(w)
+			// Hard-break words wider than width by reusing wrapLine.
+			if wWidth > width {
+				if curW > 0 {
+					flush()
+				}
+				for _, sub := range wrapLine(w, width) {
+					if curW > 0 {
+						flush()
+					}
+					cur = sub
+					curW = utf8.RuneCountInString(sub)
+				}
+				continue
+			}
+			sepW := 0
+			if wantSep {
+				sepW = 1
+			}
+			if curW+sepW+wWidth > width {
+				flush()
+				cur = w
+				curW = wWidth
+				continue
+			}
+			if wantSep {
+				cur += " "
+				curW++
+			}
+			cur += w
+			curW += wWidth
+		}
+		// Preserve a trailing space so the next URL token sits after a
+		// word separator (e.g., "before URL").
+		if trailingSpace && curW > 0 && curW < width {
+			cur += " "
+			curW++
+		}
+	}
+
+	pos := 0
+	for _, m := range matches {
+		if m[0] > pos {
+			placeText(s[pos:m[0]])
+		}
+		placeURL(s[m[0]:m[1]])
+		pos = m[1]
+	}
+	if pos < len(s) {
+		placeText(s[pos:])
+	}
+	if cur != "" || len(lines) == 0 {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
 // wrapText breaks s into lines of at most width runes, splitting at word
 // boundaries when possible. Falls back to hard-breaking mid-word when a
 // single word exceeds the width. Explicit '\n' characters (from multi-line
@@ -3120,4 +3280,137 @@ func truncateTitle(s string, width int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:width-1]) + "…"
+}
+
+// truncateTitlePreservingURLs shortens s to width runes like truncateTitle
+// but treats each detected URL as an atomic token that is never cut.
+//
+// Motivation: Linkify runs the regex `https?://\S+` over the final visible
+// text. A plain truncation that cuts inside a URL would leave the match
+// ending in "…" (the ellipsis is a non-whitespace rune), and Linkify would
+// then emit that broken string as the OSC 8 target — Cmd-click would
+// navigate to a nonexistent page. This helper keeps URLs whole so the OSC 8
+// target is always a real URL.
+//
+// Strategy (simplest correct behavior):
+//   - If the first URL fits within width alongside its prefix, include the
+//     prefix (possibly ellipsized) + full URL; suffix after the URL is
+//     truncated with "…" as needed.
+//   - If the URL alone does not fit in width, emit the URL by itself — the
+//     terminal may visually overflow, but the OSC 8 target stays correct.
+//   - No URL in s → identical to truncateTitle.
+func truncateTitlePreservingURLs(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if utf8.RuneCountInString(s) <= width {
+		return s
+	}
+	matches := display.FindURLSpans(s)
+	if len(matches) == 0 {
+		return truncateTitle(s, width)
+	}
+
+	// Find the standard cut rune index; if it falls outside every URL match
+	// we can use ordinary truncation without any URL being split.
+	cutByte := 0
+	cutRune := width - 1
+	for i := 0; i < cutRune && cutByte < len(s); i++ {
+		_, sz := utf8.DecodeRuneInString(s[cutByte:])
+		cutByte += sz
+	}
+	for _, m := range matches {
+		if cutByte <= m[0] {
+			// Matches are in order; once we pass the cut, no later match
+			// can contain it either. Normal truncation is safe.
+			break
+		}
+		if cutByte < m[1] {
+			// Normal cut would slice this URL in half. Keep it atomic.
+			// At most one match can contain the cut offset, so no need
+			// to look further.
+			return composeURLTruncation(s, m[0], m[1], width)
+		}
+	}
+	return truncateTitle(s, width)
+}
+
+// composeURLTruncation builds the truncated output when the natural cut
+// point falls inside the URL at byte range [urlStart, urlEnd). URLs are
+// kept whole:
+//   - URL wider than width → URL alone (overflow accepted, OSC 8 target
+//     stays correct per the plan's truncation-safety contract).
+//   - Prefix + URL fits in width exactly → prefix + URL (suffix dropped).
+//   - Prefix too long to fit alongside URL → ellipsized prefix + URL.
+//
+// Multi-URL safety: the prefix may itself contain one or more earlier URLs.
+// The naive "keep first budget-1 runes of prefix" can slice one of those
+// earlier URLs, producing output like "https://s…https://longer.example/..."
+// where Linkify's `https?://\S+` regex greedily spans the literal ellipsis
+// and emits a broken concatenated URL as the OSC 8 target. To prevent
+// that, when the prefix cut lands inside an earlier URL span, shift the
+// cut back to the start of that URL so the earlier URL is dropped whole
+// and the resulting ellipsis is adjacent only to whitespace / regular
+// text, never to a URL fragment.
+//
+// Note: the caller (truncateTitlePreservingURLs) only invokes this helper
+// when the natural cut lands strictly inside the URL, which implies
+// prefixW + urlW >= width. So the "room to spare" case (prefixW+urlW
+// strictly less than width with a non-empty suffix) never arises from
+// real truncation requests.
+func composeURLTruncation(s string, urlStart, urlEnd, width int) string {
+	url := s[urlStart:urlEnd]
+	urlW := utf8.RuneCountInString(url)
+	if urlW >= width {
+		// URL alone doesn't fit. Emit it atomically; terminal handles overflow.
+		return url
+	}
+	prefix := s[:urlStart]
+	prefixW := utf8.RuneCountInString(prefix)
+
+	if prefixW+urlW <= width {
+		// Prefix fits; suffix (if any) is dropped since cut is inside URL.
+		return prefix + url
+	}
+
+	// Prefix doesn't fit fully alongside the URL. Ellipsize the prefix.
+	// Budget = width - urlW runes for the ellipsized prefix.
+	budget := width - urlW
+	if budget <= 1 {
+		// No room for even "…" + URL — emit URL alone.
+		return url
+	}
+
+	// Compute the byte offset of the natural prefix-cut at rune index
+	// budget-1. If it lands inside an earlier URL span within the prefix,
+	// pull the cut back to that URL's start so we never slice an earlier
+	// URL in half. Skipping URLs one at a time handles the (rare but
+	// possible) case where the shifted cut still lands inside an even
+	// earlier URL span.
+	preRunes := []rune(prefix)
+	keepRunes := budget - 1
+	cutByte := 0
+	for i := 0; i < keepRunes && cutByte < len(prefix); i++ {
+		_, sz := utf8.DecodeRuneInString(prefix[cutByte:])
+		cutByte += sz
+	}
+	prefixURLs := display.FindURLSpans(prefix)
+	for i := len(prefixURLs) - 1; i >= 0; i-- {
+		m := prefixURLs[i]
+		if cutByte > m[0] && cutByte < m[1] {
+			cutByte = m[0]
+		}
+	}
+	if cutByte == 0 {
+		// Nothing left of the prefix after avoiding earlier URLs.
+		// Emit URL alone — no ellipsis adjacent to the URL (which would
+		// otherwise be safe here since nothing precedes the ellipsis,
+		// but suppressing it keeps the output cleaner).
+		return url
+	}
+	// Convert cutByte back to rune count for the preRunes slice. Using
+	// runes throughout keeps behaviour consistent with the rune-based
+	// width accounting elsewhere in this file.
+	keptRunes := utf8.RuneCountInString(prefix[:cutByte])
+	return string(preRunes[:keptRunes]) + "…" + url
 }

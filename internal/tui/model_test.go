@@ -14,6 +14,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/mmaksmas/monolog/internal/config"
+	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -6541,6 +6542,284 @@ func TestWrapText_WrapsEachLineIndependently(t *testing.T) {
 	}
 }
 
+// TestWrapTextPreservingURLs_KeepsLongURLIntact confirms that a URL longer
+// than width is NOT broken across lines — it occupies its own line in
+// full, even though that line exceeds width.
+func TestWrapTextPreservingURLs_KeepsLongURLIntact(t *testing.T) {
+	url := "https://example.com/some/very/long/path/to/resource"
+	got := wrapTextPreservingURLs(url, 20)
+	if len(got) != 1 || got[0] != url {
+		t.Errorf("wrapTextPreservingURLs kept URL split:\n got = %v\n want = [%q]", got, url)
+	}
+}
+
+// TestWrapTextPreservingURLs_URLAmongText puts a URL in a sentence whose
+// overall length exceeds width. The non-URL text wraps normally; the URL
+// stays on a single line.
+func TestWrapTextPreservingURLs_URLAmongText(t *testing.T) {
+	// Very narrow width forces wrapping in the non-URL text.
+	in := "see https://example.com/path for more info"
+	got := wrapTextPreservingURLs(in, 12)
+	// Every output line that contains a URL must contain the FULL URL.
+	urlFragment := "https://example.com/path"
+	for _, ln := range got {
+		if !strings.Contains(ln, "https") {
+			continue
+		}
+		if !strings.Contains(ln, urlFragment) {
+			t.Errorf("line contains partial URL — URL was split:\n line = %q\n full URL = %q\n all = %v",
+				ln, urlFragment, got)
+		}
+	}
+}
+
+// TestWrapTextPreservingURLs_NoURLMatchesWrapText confirms the URL-aware
+// wrap is a strict superset of wrapText for URL-free input.
+func TestWrapTextPreservingURLs_NoURLMatchesWrapText(t *testing.T) {
+	in := "the quick brown fox jumps over the lazy dog"
+	width := 12
+	gotPreserving := wrapTextPreservingURLs(in, width)
+	gotPlain := wrapText(in, width)
+	if !sliceEq(gotPreserving, gotPlain) {
+		t.Errorf("URL-free wrap should equal wrapText;\n got preserving = %v\n got plain = %v",
+			gotPreserving, gotPlain)
+	}
+}
+
+// TestWrapLinePreservingURLs_CollapsesMultipleSpaces pins the known
+// behavioral divergence from wrapLine: once the URL-aware tokenizer runs
+// (i.e., when input doesn't short-circuit via the early-return width
+// check), non-URL spans are tokenized with strings.Fields, which collapses
+// runs of whitespace to a single space. This test documents that
+// behavior so it doesn't drift silently. (wrapLine preserves consecutive
+// spaces inside words; wrapLinePreservingURLs collapses them.)
+func TestWrapLinePreservingURLs_CollapsesMultipleSpaces(t *testing.T) {
+	// Two spaces between "a" and "b"; URL in the middle forces the
+	// preserving branch. Width smaller than total length so the early
+	// "fits in one line" return does not fire.
+	in := "a  b https://example.com/p c  d" // 31 runes
+	got := wrapLinePreservingURLs(in, 28)
+	// On the first line, "a  b" collapses to "a b"; " c  d" suffix collapses to " c d".
+	// URL stays atomic; overflow to line 2 if needed.
+	// Expected: ["a b https://example.com/p c", "d"] — multi-space collapsed.
+	if len(got) == 0 {
+		t.Fatalf("wrapLinePreservingURLs returned 0 lines")
+	}
+	joined := strings.Join(got, " ")
+	if strings.Contains(joined, "  ") {
+		t.Errorf("expected runs of spaces to collapse in URL-aware wrap;\n joined = %q\n lines = %v", joined, got)
+	}
+	// Exact pin for regression detection:
+	wantFirst := "a b https://example.com/p c"
+	if got[0] != wantFirst {
+		t.Errorf("wrapLinePreservingURLs first line:\n got  = %q\n want = %q", got[0], wantFirst)
+	}
+}
+
+// TestWrapLinePreservingURLs_LeadingWhitespaceBeforeURLDropped pins the
+// known behavioral divergence from wrapLine: when the tokenizer runs
+// (no early-return), a leading-whitespace-only segment before the first
+// URL is dropped entirely — strings.Fields on a whitespace-only string
+// returns zero words, and the trailingSpace branch can't fire because
+// curW is still 0 at that point. Documenting so changes surface as
+// test failures.
+func TestWrapLinePreservingURLs_LeadingWhitespaceBeforeURLDropped(t *testing.T) {
+	// 3 leading spaces + URL (21 runes) = 24 total. Use width 20 to force
+	// the tokenizer to run (bypass early "fits" return).
+	in := "   https://example.com/p" // 24 runes
+	got := wrapLinePreservingURLs(in, 20)
+	if len(got) == 0 {
+		t.Fatalf("wrapLinePreservingURLs returned 0 lines")
+	}
+	// The leading whitespace-only segment is dropped; URL stands alone
+	// (overflow accepted since URL is wider than width).
+	if got[0] != "https://example.com/p" {
+		t.Errorf("leading-space-before-URL drop behavior changed:\n got = %v\n want first = %q",
+			got, "https://example.com/p")
+	}
+}
+
+// TestTruncateTitlePreservingURLs covers URL-aware title truncation. The
+// critical invariant: a URL must never be cut mid-string, because Linkify
+// runs over the output and would otherwise emit a broken URL as its OSC 8
+// target (violating plan line 68's truncation-safety contract).
+func TestTruncateTitlePreservingURLs(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		width int
+		want  string
+	}{
+		{
+			name:  "no url falls back to truncateTitle",
+			in:    "the quick brown fox",
+			width: 10,
+			want:  "the quick\u2026", // width 10: 9 runes + ellipsis
+		},
+		{
+			name:  "title shorter than width returns unchanged",
+			in:    "Fix https://example.com/bug",
+			width: 100,
+			want:  "Fix https://example.com/bug",
+		},
+		{
+			name:  "cut inside url keeps url atomic with ellipsized prefix",
+			in:    "Fix long bug https://example.com/path",
+			width: 25,
+			// urlW = 24, prefix "Fix long bug " = 13 runes. prefixW+urlW = 37 > 25.
+			// budget for prefix = 25 - 24 = 1, which is <= 1 → emit URL alone.
+			want: "https://example.com/path",
+		},
+		{
+			name:  "cut inside url with small prefix ellipsizes prefix",
+			in:    "abcdefghijk https://example.com/xyz",
+			width: 30,
+			// urlW = 23, width 30, budget for prefix+suffix = 7. prefix = "abcdefghijk " = 12.
+			// prefix doesn't fit; budget 7 > 1 → 6 prefix runes + "…" + URL.
+			want: "abcdef\u2026https://example.com/xyz",
+		},
+		{
+			name:  "url alone wider than width emits url atomically",
+			in:    "Fix https://example.com/some/very/long/path/to/resource",
+			width: 20,
+			want:  "https://example.com/some/very/long/path/to/resource",
+		},
+		{
+			name:  "cut outside url uses ordinary truncation",
+			in:    "https://example.com/short then a lot more trailing text here",
+			width: 30,
+			// Cut point byte 29 is well past URL end, so normal truncateTitle.
+			want: truncateTitle("https://example.com/short then a lot more trailing text here", 30),
+		},
+		{
+			name:  "cut inside url with prefix exactly filling remaining width drops suffix",
+			in:    "go https://example.com/pa and more",
+			width: 25,
+			// URL end rune index = 3 + 22 = 25. cutRune = 24 (inside URL).
+			// prefixW=3 + urlW=22 = 25 == width → emit prefix+url, drop suffix.
+			want: "go https://example.com/pa",
+		},
+		{
+			name:  "width zero returns unchanged",
+			in:    "anything",
+			width: 0,
+			want:  "anything",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateTitlePreservingURLs(tc.in, tc.width)
+			if got != tc.want {
+				t.Errorf("truncateTitlePreservingURLs(%q, %d)\n got  = %q\n want = %q",
+					tc.in, tc.width, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTruncateTitlePreservingURLs_LinkifiedOutputHasFullURLTarget is the
+// end-to-end invariant check for plan line 68: even when the visible text
+// is shorter than the full title, the OSC 8 target must be the full URL.
+// Passes the output of truncateTitlePreservingURLs through display.Linkify
+// and asserts the OSC 8 opener contains the unbroken URL, NOT the
+// truncated fragment with an ellipsis.
+func TestTruncateTitlePreservingURLs_LinkifiedOutputHasFullURLTarget(t *testing.T) {
+	url := "https://example.com/some/reasonably/long/path"
+	in := "Fix a big bug " + url + " right now"
+	// Pick a width that forces the natural cut point to fall inside the URL.
+	width := 30
+	truncated := truncateTitlePreservingURLs(in, width)
+	linkified := display.Linkify(truncated)
+	// The OSC 8 opener must be "\x1b]8;;<FULL_URL>\x1b\\" — no truncation.
+	wantOpener := "\x1b]8;;" + url + "\x1b\\"
+	if !strings.Contains(linkified, wantOpener) {
+		t.Errorf("OSC 8 target is not the full URL — plan line 68 contract violated.\n truncated = %q\n linkified = %q\n wantOpener = %q",
+			truncated, linkified, wantOpener)
+	}
+	// And the truncated-with-ellipsis form must NOT appear as an OSC 8 target.
+	// Anything like `\x1b]8;;https://...\u2026\x1b\\` would be broken.
+	if strings.Contains(linkified, "\u2026\x1b\\") {
+		// There is an ellipsis immediately inside an OSC 8 target block — bug.
+		t.Errorf("OSC 8 target contains an ellipsis (broken URL):\n linkified = %q", linkified)
+	}
+}
+
+// TestTruncateTitlePreservingURLs_MultiURL pins the multi-URL regression:
+// when the prefix before the "main" URL (the one containing the natural
+// cut) itself contains an earlier URL, the naive "keep first budget-1
+// runes of prefix + …" path can slice that earlier URL, producing visible
+// text like "https://s…https://longer.example/...". Linkify's
+// `https?://\S+` regex then greedily spans across the literal ellipsis
+// and emits a broken concatenated URL as the OSC 8 target. Every URL
+// span in the final linkified output must resolve to one of the original
+// input URLs — never a concatenation with "…".
+func TestTruncateTitlePreservingURLs_MultiURL(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		width    int
+		wantURLs []string // URLs that must appear verbatim as OSC 8 targets
+	}{
+		{
+			name:     "canonical reproduction (plan-phase-4 bug)",
+			in:       "x https://short.ex y https://longer.example/path/a/b/c",
+			width:    45,
+			wantURLs: []string{"https://longer.example/path/a/b/c"},
+		},
+		{
+			name:     "narrow width drops both prefix text and first URL",
+			in:       "x https://short.ex y https://longer.example/path/a/b/c",
+			width:    30,
+			wantURLs: []string{"https://longer.example/path/a/b/c"},
+		},
+		{
+			name:     "three URLs with cut inside the third",
+			in:       "aaa https://x.ex bbb https://y.ex ccc https://target.example/path",
+			width:    50,
+			wantURLs: []string{"https://target.example/path"},
+		},
+		{
+			name:     "back-to-back URLs preserves the second",
+			in:       "https://a.example and https://b.example",
+			width:    30,
+			wantURLs: []string{"https://b.example"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateTitlePreservingURLs(tc.in, tc.width)
+			linkified := display.Linkify(got)
+
+			// Invariant 1: no OSC 8 target may contain an ellipsis — that
+			// would mean a URL span got sliced and Linkify wrapped the
+			// broken string. Scan every OSC 8 opener "\x1b]8;;<URL>\x1b\\".
+			// We look for "\u2026\x1b\\" which is the closing ST preceded
+			// by an ellipsis; "\u2026" inside an opener ending in "\x1b\\"
+			// is the signature of a broken target.
+			if strings.Contains(linkified, "\u2026\x1b\\") {
+				t.Errorf("OSC 8 target contains an ellipsis (broken URL):\n linkified = %q", linkified)
+			}
+
+			// Invariant 2: the visible text must not contain the pattern
+			// <URL-fragment>…<URL> where the ellipsis is directly adjacent
+			// to a URL fragment. Concretely: "…https://" is safe (nothing
+			// precedes the h so the regex match starts cleanly at "h"),
+			// but "s…https://" is not — the regex starts matching at an
+			// earlier "h" or spans through the ellipsis.
+			// We detect this by checking every match's leading context:
+			// if "\S+" extends from before a known original URL, Linkify
+			// has emitted a broken target.
+			for _, wantURL := range tc.wantURLs {
+				wantOpener := "\x1b]8;;" + wantURL + "\x1b\\"
+				if !strings.Contains(linkified, wantOpener) {
+					t.Errorf("expected OSC 8 opener for %q not found\n truncated = %q\n linkified = %q",
+						wantURL, got, linkified)
+				}
+			}
+		})
+	}
+}
+
 func TestFlattenTitle(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -6982,6 +7261,152 @@ func TestDetailPanelView_NoTagsLine(t *testing.T) {
 	panel := m.detailPanelView()
 	if strings.Contains(panel, "Tags:") {
 		t.Errorf("panel should not show Tags line when there are no tags; got %q", panel)
+	}
+}
+
+// TestDetailPanelView_LinkifiesBodyURL pins that URLs in the task body are
+// wrapped in OSC 8 hyperlink escapes by the detail panel renderer.
+func TestDetailPanelView_LinkifiesBodyURL(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01LINK1", Title: "url in body", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "see https://example.com for details",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "\x1b]8;;https://example.com") {
+		t.Errorf("detail panel body should contain OSC 8 opener for URL; got %q", panel)
+	}
+	if !strings.Contains(panel, "\x1b]8;;\x1b\\") {
+		t.Errorf("detail panel body should contain OSC 8 closer; got %q", panel)
+	}
+}
+
+// TestDetailPanelView_LinkifiesTitleURL pins that URLs in the task title are
+// wrapped in OSC 8 hyperlink escapes by the detail panel header renderer.
+func TestDetailPanelView_LinkifiesTitleURL(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01LINK2", Title: "Fix https://example.com/bug", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if !strings.Contains(panel, "\x1b]8;;https://example.com/bug") {
+		t.Errorf("detail panel header should contain OSC 8 opener for title URL; got %q", panel)
+	}
+}
+
+// TestDetailPanelView_LinkifiesTitleURL_TruncatedTitleKeepsFullURL pins
+// plan line 68: even when the detail-panel title is truncated to fit the
+// panel width, the OSC 8 target must be the FULL URL (not the truncated
+// fragment ending in "…"). Symmetrical to the wrap-mid-URL fix from
+// iteration 1, but for the truncation path.
+func TestDetailPanelView_LinkifiesTitleURL_TruncatedTitleKeepsFullURL(t *testing.T) {
+	// Long title that will force truncation when the detail panel opens in
+	// a narrow window. URL is placed such that the natural cut lands inside
+	// the URL — without the fix, Linkify would emit "https://…\u2026" as the
+	// OSC 8 target and Cmd-click would navigate to a broken URL.
+	url := "https://example.com/some/reasonably/long/path/to/page"
+	title := "Fix the big bug " + url + " by tomorrow please"
+	m := newTestModel(t,
+		model.Task{ID: "01LINKTRUNC", Title: title, Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Narrow terminal → narrow detail panel inner width → forces truncation.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	wantOpener := "\x1b]8;;" + url + "\x1b\\"
+	if !strings.Contains(panel, wantOpener) {
+		t.Errorf("detail panel truncated title must wrap the FULL URL in OSC 8 (plan line 68);\n panel = %q\n wantOpener = %q",
+			panel, wantOpener)
+	}
+	// And no OSC 8 target should end in an ellipsis (broken URL marker).
+	if strings.Contains(panel, "\u2026\x1b\\") {
+		t.Errorf("detail panel OSC 8 target contains an ellipsis (broken URL):\n panel = %q", panel)
+	}
+}
+
+// TestDetailPanelView_MultiURLTitle_NoBrokenOSC8Target pins the same
+// plan-line-68 contract as _LinkifiesTitleURL_TruncatedTitleKeepsFullURL,
+// but for titles that contain multiple URLs. Before the multi-URL fix,
+// narrow-panel truncation could emit visible text like
+// "x https://s…https://longer.example/..." where Linkify's greedy regex
+// spanned the literal ellipsis and produced a broken concatenated URL
+// as the OSC 8 target. The invariants: the second (surviving) URL must
+// still appear as an OSC 8 target, and no OSC 8 target may contain an
+// ellipsis.
+func TestDetailPanelView_MultiURLTitle_NoBrokenOSC8Target(t *testing.T) {
+	short := "https://short.ex"
+	long := "https://longer.example/path/a/b/c"
+	title := "x " + short + " y " + long
+	m := newTestModel(t,
+		model.Task{ID: "01MULTIURL", Title: title, Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Narrow terminal → narrow detail panel inner width → forces the
+	// natural cut to land inside the second URL, with the first URL
+	// living in the prefix and at risk of being sliced.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	// The second URL must survive whole as the OSC 8 target.
+	wantOpener := "\x1b]8;;" + long + "\x1b\\"
+	if !strings.Contains(panel, wantOpener) {
+		t.Errorf("multi-URL detail panel must keep surviving URL whole (plan line 68);\n panel = %q\n wantOpener = %q",
+			panel, wantOpener)
+	}
+	// No OSC 8 target may contain an ellipsis — that is the signature of
+	// a concatenated/broken target from Linkify spanning an earlier URL.
+	if strings.Contains(panel, "\u2026\x1b\\") {
+		t.Errorf("multi-URL detail panel OSC 8 target contains an ellipsis (broken URL):\n panel = %q", panel)
+	}
+}
+
+// TestDetailPanelView_MONOLOG_NO_LINKS_DisablesLinkify confirms the env
+// escape hatch suppresses OSC 8 wrapping in both the title and body.
+func TestDetailPanelView_MONOLOG_NO_LINKS_DisablesLinkify(t *testing.T) {
+	t.Setenv("MONOLOG_NO_LINKS", "1")
+
+	m := newTestModel(t,
+		model.Task{ID: "01LINK3", Title: "Fix https://example.com/bug", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Body:      "see https://example.com for details",
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	if strings.Contains(panel, "\x1b]8;;") {
+		t.Errorf("detail panel should not contain OSC 8 when MONOLOG_NO_LINKS=1; got %q", panel)
+	}
+	// The URL text itself should still be rendered as plain text.
+	if !strings.Contains(panel, "https://example.com") {
+		t.Errorf("detail panel should still display URL text as plain; got %q", panel)
 	}
 }
 
@@ -8443,5 +8868,168 @@ func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
 	selItem, ok := items[sel].(item)
 	if !ok || selItem.task.ID != "01B" {
 		t.Errorf("selected task after async-mutated commit = %+v, want ID 01B", selItem.task)
+	}
+}
+
+// TestRenderListItem_LinkifiesURLInTitle confirms that a task whose title
+// contains a URL renders the title wrapped in OSC 8 hyperlink escapes in the
+// list row (after wrapText, before the bullet/indent prefix).
+func TestRenderListItem_LinkifiesURLInTitle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "visit https://example.com now", Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+	if !strings.Contains(out, "\x1b]8;;https://example.com") {
+		t.Errorf("list row should contain OSC 8 opener for URL in title;\n rendered=%q", out)
+	}
+	if !strings.Contains(out, "\x1b]8;;\x1b\\") {
+		t.Errorf("list row should contain OSC 8 closer;\n rendered=%q", out)
+	}
+}
+
+// TestRenderListItem_WrappedTitleHasNoDanglingOpener confirms that when a
+// long title is wrapped across lines by wrapText, the OSC 8 escape sequence
+// is still balanced (no opener without a closer) because Linkify runs on
+// each wrapped fragment.
+func TestRenderListItem_WrappedTitleHasNoDanglingOpener(t *testing.T) {
+	// Long title guaranteed to wrap at a narrow list width.
+	longTitle := "this is a rather long title that will need to wrap across multiple lines visit https://example.com/some/path for details"
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longTitle, Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Very narrow list width forces wrapText to split the title.
+	m.lists[0].SetSize(30, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+
+	// Count openers and closers: must be balanced (one closer per opener).
+	openers := strings.Count(out, "\x1b]8;;https://example.com")
+	closers := strings.Count(out, "\x1b]8;;\x1b\\")
+	if openers == 0 {
+		t.Fatalf("expected at least one OSC 8 opener for URL in wrapped title;\n rendered=%q", out)
+	}
+	if closers < openers {
+		t.Errorf("dangling OSC 8 opener detected: openers=%d closers=%d;\n rendered=%q",
+			openers, closers, out)
+	}
+}
+
+// TestRenderListItem_LongURLWithoutSpacesStaysLinkified confirms that a
+// URL longer than the list column width — with no internal spaces —
+// stays on a single line, is linkified in full, and that the OSC 8
+// target is the ENTIRE URL (not a truncated prefix). Without the
+// URL-aware wrap, wrapLine would hard-break the URL mid-string and the
+// first fragment would be linkified with a broken target.
+func TestRenderListItem_LongURLWithoutSpacesStaysLinkified(t *testing.T) {
+	longURL := "https://example.com/some/very/long/path/to/a/resource/that/exceeds/the/column"
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longURL, Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Narrow width: any reasonable hard-break would split the URL.
+	m.lists[0].SetSize(30, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+
+	// The full URL must appear as an OSC 8 target exactly once.
+	fullOpener := "\x1b]8;;" + longURL + "\x1b\\"
+	if !strings.Contains(out, fullOpener) {
+		t.Errorf("expected full URL as OSC 8 target;\n want opener = %q\n rendered = %q", fullOpener, out)
+	}
+	// And there must be exactly one opener — no secondary openers with
+	// a truncated URL target.
+	openers := strings.Count(out, "\x1b]8;;http")
+	if openers != 1 {
+		t.Errorf("expected exactly 1 OSC 8 opener for long URL, got %d;\n rendered = %q", openers, out)
+	}
+	// And one matching closer.
+	closers := strings.Count(out, "\x1b]8;;\x1b\\")
+	if closers != 1 {
+		t.Errorf("expected exactly 1 OSC 8 closer for long URL, got %d;\n rendered = %q", closers, out)
+	}
+}
+
+// TestRenderListItem_ActiveRowWithURLComposesStyleAndLink confirms that a
+// row for an active task whose title contains a URL carries BOTH the SGR
+// style from the active delegate AND the OSC 8 hyperlink escape — styling
+// and linking compose cleanly.
+func TestRenderListItem_ActiveRowWithURLComposesStyleAndLink(t *testing.T) {
+	// Force color profile so ANSI codes survive in test output.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "check https://example.com status", Status: "open",
+			Schedule: "today", Position: 1000, Tags: []string{"active"},
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+
+	// OSC 8 opener must be present.
+	if !strings.Contains(out, "\x1b]8;;https://example.com") {
+		t.Errorf("active row should contain OSC 8 opener for URL;\n rendered=%q", out)
+	}
+	// SGR color from the active delegate (bright green for selected active row).
+	brightGreenSeq := "38;2;73;222;128"
+	if !strings.Contains(out, brightGreenSeq) {
+		t.Errorf("active selected row should contain bright green SGR sequence %q;\n rendered=%q",
+			brightGreenSeq, out)
+	}
+	// And a generic SGR escape prefix check — link + style must coexist.
+	if !strings.Contains(out, "\x1b[") {
+		t.Errorf("active row should contain at least one SGR escape;\n rendered=%q", out)
+	}
+}
+
+// TestVlistItemHeight_MatchesRenderedLinesForLongURL is a regression test
+// for the vlist / renderListItem height contract: vlist.itemHeight must
+// mirror whatever wrap helper renderListItem uses so row-height prediction
+// stays aligned with the rendered output. A title containing a URL wider
+// than the column and with no internal spaces is the canonical case —
+// wrapText would hard-break it into several rows while wrapTextPreservingURLs
+// (which the renderer uses) keeps it on a single row.
+func TestVlistItemHeight_MatchesRenderedLinesForLongURL(t *testing.T) {
+	longURL := "https://example.com/some/very/long/path/to/a/resource/that/exceeds/the/column"
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longURL, Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(30, 20)
+	items := m.lists[0].Items()
+	if len(items) == 0 {
+		t.Fatalf("expected at least one list item; got 0")
+	}
+
+	predicted := m.lists[0].itemHeight(0)
+	rendered := m.renderListItem(0, items[0], false)
+	// renderListItem returns "<title>\n<desc>\n" — trailing newline produces
+	// an empty final element in strings.Split, matching itemHeight's +2
+	// (desc + blank separator).
+	actual := len(strings.Split(rendered, "\n"))
+
+	if predicted != actual {
+		t.Errorf("vlist.itemHeight must match rendered line count;\n"+
+			" predicted = %d\n actual    = %d\n rendered  = %q",
+			predicted, actual, rendered)
+	}
+
+	// Sanity: with wrapText (the pre-fix helper), a 76-rune URL in a 28-rune
+	// column would wrap to at least 3 rows. Assert we're actually exercising
+	// the URL-aware path — predicted should be 3 (1 title row + 1 desc + 1
+	// trailing blank), not more.
+	if predicted != 3 {
+		t.Errorf("URL-aware wrap should keep long URL on a single title row "+
+			"(expected height = 1 title + 1 desc + 1 blank = 3); got %d", predicted)
 	}
 }
