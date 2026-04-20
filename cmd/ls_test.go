@@ -561,7 +561,7 @@ func TestLsCommand_FullFlag_ShowsMetadata(t *testing.T) {
 	if !strings.Contains(output, "work") {
 		t.Errorf("output should contain tag 'work', got:\n%s", output)
 	}
-	// Separator line contains these specific Unicode dashes
+	// Separator line: 60 × U+2500 BOX DRAWINGS LIGHT HORIZONTAL, must match display.separatorLine.
 	if !strings.Contains(output, "────────────────────────────────────────────────────────────") {
 		t.Errorf("output should contain separator line, got:\n%s", output)
 	}
@@ -594,7 +594,11 @@ func TestLsCommand_FullFlag_WithBody(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
-	// Add a task, then update it on disk to include a body.
+	// Add a task, then inject a plain body directly on disk rather than via
+	// "monolog note", which would prepend a date separator (--- DD-MM-YYYY HH:MM:SS ---)
+	// and test body-rendering of notes with separators — a different concern.
+	// The bypass is intentional: NoteCount recalculation in store.Update is not
+	// exercised here; this test focuses solely on indented body rendering in --full mode.
 	id := addTestTask(t, dir, "Task with body")
 	path := filepath.Join(dir, ".monolog", "tasks", id+".json")
 	data, err := os.ReadFile(path)

@@ -3,6 +3,7 @@ package display
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -68,8 +69,9 @@ func VisibleTags(tags []string) []string {
 }
 
 // FormatTasksFull writes tasks as multi-line detail blocks to w.
-// Each block mirrors the layout of `monolog show` — header line, indented
-// metadata, optional body — followed by a horizontal separator rule.
+// Each block shows a header line, indented metadata, and an optional indented
+// body (3-space indent), followed by a horizontal separator rule. Body lines
+// are indented here, unlike `monolog show` which prints the body flush-left.
 // When tasks is empty it writes "No tasks.\n" (same as FormatTasks).
 // layout is the configured date format (Go layout), e.g. config.DateFormat().
 func FormatTasksFull(w io.Writer, tasks []model.Task, now time.Time, layout string) {
@@ -84,7 +86,7 @@ func FormatTasksFull(w io.Writer, tasks []model.Task, now time.Time, layout stri
 			activeMarker = "* "
 		}
 
-		marker := fmt.Sprintf("%d", i+1)
+		marker := strconv.Itoa(i + 1)
 		if task.Status == "done" {
 			marker = "x"
 		}
@@ -97,7 +99,8 @@ func FormatTasksFull(w io.Writer, tasks []model.Task, now time.Time, layout stri
 			task.Title,
 		)
 
-		// Metadata — 10-char label field matching show.go style.
+		// Metadata — 10-char label field (%-10s) giving the same visual alignment as
+		// show.go, which hand-pads its labels to 10 chars using fixed string literals.
 		fmt.Fprintf(w, "   %-10s %s\n", "Status:", task.Status)
 
 		bucket := schedule.Bucket(task.Schedule, now)
@@ -160,7 +163,7 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) 
 			activeMarker = "* "
 		}
 
-		marker := fmt.Sprintf("%d", i+1)
+		marker := strconv.Itoa(i + 1)
 		if task.Status == "done" {
 			marker = "x"
 		}

@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/charmbracelet/x/term"
 )
@@ -26,8 +25,7 @@ func withPager(w io.Writer, fn func(io.Writer) error) error {
 		pagerCmd = "less -FR"
 	}
 
-	parts := strings.Fields(pagerCmd)
-	cmd := exec.Command(parts[0], parts[1:]...) //nolint:gosec
+	cmd := exec.Command("sh", "-c", pagerCmd) //nolint:gosec
 	cmd.Stdout = w
 	cmd.Stderr = os.Stderr
 
@@ -41,12 +39,12 @@ func withPager(w io.Writer, fn func(io.Writer) error) error {
 	}
 
 	if err := fn(pw); err != nil {
-		_ = pw.Close()
-		_ = cmd.Wait()
+		_ = pw.Close()    // flush remaining input to pager so it can exit cleanly
+		_ = cmd.Wait()   // pager exit code (e.g. user quit) is not an application error
 		return err
 	}
 
-	_ = pw.Close()
-	_ = cmd.Wait()
+	_ = pw.Close()  // signal EOF to the pager so it can exit cleanly
+	_ = cmd.Wait()  // pager exit code (e.g. user quit) is not an application error
 	return nil
 }
