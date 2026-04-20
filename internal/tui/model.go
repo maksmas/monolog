@@ -2632,7 +2632,10 @@ func (m *Model) detailPanelView() string {
 	// --- header section ---
 	titleStyle := lipgloss.NewStyle().Bold(true)
 	var header []string
-	header = append(header, titleStyle.Render(display.Linkify(truncateTitle(task.Title, iw))))
+	// Use URL-aware truncation so a URL never gets cut mid-string — otherwise
+	// Linkify would wrap the truncated fragment (including the trailing "…")
+	// as the OSC 8 target and Cmd-click would navigate to a broken URL.
+	header = append(header, titleStyle.Render(display.Linkify(truncateTitlePreservingURLs(task.Title, iw))))
 
 	bucket := schedule.Bucket(task.Schedule, now)
 	displayDate := schedule.FormatDisplay(task.Schedule, config.DateFormat())
@@ -3100,8 +3103,7 @@ func wrapLinePreservingURLs(s string, width int) []string {
 	if width <= 0 || utf8.RuneCountInString(s) <= width {
 		return []string{s}
 	}
-	re := display.URLRegexp()
-	matches := re.FindAllStringIndex(s, -1)
+	matches := display.FindURLSpans(s)
 	if len(matches) == 0 {
 		return wrapLine(s, width)
 	}
@@ -3277,4 +3279,89 @@ func truncateTitle(s string, width int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:width-1]) + "…"
+}
+
+// truncateTitlePreservingURLs shortens s to width runes like truncateTitle
+// but treats each detected URL as an atomic token that is never cut.
+//
+// Motivation: Linkify runs the regex `https?://\S+` over the final visible
+// text. A plain truncation that cuts inside a URL would leave the match
+// ending in "…" (the ellipsis is a non-whitespace rune), and Linkify would
+// then emit that broken string as the OSC 8 target — Cmd-click would
+// navigate to a nonexistent page. This helper keeps URLs whole so the OSC 8
+// target is always a real URL.
+//
+// Strategy (simplest correct behavior):
+//   - If the first URL fits within width alongside its prefix, include the
+//     prefix (possibly ellipsized) + full URL; suffix after the URL is
+//     truncated with "…" as needed.
+//   - If the URL alone does not fit in width, emit the URL by itself — the
+//     terminal may visually overflow, but the OSC 8 target stays correct.
+//   - No URL in s → identical to truncateTitle.
+func truncateTitlePreservingURLs(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if utf8.RuneCountInString(s) <= width {
+		return s
+	}
+	matches := display.FindURLSpans(s)
+	if len(matches) == 0 {
+		return truncateTitle(s, width)
+	}
+
+	// Find the standard cut rune index; if it falls outside every URL match
+	// we can use ordinary truncation without any URL being split.
+	cutByte := 0
+	cutRune := width - 1
+	for i := 0; i < cutRune && cutByte < len(s); i++ {
+		_, sz := utf8.DecodeRuneInString(s[cutByte:])
+		cutByte += sz
+	}
+	for _, m := range matches {
+		if cutByte > m[0] && cutByte < m[1] {
+			// Normal cut would slice this URL in half. Keep it atomic.
+			return composeURLTruncation(s, m[0], m[1], width)
+		}
+	}
+	return truncateTitle(s, width)
+}
+
+// composeURLTruncation builds the truncated output when the natural cut
+// point falls inside the URL at byte range [urlStart, urlEnd). URLs are
+// kept whole:
+//   - URL wider than width → URL alone (overflow accepted, OSC 8 target
+//     stays correct per the plan's truncation-safety contract).
+//   - Prefix + URL fits in width exactly → prefix + URL (suffix dropped).
+//   - Prefix too long to fit alongside URL → ellipsized prefix + URL.
+//
+// Note: the caller (truncateTitlePreservingURLs) only invokes this helper
+// when the natural cut lands strictly inside the URL, which implies
+// prefixW + urlW >= width. So the "room to spare" case (prefixW+urlW
+// strictly less than width with a non-empty suffix) never arises from
+// real truncation requests.
+func composeURLTruncation(s string, urlStart, urlEnd, width int) string {
+	url := s[urlStart:urlEnd]
+	urlW := utf8.RuneCountInString(url)
+	if urlW >= width {
+		// URL alone doesn't fit. Emit it atomically; terminal handles overflow.
+		return url
+	}
+	prefix := s[:urlStart]
+	prefixW := utf8.RuneCountInString(prefix)
+
+	if prefixW+urlW <= width {
+		// Prefix fits; suffix (if any) is dropped since cut is inside URL.
+		return prefix + url
+	}
+
+	// Prefix doesn't fit fully alongside the URL. Ellipsize the prefix.
+	// Budget = width - urlW runes for the ellipsized prefix.
+	budget := width - urlW
+	if budget <= 1 {
+		// No room for even "…" + URL — emit URL alone.
+		return url
+	}
+	preRunes := []rune(prefix)
+	return string(preRunes[:budget-1]) + "…" + url
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/mmaksmas/monolog/internal/config"
+	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
@@ -6585,6 +6586,164 @@ func TestWrapTextPreservingURLs_NoURLMatchesWrapText(t *testing.T) {
 	}
 }
 
+// TestWrapLinePreservingURLs_CollapsesMultipleSpaces pins the known
+// behavioral divergence from wrapLine: once the URL-aware tokenizer runs
+// (i.e., when input doesn't short-circuit via the early-return width
+// check), non-URL spans are tokenized with strings.Fields, which collapses
+// runs of whitespace to a single space. This test documents that
+// behavior so it doesn't drift silently. (wrapLine preserves consecutive
+// spaces inside words; wrapLinePreservingURLs collapses them.)
+func TestWrapLinePreservingURLs_CollapsesMultipleSpaces(t *testing.T) {
+	// Two spaces between "a" and "b"; URL in the middle forces the
+	// preserving branch. Width smaller than total length so the early
+	// "fits in one line" return does not fire.
+	in := "a  b https://example.com/p c  d" // 31 runes
+	got := wrapLinePreservingURLs(in, 28)
+	// On the first line, "a  b" collapses to "a b"; " c  d" suffix collapses to " c d".
+	// URL stays atomic; overflow to line 2 if needed.
+	// Expected: ["a b https://example.com/p c", "d"] — multi-space collapsed.
+	if len(got) == 0 {
+		t.Fatalf("wrapLinePreservingURLs returned 0 lines")
+	}
+	joined := strings.Join(got, " ")
+	if strings.Contains(joined, "  ") {
+		t.Errorf("expected runs of spaces to collapse in URL-aware wrap;\n joined = %q\n lines = %v", joined, got)
+	}
+	// Exact pin for regression detection:
+	wantFirst := "a b https://example.com/p c"
+	if got[0] != wantFirst {
+		t.Errorf("wrapLinePreservingURLs first line:\n got  = %q\n want = %q", got[0], wantFirst)
+	}
+}
+
+// TestWrapLinePreservingURLs_LeadingWhitespaceBeforeURLDropped pins the
+// known behavioral divergence from wrapLine: when the tokenizer runs
+// (no early-return), a leading-whitespace-only segment before the first
+// URL is dropped entirely — strings.Fields on a whitespace-only string
+// returns zero words, and the trailingSpace branch can't fire because
+// curW is still 0 at that point. Documenting so changes surface as
+// test failures.
+func TestWrapLinePreservingURLs_LeadingWhitespaceBeforeURLDropped(t *testing.T) {
+	// 3 leading spaces + URL (21 runes) = 24 total. Use width 20 to force
+	// the tokenizer to run (bypass early "fits" return).
+	in := "   https://example.com/p" // 24 runes
+	got := wrapLinePreservingURLs(in, 20)
+	if len(got) == 0 {
+		t.Fatalf("wrapLinePreservingURLs returned 0 lines")
+	}
+	// The leading whitespace-only segment is dropped; URL stands alone
+	// (overflow accepted since URL is wider than width).
+	if got[0] != "https://example.com/p" {
+		t.Errorf("leading-space-before-URL drop behavior changed:\n got = %v\n want first = %q",
+			got, "https://example.com/p")
+	}
+}
+
+// TestTruncateTitlePreservingURLs covers URL-aware title truncation. The
+// critical invariant: a URL must never be cut mid-string, because Linkify
+// runs over the output and would otherwise emit a broken URL as its OSC 8
+// target (violating plan line 68's truncation-safety contract).
+func TestTruncateTitlePreservingURLs(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		width int
+		want  string
+	}{
+		{
+			name:  "no url falls back to truncateTitle",
+			in:    "the quick brown fox",
+			width: 10,
+			want:  "the quick\u2026", // width 10: 9 runes + ellipsis
+		},
+		{
+			name:  "title shorter than width returns unchanged",
+			in:    "Fix https://example.com/bug",
+			width: 100,
+			want:  "Fix https://example.com/bug",
+		},
+		{
+			name:  "cut inside url keeps url atomic with ellipsized prefix",
+			in:    "Fix long bug https://example.com/path",
+			width: 25,
+			// urlW = 24, prefix "Fix long bug " = 13 runes. prefixW+urlW = 37 > 25.
+			// budget for prefix = 25 - 24 = 1, which is <= 1 → emit URL alone.
+			want: "https://example.com/path",
+		},
+		{
+			name:  "cut inside url with small prefix ellipsizes prefix",
+			in:    "abcdefghijk https://example.com/xyz",
+			width: 30,
+			// urlW = 23, width 30, budget for prefix+suffix = 7. prefix = "abcdefghijk " = 12.
+			// prefix doesn't fit; budget 7 > 1 → 6 prefix runes + "…" + URL.
+			want: "abcdef\u2026https://example.com/xyz",
+		},
+		{
+			name:  "url alone wider than width emits url atomically",
+			in:    "Fix https://example.com/some/very/long/path/to/resource",
+			width: 20,
+			want:  "https://example.com/some/very/long/path/to/resource",
+		},
+		{
+			name:  "cut outside url uses ordinary truncation",
+			in:    "https://example.com/short then a lot more trailing text here",
+			width: 30,
+			// Cut point byte 29 is well past URL end, so normal truncateTitle.
+			want: truncateTitle("https://example.com/short then a lot more trailing text here", 30),
+		},
+		{
+			name:  "cut inside url with prefix exactly filling remaining width drops suffix",
+			in:    "go https://example.com/pa and more",
+			width: 25,
+			// URL end rune index = 3 + 22 = 25. cutRune = 24 (inside URL).
+			// prefixW=3 + urlW=22 = 25 == width → emit prefix+url, drop suffix.
+			want: "go https://example.com/pa",
+		},
+		{
+			name:  "width zero returns unchanged",
+			in:    "anything",
+			width: 0,
+			want:  "anything",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateTitlePreservingURLs(tc.in, tc.width)
+			if got != tc.want {
+				t.Errorf("truncateTitlePreservingURLs(%q, %d)\n got  = %q\n want = %q",
+					tc.in, tc.width, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTruncateTitlePreservingURLs_LinkifiedOutputHasFullURLTarget is the
+// end-to-end invariant check for plan line 68: even when the visible text
+// is shorter than the full title, the OSC 8 target must be the full URL.
+// Passes the output of truncateTitlePreservingURLs through display.Linkify
+// and asserts the OSC 8 opener contains the unbroken URL, NOT the
+// truncated fragment with an ellipsis.
+func TestTruncateTitlePreservingURLs_LinkifiedOutputHasFullURLTarget(t *testing.T) {
+	url := "https://example.com/some/reasonably/long/path"
+	in := "Fix a big bug " + url + " right now"
+	// Pick a width that forces the natural cut point to fall inside the URL.
+	width := 30
+	truncated := truncateTitlePreservingURLs(in, width)
+	linkified := display.Linkify(truncated)
+	// The OSC 8 opener must be "\x1b]8;;<FULL_URL>\x1b\\" — no truncation.
+	wantOpener := "\x1b]8;;" + url + "\x1b\\"
+	if !strings.Contains(linkified, wantOpener) {
+		t.Errorf("OSC 8 target is not the full URL — plan line 68 contract violated.\n truncated = %q\n linkified = %q\n wantOpener = %q",
+			truncated, linkified, wantOpener)
+	}
+	// And the truncated-with-ellipsis form must NOT appear as an OSC 8 target.
+	// Anything like `\x1b]8;;https://...\u2026\x1b\\` would be broken.
+	if strings.Contains(linkified, "\u2026\x1b\\") {
+		// There is an ellipsis immediately inside an OSC 8 target block — bug.
+		t.Errorf("OSC 8 target contains an ellipsis (broken URL):\n linkified = %q", linkified)
+	}
+}
+
 func TestFlattenTitle(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -7070,6 +7229,41 @@ func TestDetailPanelView_LinkifiesTitleURL(t *testing.T) {
 
 	if !strings.Contains(panel, "\x1b]8;;https://example.com/bug") {
 		t.Errorf("detail panel header should contain OSC 8 opener for title URL; got %q", panel)
+	}
+}
+
+// TestDetailPanelView_LinkifiesTitleURL_TruncatedTitleKeepsFullURL pins
+// plan line 68: even when the detail-panel title is truncated to fit the
+// panel width, the OSC 8 target must be the FULL URL (not the truncated
+// fragment ending in "…"). Symmetrical to the wrap-mid-URL fix from
+// iteration 1, but for the truncation path.
+func TestDetailPanelView_LinkifiesTitleURL_TruncatedTitleKeepsFullURL(t *testing.T) {
+	// Long title that will force truncation when the detail panel opens in
+	// a narrow window. URL is placed such that the natural cut lands inside
+	// the URL — without the fix, Linkify would emit "https://…\u2026" as the
+	// OSC 8 target and Cmd-click would navigate to a broken URL.
+	url := "https://example.com/some/reasonably/long/path/to/page"
+	title := "Fix the big bug " + url + " by tomorrow please"
+	m := newTestModel(t,
+		model.Task{ID: "01LINKTRUNC", Title: title, Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z",
+			CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Narrow terminal → narrow detail panel inner width → forces truncation.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = next.(*Model)
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+
+	wantOpener := "\x1b]8;;" + url + "\x1b\\"
+	if !strings.Contains(panel, wantOpener) {
+		t.Errorf("detail panel truncated title must wrap the FULL URL in OSC 8 (plan line 68);\n panel = %q\n wantOpener = %q",
+			panel, wantOpener)
+	}
+	// And no OSC 8 target should end in an ellipsis (broken URL marker).
+	if strings.Contains(panel, "\u2026\x1b\\") {
+		t.Errorf("detail panel OSC 8 target contains an ellipsis (broken URL):\n panel = %q", panel)
 	}
 }
 

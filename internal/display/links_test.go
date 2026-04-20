@@ -191,6 +191,39 @@ func TestLinkifyColonAdjacent(t *testing.T) {
 	}
 }
 
+// TestFindURLSpans covers the helper used by TUI layout code to locate
+// URL byte ranges without reaching for a raw regexp. Returns nil for
+// URL-free input and one span per match otherwise.
+func TestFindURLSpans(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want [][]int
+	}{
+		{"empty string returns nil", "", nil},
+		{"no url returns nil", "just plain text", nil},
+		{"single url at start", "https://a.example rest", [][]int{{0, 17}}},
+		{
+			name: "two urls with text between",
+			in:   "see https://a.example and https://b.example",
+			want: [][]int{{4, 21}, {26, 43}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FindURLSpans(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("FindURLSpans(%q) len = %d, want %d (got %v)", tc.in, len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i][0] != tc.want[i][0] || got[i][1] != tc.want[i][1] {
+					t.Errorf("FindURLSpans(%q)[%d] = %v, want %v", tc.in, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // TestStripURLTrailingPunct covers the helper extracted from Linkify. It
 // must handle ASCII trailing-punct runs and leave multi-byte runes alone
 // (we use utf8.DecodeLastRuneInString rather than naive byte indexing).

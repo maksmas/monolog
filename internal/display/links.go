@@ -23,13 +23,12 @@ const trailingPunct = ".,;:!?)"
 // (the regex treats `\x1b`, `]`, `\\` as non-whitespace).
 const osc8Opener = "\x1b]8;;"
 
-// URLRegexp returns the compiled regexp used to detect URLs. Callers
-// that need to locate URL spans in a string (for layout decisions such
-// as wrapping a title without splitting a URL across lines) should use
-// this rather than re-compiling the pattern. The regexp is the raw
-// matcher — callers that want the link-target substring should pass
-// the match through StripURLTrailingPunct.
-func URLRegexp() *regexp.Regexp { return urlRE }
+// FindURLSpans returns the [start, end) byte offsets of every URL match in
+// s, using the same pattern Linkify uses. Callers need this for layout
+// decisions (e.g., wrapping or truncating a title without splitting a URL
+// across the cut) where reaching for a raw regexp is unnecessary surface
+// area. Returns nil when s contains no URLs.
+func FindURLSpans(s string) [][]int { return urlRE.FindAllStringIndex(s, -1) }
 
 // StripURLTrailingPunct splits a raw URL match into the link target and
 // any trailing sentence punctuation (`.,;:!?)`) that should render
