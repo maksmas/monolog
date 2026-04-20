@@ -143,3 +143,75 @@ func TestLinkifyPureStripLeavesUnchanged(t *testing.T) {
 		t.Errorf("edge case produced unexpected output: %q", got)
 	}
 }
+
+// TestLinkifyIdempotentOnAlreadyLinkifiedInput pins behavior when Linkify
+// is called on text that has already been linkified. The regex `https?://\S+`
+// treats `\x1b`, `]`, `\\` as non-whitespace, so feeding a linkified string
+// back through a naive Linkify would corrupt the existing OSC 8 escape. The
+// function short-circuits when it detects an existing OSC 8 opener and
+// returns the input unchanged, keeping Linkify safe to call on already-
+// linkified text (e.g., if two render paths compose).
+func TestLinkifyIdempotentOnAlreadyLinkifiedInput(t *testing.T) {
+	raw := "click https://example.com/path for details"
+	once := Linkify(raw)
+	twice := Linkify(once)
+	if twice != once {
+		t.Errorf("Linkify should be idempotent on already-linkified input\n once = %q\n twice = %q", once, twice)
+	}
+	// And the OSC 8 sequence count should not double.
+	opener := "\x1b]8;;http"
+	if got, want := strings.Count(twice, opener), 1; got != want {
+		t.Errorf("expected %d OSC 8 openers after double-linkify, got %d in %q", want, got, twice)
+	}
+}
+
+// TestLinkifyUnicodeBeforeURL pins that a URL preceded by non-ASCII runes
+// (with no separating whitespace) still gets linkified. The regex anchors
+// on the literal `http://` / `https://` prefix, so leading unicode text
+// is treated as ordinary non-URL prefix.
+func TestLinkifyUnicodeBeforeURL(t *testing.T) {
+	in := "\u65e5\u672c\u8a9ehttps://example.com"
+	got := Linkify(in)
+	want := "\u65e5\u672c\u8a9e\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"
+	if got != want {
+		t.Errorf("Linkify(%q)\n got  = %q\n want = %q", in, got, want)
+	}
+}
+
+// TestLinkifyColonAdjacent pins behavior when a URL is directly preceded
+// by a colon (a common case such as `See link: https://...` collapses to
+// `link:https://...` in narrow contexts). The URL is still recognized and
+// the colon stays outside the link because it is part of the leading text.
+func TestLinkifyColonAdjacent(t *testing.T) {
+	in := "link:https://example.com/path"
+	got := Linkify(in)
+	want := "link:\x1b]8;;https://example.com/path\x1b\\https://example.com/path\x1b]8;;\x1b\\"
+	if got != want {
+		t.Errorf("Linkify(%q)\n got  = %q\n want = %q", in, got, want)
+	}
+}
+
+// TestStripURLTrailingPunct covers the helper extracted from Linkify. It
+// must handle ASCII trailing-punct runs and leave multi-byte runes alone
+// (we use utf8.DecodeLastRuneInString rather than naive byte indexing).
+func TestStripURLTrailingPunct(t *testing.T) {
+	cases := []struct {
+		in, wantURL, wantTail string
+	}{
+		{"https://example.com", "https://example.com", ""},
+		{"https://example.com.", "https://example.com", "."},
+		{"https://example.com).", "https://example.com", ")."},
+		{"https://example.com,)", "https://example.com", ",)"},
+		// Multi-byte trailing rune that is NOT in the punct set: leave as-is.
+		{"https://example.com/\u65e5", "https://example.com/\u65e5", ""},
+		// Multi-byte rune followed by ASCII punct: strip only the ASCII tail.
+		{"https://example.com/\u65e5.", "https://example.com/\u65e5", "."},
+	}
+	for _, tc := range cases {
+		gotURL, gotTail := StripURLTrailingPunct(tc.in)
+		if gotURL != tc.wantURL || gotTail != tc.wantTail {
+			t.Errorf("StripURLTrailingPunct(%q) = (%q, %q), want (%q, %q)",
+				tc.in, gotURL, gotTail, tc.wantURL, tc.wantTail)
+		}
+	}
+}

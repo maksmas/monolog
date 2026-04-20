@@ -291,7 +291,11 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 	// Text width after bullet prefix ("▸ " / "· " = 2 chars).
 	textWidth := m.lists[m.activeTab].Width() - 2
 
-	titleLines := wrapText(i.Title(), textWidth)
+	// Use the URL-aware wrap so a URL longer than textWidth stays on a
+	// single line rather than getting hard-broken mid-URL — otherwise
+	// Linkify below would see only the first truncated fragment and wrap
+	// it with an OSC 8 target pointing at a broken prefix.
+	titleLines := wrapTextPreservingURLs(i.Title(), textWidth)
 
 	// Linkify URLs in each wrapped title line — applied after wrap so the
 	// OSC 8 opener and closer always bracket a complete fragment, and before
@@ -2678,7 +2682,9 @@ func (m *Model) detailPanelView() string {
 
 	var bodyLines []string
 	if task.Body != "" {
-		bodyLines = wrapText(task.Body, iw)
+		// URL-aware wrap so a URL longer than iw stays on a single line
+		// and the OSC 8 target below matches the full URL.
+		bodyLines = wrapTextPreservingURLs(task.Body, iw)
 	}
 
 	// Clamp scroll offset to valid range so we never wrap to top.
@@ -3057,6 +3063,144 @@ func taskRelPath(id string) string {
 
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// wrapTextPreservingURLs wraps s like wrapText but treats each detected
+// URL as an atomic, unbreakable token. A URL never splits across lines:
+// if it doesn't fit on the current line, it starts a new one; if the URL
+// itself is wider than width, it occupies its own line in full (the
+// terminal will visually wrap a single long "word" — but the OSC 8 link
+// target remains correct because Linkify on the resulting line sees the
+// full URL).
+//
+// Non-URL segments wrap by ordinary word boundaries via wrapLine. This is
+// the helper used for any render path where Linkify will run on the
+// wrapped output (task list titles, detail-panel body) — without it, a
+// hard-break mid-URL would leave Linkify with a truncated URL and the
+// resulting OSC 8 target would point at a broken prefix.
+func wrapTextPreservingURLs(s string, width int) []string {
+	if !strings.Contains(s, "\n") {
+		return wrapLinePreservingURLs(s, width)
+	}
+	var lines []string
+	for _, ln := range strings.Split(s, "\n") {
+		lines = append(lines, wrapLinePreservingURLs(ln, width)...)
+	}
+	return lines
+}
+
+// wrapLinePreservingURLs is the single-line variant of wrapTextPreservingURLs.
+// It tokenizes the line into URL and non-URL segments via display.URLRegexp()
+// and then walks the tokens streaming output lines. URLs are atomic and
+// never split across lines (if a URL is wider than width it occupies its
+// own line in full — the terminal will visually wrap the long "word",
+// but Linkify on the resulting line sees the full URL and the OSC 8
+// target is correct). Non-URL text wraps at word boundaries.
+func wrapLinePreservingURLs(s string, width int) []string {
+	if width <= 0 || utf8.RuneCountInString(s) <= width {
+		return []string{s}
+	}
+	re := display.URLRegexp()
+	matches := re.FindAllStringIndex(s, -1)
+	if len(matches) == 0 {
+		return wrapLine(s, width)
+	}
+
+	var lines []string
+	cur := ""
+	curW := 0
+
+	flush := func() {
+		lines = append(lines, cur)
+		cur = ""
+		curW = 0
+	}
+	// placeURL emits a URL token atomically.
+	placeURL := func(url string) {
+		urlW := utf8.RuneCountInString(url)
+		if curW == 0 {
+			cur = url
+			curW = urlW
+			return
+		}
+		if curW+urlW <= width {
+			cur += url
+			curW += urlW
+			return
+		}
+		flush()
+		cur = url
+		curW = urlW
+	}
+	// placeText wraps a non-URL segment word-by-word. The segment may
+	// include leading/trailing whitespace; whitespace runs collapse to
+	// single spaces in the output, matching wrapLine's word-break semantics.
+	placeText := func(seg string) {
+		// Tokenize on spaces; we preserve the "first token may be empty"
+		// signal (seg started with space) by looking at seg[0].
+		if seg == "" {
+			return
+		}
+		leadingSpace := len(seg) > 0 && seg[0] == ' '
+		words := strings.Fields(seg)
+		trailingSpace := len(seg) > 0 && seg[len(seg)-1] == ' '
+		for idx, w := range words {
+			wantSep := curW > 0 && (idx > 0 || leadingSpace)
+			wWidth := utf8.RuneCountInString(w)
+			// Hard-break words wider than width by reusing wrapLine.
+			if wWidth > width {
+				if curW > 0 {
+					flush()
+				}
+				for _, sub := range wrapLine(w, width) {
+					if curW > 0 {
+						flush()
+					}
+					cur = sub
+					curW = utf8.RuneCountInString(sub)
+				}
+				continue
+			}
+			sepW := 0
+			if wantSep {
+				sepW = 1
+			}
+			if curW+sepW+wWidth > width {
+				flush()
+				cur = w
+				curW = wWidth
+				continue
+			}
+			if wantSep {
+				cur += " "
+				curW++
+			}
+			cur += w
+			curW += wWidth
+		}
+		// Preserve a trailing space so the next URL token sits after a
+		// word separator (e.g., "before URL").
+		if trailingSpace && curW > 0 && curW < width {
+			cur += " "
+			curW++
+		}
+	}
+
+	pos := 0
+	for _, m := range matches {
+		if m[0] > pos {
+			placeText(s[pos:m[0]])
+		}
+		placeURL(s[m[0]:m[1]])
+		pos = m[1]
+	}
+	if pos < len(s) {
+		placeText(s[pos:])
+	}
+	if cur != "" || len(lines) == 0 {
+		lines = append(lines, cur)
+	}
+	return lines
 }
 
 // wrapText breaks s into lines of at most width runes, splitting at word

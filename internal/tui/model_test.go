@@ -6541,6 +6541,50 @@ func TestWrapText_WrapsEachLineIndependently(t *testing.T) {
 	}
 }
 
+// TestWrapTextPreservingURLs_KeepsLongURLIntact confirms that a URL longer
+// than width is NOT broken across lines — it occupies its own line in
+// full, even though that line exceeds width.
+func TestWrapTextPreservingURLs_KeepsLongURLIntact(t *testing.T) {
+	url := "https://example.com/some/very/long/path/to/resource"
+	got := wrapTextPreservingURLs(url, 20)
+	if len(got) != 1 || got[0] != url {
+		t.Errorf("wrapTextPreservingURLs kept URL split:\n got = %v\n want = [%q]", got, url)
+	}
+}
+
+// TestWrapTextPreservingURLs_URLAmongText puts a URL in a sentence whose
+// overall length exceeds width. The non-URL text wraps normally; the URL
+// stays on a single line.
+func TestWrapTextPreservingURLs_URLAmongText(t *testing.T) {
+	// Very narrow width forces wrapping in the non-URL text.
+	in := "see https://example.com/path for more info"
+	got := wrapTextPreservingURLs(in, 12)
+	// Every output line that contains a URL must contain the FULL URL.
+	urlFragment := "https://example.com/path"
+	for _, ln := range got {
+		if !strings.Contains(ln, "https") {
+			continue
+		}
+		if !strings.Contains(ln, urlFragment) {
+			t.Errorf("line contains partial URL — URL was split:\n line = %q\n full URL = %q\n all = %v",
+				ln, urlFragment, got)
+		}
+	}
+}
+
+// TestWrapTextPreservingURLs_NoURLMatchesWrapText confirms the URL-aware
+// wrap is a strict superset of wrapText for URL-free input.
+func TestWrapTextPreservingURLs_NoURLMatchesWrapText(t *testing.T) {
+	in := "the quick brown fox jumps over the lazy dog"
+	width := 12
+	gotPreserving := wrapTextPreservingURLs(in, width)
+	gotPlain := wrapText(in, width)
+	if !sliceEq(gotPreserving, gotPlain) {
+		t.Errorf("URL-free wrap should equal wrapText;\n got preserving = %v\n got plain = %v",
+			gotPreserving, gotPlain)
+	}
+}
+
 func TestFlattenTitle(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -8563,6 +8607,42 @@ func TestRenderListItem_WrappedTitleHasNoDanglingOpener(t *testing.T) {
 	if closers < openers {
 		t.Errorf("dangling OSC 8 opener detected: openers=%d closers=%d;\n rendered=%q",
 			openers, closers, out)
+	}
+}
+
+// TestRenderListItem_LongURLWithoutSpacesStaysLinkified confirms that a
+// URL longer than the list column width — with no internal spaces —
+// stays on a single line, is linkified in full, and that the OSC 8
+// target is the ENTIRE URL (not a truncated prefix). Without the
+// URL-aware wrap, wrapLine would hard-break the URL mid-string and the
+// first fragment would be linkified with a broken target.
+func TestRenderListItem_LongURLWithoutSpacesStaysLinkified(t *testing.T) {
+	longURL := "https://example.com/some/very/long/path/to/a/resource/that/exceeds/the/column"
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longURL, Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Narrow width: any reasonable hard-break would split the URL.
+	m.lists[0].SetSize(30, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+
+	// The full URL must appear as an OSC 8 target exactly once.
+	fullOpener := "\x1b]8;;" + longURL + "\x1b\\"
+	if !strings.Contains(out, fullOpener) {
+		t.Errorf("expected full URL as OSC 8 target;\n want opener = %q\n rendered = %q", fullOpener, out)
+	}
+	// And there must be exactly one opener — no secondary openers with
+	// a truncated URL target.
+	openers := strings.Count(out, "\x1b]8;;http")
+	if openers != 1 {
+		t.Errorf("expected exactly 1 OSC 8 opener for long URL, got %d;\n rendered = %q", openers, out)
+	}
+	// And one matching closer.
+	closers := strings.Count(out, "\x1b]8;;\x1b\\")
+	if closers != 1 {
+		t.Errorf("expected exactly 1 OSC 8 closer for long URL, got %d;\n rendered = %q", closers, out)
 	}
 }
 
