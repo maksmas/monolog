@@ -3093,7 +3093,7 @@ func wrapTextPreservingURLs(s string, width int) []string {
 }
 
 // wrapLinePreservingURLs is the single-line variant of wrapTextPreservingURLs.
-// It tokenizes the line into URL and non-URL segments via display.URLRegexp()
+// It tokenizes the line into URL and non-URL segments via display.FindURLSpans()
 // and then walks the tokens streaming output lines. URLs are atomic and
 // never split across lines (if a URL is wider than width it occupies its
 // own line in full — the terminal will visually wrap the long "word",
