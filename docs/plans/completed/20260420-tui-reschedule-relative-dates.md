@@ -82,5 +82,5 @@ Add `schedule.ParseRelative(input string, now time.Time) (string, bool)` that re
 
 ### Task 4: [Final] Update documentation
 
-- [ ] update CLAUDE.md `schedule.Parse` bullet to mention `ParseRelative` is called by the TUI before `Parse` for shorthand input
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update CLAUDE.md `schedule.Parse` bullet to mention `ParseRelative` is called by the TUI before `Parse` for shorthand input
+- [x] move this plan to `docs/plans/completed/`

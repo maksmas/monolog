@@ -156,7 +156,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `c` | Open the add-task modal (title + tags + recur fields, Tab to cycle). The Recur field shows a grammar hint (`monthly:N \| weekly:<day> \| workdays \| days:N`) and inline autocomplete as you type — Tab accepts the highlighted suggestion (replaces the field), Enter always submits the modal, Esc dismisses the dropdown. |
 | `d` | Mark focused task as done (if it has a recurrence rule, auto-spawns the next occurrence — see [Recurring tasks](#recurring-tasks)) |
 | `a` | Toggle active on the focused task |
-| `r` | Reschedule (modal with 1–5 presets or 6 for custom date) |
+| `r` | Reschedule (modal with 1–5 presets or 6 for custom date in the configured format or relative shorthands `Nd`/`Nw`/`Nm`, e.g. `3d`, `2w`, `1m`) |
 | `t` | Retag focused task |
 | `e` | Edit in `$EDITOR` (YAML round-trip; the YAML includes a `recurrence:` field you can set or clear, with a `# recurrence rules:` grammar header comment at the top) |
 | `m` | Grab/ungrab for reordering (↑/↓ reorder, ←/→ move between tabs, g/G top/bottom, +d/e/r/t/a/c/x/s actions) |
@@ -174,7 +174,7 @@ Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-co
 
 ## Date format
 
-User-facing dates default to `DD-MM-YYYY` — this covers CLI `--schedule` input, TUI reschedule/YAML-edit input, the task-list date column, the detail panel, recurrence commit messages and cross-reference notes, note separators inside task bodies, and error messages. Legacy ISO input (`YYYY-MM-DD`) is still accepted silently so older scripts keep working.
+User-facing dates default to `DD-MM-YYYY` — this covers CLI `--schedule` input, TUI reschedule/YAML-edit input, the task-list date column, the detail panel, recurrence commit messages and cross-reference notes, note separators inside task bodies, and error messages. Legacy ISO input (`YYYY-MM-DD`) is still accepted silently so older scripts keep working. The TUI reschedule modal's custom date input also accepts relative shorthands (`Nd`, `Nw`, `Nm` — e.g. `3d` = 3 days, `2w` = 2 weeks, `1m` = 1 month from today) regardless of the configured date format.
 
 On-disk storage always stays ISO (`"schedule": "2026-04-15"` in the JSON) regardless of the display format — this keeps `.monolog/` repos portable and sync-safe.
 

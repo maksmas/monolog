@@ -289,6 +289,56 @@ func TestReschedule_CustomDate_ConfiguredFormat(t *testing.T) {
 	}
 }
 
+func TestReschedule_RelativeDate(t *testing.T) {
+	// want is derived via schedule.ParseRelative so it uses the same clock
+	// path as the model — no midnight-boundary race between a raw time.Now()
+	// call and the model's own time.Now().
+	now := time.Now()
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"days", "3d"},
+		{"weeks", "2w"},
+		{"months", "1m"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t,
+				model.Task{ID: "01A", Title: "relative " + tc.name, Status: "open",
+					Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+			)
+			m, _ = key(t, m, "r")
+			m, _ = key(t, m, "6")
+			if m.rescheduleSub != 1 {
+				t.Fatalf("rescheduleSub = %d, want 1", m.rescheduleSub)
+			}
+			m = typeString(t, m, tc.input)
+			m, cmd := key(t, m, "enter")
+			if cmd == nil {
+				t.Fatal("enter on valid relative date should save")
+			}
+			m = runCmd(t, m, cmd)
+
+			if m.mode != modeNormal {
+				t.Errorf("mode = %v after save, want modeNormal", m.mode)
+			}
+
+			task, err := m.store.GetByPrefix("01A")
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			want, ok := schedule.ParseRelative(tc.input, now)
+			if !ok {
+				t.Fatalf("schedule.ParseRelative(%q) unexpectedly returned false", tc.input)
+			}
+			if task.Schedule != want {
+				t.Errorf("Schedule = %q, want %q (%s from today)", task.Schedule, want, tc.input)
+			}
+		})
+	}
+}
+
 func TestReschedule_Placeholder_UsesConfiguredLabel(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "placeholder check", Status: "open", Schedule: "today",
@@ -296,7 +346,7 @@ func TestReschedule_Placeholder_UsesConfiguredLabel(t *testing.T) {
 	)
 	m, _ = key(t, m, "r")
 	m, _ = key(t, m, "6")
-	if got, want := m.input.Placeholder, config.DateFormatLabel(); got != want {
+	if got, want := m.input.Placeholder, config.DateFormatLabel()+" or Nd/Nw/Nm"; got != want {
 		t.Errorf("reschedule placeholder = %q, want %q", got, want)
 	}
 }
@@ -316,9 +366,32 @@ func TestReschedule_InvalidCustomDateSurfacesError(t *testing.T) {
 	if m.err == nil {
 		t.Fatal("expected error on invalid date")
 	}
-	if got := m.err.Error(); !strings.Contains(got, config.DateFormatLabel()) {
+	got := m.err.Error()
+	if !strings.Contains(got, config.DateFormatLabel()) {
 		t.Errorf("error message should mention configured format %q, got %q",
 			config.DateFormatLabel(), got)
+	}
+	if !strings.Contains(got, "Nd/Nw/Nm") {
+		t.Errorf("error message should mention Nd/Nw/Nm shorthands, got %q", got)
+	}
+}
+
+func TestReschedule_InvalidRelativeShorthand_SurfacesError(t *testing.T) {
+	// "3x" matches neither ParseRelative (unknown suffix) nor schedule.Parse —
+	// the modal should set m.err without producing a save cmd.
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "bad relative", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "r")
+	m, _ = key(t, m, "6")
+	m = typeString(t, m, "3x")
+	m, cmd := key(t, m, "enter")
+	if cmd != nil {
+		t.Error("invalid shorthand should not produce save cmd")
+	}
+	if m.err == nil {
+		t.Fatal("expected error on invalid shorthand input")
 	}
 }
 

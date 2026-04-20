@@ -1251,7 +1251,7 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "6":
 			m.rescheduleSub = 1
 			m.input.Width = m.modalInnerWidth() - 1
-			m.input.Placeholder = config.DateFormatLabel()
+			m.input.Placeholder = config.DateFormatLabel() + " or Nd/Nw/Nm"
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
@@ -1268,10 +1268,14 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
 		date := strings.TrimSpace(m.input.Value())
-		iso, err := schedule.Parse(date, time.Now(), config.DateFormat())
+		now := time.Now()
+		if iso, ok := schedule.ParseRelative(date, now); ok {
+			return m, m.applyReschedule(iso, date)
+		}
+		iso, err := schedule.Parse(date, now, config.DateFormat())
 		if err != nil {
 			if errors.Is(err, schedule.ErrInvalid) {
-				m.err = fmt.Errorf("invalid date %q (want %s)", date, config.DateFormatLabel())
+				m.err = fmt.Errorf("invalid date %q (want %s or Nd/Nw/Nm)", date, config.DateFormatLabel())
 			} else {
 				m.err = err
 			}
@@ -2953,7 +2957,7 @@ func (m *Model) modalView() string {
 				"  5  Someday\n"+
 				"  6  Custom date...", iw)
 		}
-		return modalBox("Custom date:\n\n"+m.input.View(), iw)
+		return modalBox("Custom date (or Nd/Nw/Nm):\n\n"+m.input.View(), iw)
 	case modeRetag:
 		sugLines := m.renderSuggestions()
 		return modalBox("Tags (comma-separated):\n\n"+m.input.View()+sugLines, iw)

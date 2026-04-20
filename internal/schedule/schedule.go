@@ -23,6 +23,8 @@ package schedule
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -77,6 +79,41 @@ func todayDate(now time.Time) time.Time {
 // reference the currently configured format label (via config.DateFormatLabel)
 // without dragging a config dependency into this package.
 var ErrInvalid = errors.New("invalid schedule")
+
+// relativePattern matches relative shorthand inputs like "3d", "2w", "1m".
+// The digit group is capped at 4 digits to prevent strconv.Atoi overflow on
+// pathologically large inputs (e.g. "999999999999999999999d").
+var relativePattern = regexp.MustCompile(`^(\d{1,4})[dDwWmM]$`)
+
+// ParseRelative recognises relative shorthands Nd / Nw / Nm (integer N ≥ 0,
+// suffix case-insensitive) and returns the resulting ISO date string and true.
+// Returns "", false when the input does not match the pattern, so callers can
+// fall through to schedule.Parse.
+//
+//   - d/D → N days from now
+//   - w/W → N weeks (N*7 days) from now
+//   - m/M → N calendar months from now (stdlib handles month-end clamping)
+func ParseRelative(input string, now time.Time) (string, bool) {
+	m := relativePattern.FindStringSubmatch(input)
+	if m == nil {
+		return "", false
+	}
+	// The regex ^(\d{1,4})[dDwWmM]$ guarantees m[1] is 1–4 ASCII digits,
+	// so Atoi cannot fail here.
+	n, _ := strconv.Atoi(m[1])
+	today := todayDate(now)
+	suffix := input[len(input)-1]
+	var result time.Time
+	switch suffix {
+	case 'd', 'D':
+		result = today.AddDate(0, 0, n)
+	case 'w', 'W':
+		result = today.AddDate(0, 0, n*7)
+	case 'm', 'M':
+		result = today.AddDate(0, n, 0)
+	}
+	return result.Format(IsoLayout), true
+}
 
 // Parse turns user input into an ISO date string. Accepts, in order:
 //
