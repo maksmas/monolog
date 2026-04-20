@@ -139,14 +139,14 @@ Single env read at the top of `Linkify`. Cheap; only active when the user opts o
 - Modify: `internal/tui/model.go` (inside `renderListItem`, around line 294)
 - Modify: `internal/tui/model_test.go`
 
-- [ ] at line ~294, after `titleLines := wrapText(i.Title(), textWidth)`, apply `display.Linkify` to each element of `titleLines` before the bullet/indent prefix is added
-- [ ] do NOT apply `Linkify` to separator items (the early return at `i.isSeparator` already skips the main path — confirm still correct)
-- [ ] do NOT apply `Linkify` to the description line — descriptions contain metadata only, no URLs
-- [ ] add TUI test: call `renderListItem` with an `item` whose `task.Title` contains `"https://example.com"` and assert the returned string contains `"\x1b]8;;https://example.com"`
-- [ ] add TUI test: title that would be truncated by `wrapText` — confirm the linkified output still contains a closing `"\x1b]8;;\x1b\\"` (no dangling opener)
-- [ ] add TUI test: active-task styled row with a URL title — confirm the output contains both the active-color SGR and the OSC 8 opener (styling + link compose)
-- [ ] run `go test ./...` — must pass before next task
-- [ ] run `go vet ./...` — must pass before next task
+- [x] at line ~294, after `titleLines := wrapText(i.Title(), textWidth)`, apply `display.Linkify` to each element of `titleLines` before the bullet/indent prefix is added
+- [x] do NOT apply `Linkify` to separator items (the early return at `i.isSeparator` already skips the main path — confirm still correct)
+- [x] do NOT apply `Linkify` to the description line — descriptions contain metadata only, no URLs
+- [x] add TUI test: call `renderListItem` with an `item` whose `task.Title` contains `"https://example.com"` and assert the returned string contains `"\x1b]8;;https://example.com"`
+- [x] add TUI test: title that would be truncated by `wrapText` — confirm the linkified output still contains a closing `"\x1b]8;;\x1b\\"` (no dangling opener)
+- [x] add TUI test: active-task styled row with a URL title — confirm the output contains both the active-color SGR and the OSC 8 opener (styling + link compose)
+- [x] run `go test ./...` — must pass before next task
+- [x] run `go vet ./...` — must pass before next task
 
 ### Task 4: Verify acceptance criteria
 

@@ -8516,3 +8516,88 @@ func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
 		t.Errorf("selected task after async-mutated commit = %+v, want ID 01B", selItem.task)
 	}
 }
+
+// TestRenderListItem_LinkifiesURLInTitle confirms that a task whose title
+// contains a URL renders the title wrapped in OSC 8 hyperlink escapes in the
+// list row (after wrapText, before the bullet/indent prefix).
+func TestRenderListItem_LinkifiesURLInTitle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "visit https://example.com now", Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+	if !strings.Contains(out, "\x1b]8;;https://example.com") {
+		t.Errorf("list row should contain OSC 8 opener for URL in title;\n rendered=%q", out)
+	}
+	if !strings.Contains(out, "\x1b]8;;\x1b\\") {
+		t.Errorf("list row should contain OSC 8 closer;\n rendered=%q", out)
+	}
+}
+
+// TestRenderListItem_WrappedTitleHasNoDanglingOpener confirms that when a
+// long title is wrapped across lines by wrapText, the OSC 8 escape sequence
+// is still balanced (no opener without a closer) because Linkify runs on
+// each wrapped fragment.
+func TestRenderListItem_WrappedTitleHasNoDanglingOpener(t *testing.T) {
+	// Long title guaranteed to wrap at a narrow list width.
+	longTitle := "this is a rather long title that will need to wrap across multiple lines visit https://example.com/some/path for details"
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: longTitle, Status: "open",
+			Schedule: "today", Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Very narrow list width forces wrapText to split the title.
+	m.lists[0].SetSize(30, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+
+	// Count openers and closers: must be balanced (one closer per opener).
+	openers := strings.Count(out, "\x1b]8;;https://example.com")
+	closers := strings.Count(out, "\x1b]8;;\x1b\\")
+	if openers == 0 {
+		t.Fatalf("expected at least one OSC 8 opener for URL in wrapped title;\n rendered=%q", out)
+	}
+	if closers < openers {
+		t.Errorf("dangling OSC 8 opener detected: openers=%d closers=%d;\n rendered=%q",
+			openers, closers, out)
+	}
+}
+
+// TestRenderListItem_ActiveRowWithURLComposesStyleAndLink confirms that a
+// row for an active task whose title contains a URL carries BOTH the SGR
+// style from the active delegate AND the OSC 8 hyperlink escape — styling
+// and linking compose cleanly.
+func TestRenderListItem_ActiveRowWithURLComposesStyleAndLink(t *testing.T) {
+	// Force color profile so ANSI codes survive in test output.
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "check https://example.com status", Status: "open",
+			Schedule: "today", Position: 1000, Tags: []string{"active"},
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.lists[0].SetSize(80, 20)
+	items := m.lists[0].Items()
+
+	out := m.renderListItem(0, items[0], true)
+
+	// OSC 8 opener must be present.
+	if !strings.Contains(out, "\x1b]8;;https://example.com") {
+		t.Errorf("active row should contain OSC 8 opener for URL;\n rendered=%q", out)
+	}
+	// SGR color from the active delegate (bright green for selected active row).
+	brightGreenSeq := "38;2;73;222;128"
+	if !strings.Contains(out, brightGreenSeq) {
+		t.Errorf("active selected row should contain bright green SGR sequence %q;\n rendered=%q",
+			brightGreenSeq, out)
+	}
+	// And a generic SGR escape prefix check — link + style must coexist.
+	if !strings.Contains(out, "\x1b[") {
+		t.Errorf("active row should contain at least one SGR escape;\n rendered=%q", out)
+	}
+}

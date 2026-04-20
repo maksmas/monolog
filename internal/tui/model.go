@@ -293,6 +293,13 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 
 	titleLines := wrapText(i.Title(), textWidth)
 
+	// Linkify URLs in each wrapped title line — applied after wrap so the
+	// OSC 8 opener and closer always bracket a complete fragment, and before
+	// the bullet/indent prefix is added so prefixes remain plain text.
+	for j := range titleLines {
+		titleLines[j] = display.Linkify(titleLines[j])
+	}
+
 	// Prepend bullet on first line, indent continuation lines.
 	bullet := "· "
 	if selected {
