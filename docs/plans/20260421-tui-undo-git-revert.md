@@ -126,15 +126,15 @@ return taskSavedMsg{status: "Undone: " + subject, sha: ""}   // no SHA → not r
 - Modify: `internal/git/git.go`
 - Modify: `internal/git/git_test.go`
 
-- [ ] add `HeadSHA(repoPath string) (string, error)` — runs `git rev-parse HEAD`
-- [ ] add `AutoCommitSHA(repoPath, message string, files ...string) (string, error)` — stages, commits, returns `HeadSHA`
-- [ ] add `CommitSubject(repoPath, sha string) (string, error)` — runs `git log -1 --format=%s <sha>`
-- [ ] add `Revert(repoPath, sha string) error` — runs `git revert <sha> --no-edit`; on non-zero exit runs `git revert --abort` before returning error
-- [ ] write tests for `HeadSHA` (success, non-git dir → error)
-- [ ] write tests for `AutoCommitSHA` (returns correct SHA matching `git rev-parse HEAD`)
-- [ ] write tests for `CommitSubject` (returns correct subject line)
-- [ ] write tests for `Revert` (reverts file change; commit message starts with `Revert`; bad SHA → error)
-- [ ] run `go test ./internal/git/` — must pass before Task 2
+- [x] add `HeadSHA(repoPath string) (string, error)` — runs `git rev-parse HEAD`
+- [x] add `AutoCommitSHA(repoPath, message string, files ...string) (string, error)` — stages, commits, returns `HeadSHA`
+- [x] add `CommitSubject(repoPath, sha string) (string, error)` — runs `git log -1 --format=%s <sha>`
+- [x] add `Revert(repoPath, sha string) error` — runs `git revert <sha> --no-edit`; on non-zero exit runs `git revert --abort` before returning error
+- [x] write tests for `HeadSHA` (success, non-git dir → error)
+- [x] write tests for `AutoCommitSHA` (returns correct SHA matching `git rev-parse HEAD`)
+- [x] write tests for `CommitSubject` (returns correct subject line)
+- [x] write tests for `Revert` (reverts file change; commit message starts with `Revert`; bad SHA → error)
+- [x] run `go test ./internal/git/` — must pass before Task 2
 
 ### Task 2: Thread SHA through taskSavedMsg
 

@@ -109,6 +109,55 @@ func AutoCommit(repoPath string, message string, files ...string) error {
 	return nil
 }
 
+// HeadSHA returns the SHA of the current HEAD commit.
+func HeadSHA(repoPath string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// AutoCommitSHA stages the specified files, commits with the given message,
+// then returns the SHA of the resulting HEAD commit.
+func AutoCommitSHA(repoPath string, message string, files ...string) (string, error) {
+	if err := AutoCommit(repoPath, message, files...); err != nil {
+		return "", err
+	}
+	sha, err := HeadSHA(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("get HEAD SHA after commit: %w", err)
+	}
+	return sha, nil
+}
+
+// CommitSubject returns the one-line subject of the given commit.
+func CommitSubject(repoPath, sha string) (string, error) {
+	cmd := exec.Command("git", "log", "-1", "--format=%s", sha)
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git log -1 --format=%%s %s: %w", sha, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// Revert creates a new commit that reverses the named commit (git revert --no-edit).
+// On conflict it runs git revert --abort before returning the error.
+func Revert(repoPath, sha string) error {
+	cmd := exec.Command("git", "revert", sha, "--no-edit")
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Attempt to abort the revert to leave the repo in a clean state.
+		_ = run(repoPath, "git", "revert", "--abort")
+		return fmt.Errorf("git revert %s: %w\n%s", sha, err, out)
+	}
+	return nil
+}
+
 // HasChanges returns true if the working tree has uncommitted changes
 // (untracked files, modified files, or staged changes).
 func HasChanges(repoPath string) (bool, error) {

@@ -609,6 +609,181 @@ func TestIsRebasing_False(t *testing.T) {
 	}
 }
 
+func TestHeadSHA_Success(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	sha, err := HeadSHA(repoPath)
+	if err != nil {
+		t.Fatalf("HeadSHA() error = %v", err)
+	}
+	if sha == "" {
+		t.Error("HeadSHA() returned empty string")
+	}
+	// SHA must be a valid hex string (40 chars for full SHA)
+	if len(sha) < 7 {
+		t.Errorf("HeadSHA() = %q, expected at least 7 chars", sha)
+	}
+	// Verify it matches the actual HEAD
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	want := strings.TrimSpace(string(out))
+	if sha != want {
+		t.Errorf("HeadSHA() = %q, want %q", sha, want)
+	}
+}
+
+func TestHeadSHA_NonGitDir(t *testing.T) {
+	dir := t.TempDir()
+	_, err := HeadSHA(dir)
+	if err == nil {
+		t.Error("expected error for non-git directory")
+	}
+}
+
+func TestAutoCommitSHA_ReturnsCorrectSHA(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Create a file to commit
+	testFile := filepath.Join(repoPath, ".monolog", "tasks", "sha-test.json")
+	if err := os.WriteFile(testFile, []byte(`{"id":"sha-test"}`), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	relPath := filepath.Join(".monolog", "tasks", "sha-test.json")
+	sha, err := AutoCommitSHA(repoPath, "add: sha test task", relPath)
+	if err != nil {
+		t.Fatalf("AutoCommitSHA() error = %v", err)
+	}
+	if sha == "" {
+		t.Error("AutoCommitSHA() returned empty SHA")
+	}
+
+	// Verify returned SHA matches git rev-parse HEAD
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	want := strings.TrimSpace(string(out))
+	if sha != want {
+		t.Errorf("AutoCommitSHA() = %q, want HEAD %q", sha, want)
+	}
+}
+
+func TestCommitSubject_ReturnsCorrectSubject(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Create a file and commit it with a known message
+	testFile := filepath.Join(repoPath, ".monolog", "tasks", "subj-test.json")
+	if err := os.WriteFile(testFile, []byte(`{"id":"subj-test"}`), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	relPath := filepath.Join(".monolog", "tasks", "subj-test.json")
+	sha, err := AutoCommitSHA(repoPath, "add: subject test task", relPath)
+	if err != nil {
+		t.Fatalf("AutoCommitSHA() error = %v", err)
+	}
+
+	subject, err := CommitSubject(repoPath, sha)
+	if err != nil {
+		t.Fatalf("CommitSubject() error = %v", err)
+	}
+	if subject != "add: subject test task" {
+		t.Errorf("CommitSubject() = %q, want %q", subject, "add: subject test task")
+	}
+}
+
+func TestCommitSubject_BadSHA(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	_, err := CommitSubject(repoPath, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	if err == nil {
+		t.Error("expected error for bad SHA")
+	}
+}
+
+func TestRevert_RevertsFileChange(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Create a file and commit it
+	testFile := filepath.Join(repoPath, ".monolog", "tasks", "revert-test.json")
+	if err := os.WriteFile(testFile, []byte(`{"id":"revert-test","title":"original"}`), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	relPath := filepath.Join(".monolog", "tasks", "revert-test.json")
+	if _, err := AutoCommitSHA(repoPath, "add: revert test task", relPath); err != nil {
+		t.Fatalf("AutoCommitSHA() error = %v", err)
+	}
+
+	// Modify the file and commit — this is the SHA we will revert
+	if err := os.WriteFile(testFile, []byte(`{"id":"revert-test","title":"modified"}`), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	sha, err := AutoCommitSHA(repoPath, "edit: revert test task", relPath)
+	if err != nil {
+		t.Fatalf("AutoCommitSHA() for modify: %v", err)
+	}
+
+	// Revert the modify commit
+	if err := Revert(repoPath, sha); err != nil {
+		t.Fatalf("Revert() error = %v", err)
+	}
+
+	// File should now contain the original content
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file after revert: %v", err)
+	}
+	if string(data) != `{"id":"revert-test","title":"original"}` {
+		t.Errorf("file content after revert = %q, want original content", string(data))
+	}
+
+	// Latest commit message should start with "Revert"
+	subj, err := CommitSubject(repoPath, "HEAD")
+	if err != nil {
+		t.Fatalf("CommitSubject after revert: %v", err)
+	}
+	if !strings.HasPrefix(subj, "Revert") {
+		t.Errorf("revert commit subject = %q, expected to start with 'Revert'", subj)
+	}
+}
+
+func TestRevert_BadSHA(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := Revert(repoPath, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	if err == nil {
+		t.Error("expected error when reverting a bad SHA")
+	}
+}
+
 func TestAutoCommit_DeletedFile(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "test-monolog")
