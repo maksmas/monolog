@@ -2802,21 +2802,38 @@ func (m *Model) View() string {
 // Each key is rendered bold+hotkey-color; descriptions and separators are dim.
 // Pass an empty key ("") to render the desc as unstyled label (e.g., "GRAB").
 // Pass an empty desc ("") to render the key alone (e.g., "+d/e/r/t/a/c/x/s").
+// Entries are trimmed from the right when the line would exceed m.width.
 func (m *Model) renderHelpBar(pairs ...[2]string) string {
+	sep := m.styles.helpTextStyle.Render("  ")
+	sepW := lipgloss.Width(sep)
+	padding := 2 // one space each side from Padding(0,1)
+
 	parts := make([]string, 0, len(pairs))
+	usedW := padding
 	for _, p := range pairs {
 		key, desc := p[0], p[1]
+		var part string
 		switch {
 		case key == "":
-			parts = append(parts, m.styles.helpTextStyle.Render(desc))
+			part = m.styles.helpTextStyle.Render(desc)
 		case desc == "":
-			parts = append(parts, m.styles.helpKeyStyle.Render(key))
+			part = m.styles.helpKeyStyle.Render(key)
 		default:
-			parts = append(parts, m.styles.helpKeyStyle.Render(key)+m.styles.helpTextStyle.Render(" "+desc))
+			part = m.styles.helpKeyStyle.Render(key) + m.styles.helpTextStyle.Render(" "+desc)
 		}
+		partW := lipgloss.Width(part)
+		extra := partW
+		if len(parts) > 0 {
+			extra += sepW
+		}
+		if m.width > 0 && usedW+extra > m.width {
+			break
+		}
+		parts = append(parts, part)
+		usedW += extra
 	}
 	return lipgloss.NewStyle().Padding(0, 1).Render(
-		strings.Join(parts, m.styles.helpTextStyle.Render("  ")),
+		strings.Join(parts, sep),
 	)
 }
 
@@ -2839,39 +2856,39 @@ func (m *Model) helpLine() string {
 		}
 		if m.viewMode == viewTag {
 			return m.renderHelpBar(
-				[2]string{"←/→", "tabs"},
-				[2]string{"enter", "notes"},
 				[2]string{"d", "done"},
 				[2]string{"e", "edit"},
+				[2]string{"c", "create"},
 				[2]string{"r", "date"},
 				[2]string{"t", "tag"},
-				[2]string{"c", "create"},
-				[2]string{"x", "del"},
-				[2]string{"m", "grab"},
 				[2]string{"a", "active"},
+				[2]string{"m", "grab"},
 				[2]string{"/", "search"},
 				[2]string{"v", "schedule"},
 				[2]string{"s", "sync"},
+				[2]string{"←/→", "tabs"},
+				[2]string{"enter", "notes"},
+				[2]string{"x", "del"},
 				[2]string{"h", "help"},
 				[2]string{"q", "quit"},
 			)
 		}
 		return m.renderHelpBar(
-			[2]string{"←/→", "tabs"},
-			[2]string{"1-6", "jump"},
-			[2]string{"enter", "notes"},
 			[2]string{"d", "done"},
 			[2]string{"e", "edit"},
+			[2]string{"c", "create"},
 			[2]string{"r", "date"},
 			[2]string{"t", "tag"},
-			[2]string{"c", "create"},
-			[2]string{"x", "del"},
-			[2]string{"m", "grab"},
 			[2]string{"a", "active"},
+			[2]string{"m", "grab"},
 			[2]string{"/", "search"},
 			[2]string{"v", "tags"},
 			[2]string{"s", "sync"},
 			[2]string{",", "settings"},
+			[2]string{"←/→", "tabs"},
+			[2]string{"1-6", "jump"},
+			[2]string{"enter", "notes"},
+			[2]string{"x", "del"},
 			[2]string{"h", "help"},
 			[2]string{"q", "quit"},
 		)

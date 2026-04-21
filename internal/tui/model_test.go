@@ -5588,6 +5588,10 @@ func newTestModelWithOpts(t *testing.T, opts Options, tasks ...model.Task) *Mode
 	if err := git.Init(repoPath, ""); err != nil {
 		t.Fatalf("git.Init: %v", err)
 	}
+	// Point MONOLOG_DIR at the temp repo so config.Theme() reads the
+	// git.Init-written config.json ("theme": "default") instead of the
+	// user's real ~/.monolog config, which may have a different theme.
+	t.Setenv("MONOLOG_DIR", repoPath)
 	s, err := store.New(filepath.Join(repoPath, ".monolog", "tasks"))
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
