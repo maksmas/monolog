@@ -357,22 +357,8 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 }
 
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
-// focusID, if non-empty, asks the handler to move the cursor to the task with
-// that ID after reload — used by add so a new task is autofocused.
-// sha, if non-empty, is the commit SHA to push onto the undo stack; it also
-// clears redoStack (new mutations invalidate the redo history).
-// clearHistory, if true, clears BOTH undoStack and redoStack before any push
-// (used by sync with remote, where a rebase may have rewritten SHAs).
-// restoreUndoSHA, if non-empty, is pushed back onto undoStack before the
-// error early-return — used by undoCmd on revert failure so the SHA can be
-// retried. This avoids mutating undoStack from inside the goroutine closure.
-// restoreRedoSHA mirrors restoreUndoSHA for the redo path: on a failed redo,
-// the SHA is pushed back onto redoStack so the user can retry.
-// redoSHA, if non-empty, is the revert-commit SHA pushed onto redoStack after
-// a successful undo.
-// redoneSHA, if non-empty, is the new commit SHA pushed onto undoStack after
-// a successful redo; unlike sha, it does NOT clear redoStack (redo itself is
-// not a "new" mutation from the user's perspective).
+// Fields manipulate undo/redo stacks from the Update loop rather than the
+// goroutine closure, so the stacks are never mutated concurrently.
 type taskSavedMsg struct {
 	status         string
 	err            error
@@ -933,16 +919,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.redoStack = nil
 		}
 		if msg.restoreUndoSHA != "" {
-			m.undoStack = append(m.undoStack, msg.restoreUndoSHA)
-			if len(m.undoStack) > undoStackCap {
-				m.undoStack = m.undoStack[1:]
-			}
+			m.undoStack = pushCappedSHA(m.undoStack, msg.restoreUndoSHA)
 		}
 		if msg.restoreRedoSHA != "" {
-			m.redoStack = append(m.redoStack, msg.restoreRedoSHA)
-			if len(m.redoStack) > undoStackCap {
-				m.redoStack = m.redoStack[1:]
-			}
+			m.redoStack = pushCappedSHA(m.redoStack, msg.restoreRedoSHA)
 		}
 		if msg.err != nil {
 			m.err = msg.err
@@ -955,26 +935,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Push SHA onto undo stack (cap undoStackCap, drop oldest).
 		// A new mutation invalidates the redo history.
 		if msg.sha != "" {
-			m.undoStack = append(m.undoStack, msg.sha)
-			if len(m.undoStack) > undoStackCap {
-				m.undoStack = m.undoStack[1:]
-			}
+			m.undoStack = pushCappedSHA(m.undoStack, msg.sha)
 			m.redoStack = nil
 		}
 		// redoneSHA pushes onto undoStack like sha but preserves redoStack so
 		// successive redos can continue popping it.
 		if msg.redoneSHA != "" {
-			m.undoStack = append(m.undoStack, msg.redoneSHA)
-			if len(m.undoStack) > undoStackCap {
-				m.undoStack = m.undoStack[1:]
-			}
+			m.undoStack = pushCappedSHA(m.undoStack, msg.redoneSHA)
 		}
 		// redoSHA is the revert commit from a successful undo.
 		if msg.redoSHA != "" {
-			m.redoStack = append(m.redoStack, msg.redoSHA)
-			if len(m.redoStack) > undoStackCap {
-				m.redoStack = m.redoStack[1:]
-			}
+			m.redoStack = pushCappedSHA(m.redoStack, msg.redoSHA)
 		}
 		if err := m.reloadAll(); err != nil {
 			m.err = err
@@ -2522,62 +2493,78 @@ func (m *Model) syncCmd() tea.Cmd {
 // Callers must check len(undoStack) > 0 before calling. On a failed revert
 // the SHA is pushed back so the user can retry.
 func (m *Model) undoCmd() tea.Cmd {
-	if len(m.undoStack) == 0 {
-		// Defensive guard; callers should check before invoking.
-		return nil
-	}
-	// Pop the top SHA before launching the goroutine so a second keypress
-	// while the first revert is in-flight cannot race on the same SHA.
-	sha := m.undoStack[len(m.undoStack)-1]
-	m.undoStack = m.undoStack[:len(m.undoStack)-1]
-	repoPath := m.repoPath
-	return func() tea.Msg {
-		subject, err := git.CommitSubject(repoPath, sha)
-		if err != nil {
-			// SHA is no longer accessible (e.g. cleared by rebase); treat as
-			// non-retriable so we don't push the stale SHA back.
-			return taskSavedMsg{err: fmt.Errorf("undo: %w", err)}
-		}
-		revertSHA, err := git.RevertSHA(repoPath, sha)
-		if err != nil {
-			// Revert failed (e.g. conflict). Signal the Update loop to push
-			// the SHA back via restoreUndoSHA — avoids mutating m.undoStack
-			// from inside the goroutine (data race with the Update loop).
-			return taskSavedMsg{err: fmt.Errorf("undo: %w", err), restoreUndoSHA: sha}
-		}
-		return taskSavedMsg{status: "Undone: " + subject, redoSHA: revertSHA}
-	}
+	return m.revertStackCmd(&m.undoStack, "undo", func(revertSHA string) taskSavedMsg {
+		return taskSavedMsg{redoSHA: revertSHA}
+	}, func(sha string) taskSavedMsg {
+		return taskSavedMsg{restoreUndoSHA: sha}
+	})
 }
 
 // redoCmd pops the top SHA from redoStack and reverts that revert commit.
 // Callers must check len(redoStack) > 0 before calling. On a failed revert
 // the SHA is pushed back so the user can retry.
 func (m *Model) redoCmd() tea.Cmd {
-	if len(m.redoStack) == 0 {
-		// Defensive guard; callers should check before invoking.
+	return m.revertStackCmd(&m.redoStack, "redo", func(newSHA string) taskSavedMsg {
+		return taskSavedMsg{redoneSHA: newSHA}
+	}, func(sha string) taskSavedMsg {
+		return taskSavedMsg{restoreRedoSHA: sha}
+	})
+}
+
+// revertStackCmd is the shared body of undoCmd/redoCmd. It pops the top SHA
+// from *stack, looks up its subject, runs git revert, and returns a
+// taskSavedMsg. `verb` is the status-bar verb ("undo"/"redo") — used both for
+// error-wrapping and status formatting ("Undone: ..." / "Redone: ..."). The
+// two closures build the success and retry messages (they differ only in
+// which stack-mutation field on taskSavedMsg is set). stripRevertPrefix is
+// applied symmetrically to both paths so undo-of-redo and redo-of-undo show
+// the same plain subject rather than accumulating `Revert "..."` wrappers.
+func (m *Model) revertStackCmd(stack *[]string, verb string,
+	onSuccess func(revertSHA string) taskSavedMsg,
+	onFailure func(sha string) taskSavedMsg,
+) tea.Cmd {
+	if len(*stack) == 0 {
 		return nil
 	}
 	// Pop the top SHA before launching the goroutine so a second keypress
 	// while the first revert is in-flight cannot race on the same SHA.
-	revertSHA := m.redoStack[len(m.redoStack)-1]
-	m.redoStack = m.redoStack[:len(m.redoStack)-1]
+	sha := (*stack)[len(*stack)-1]
+	*stack = (*stack)[:len(*stack)-1]
 	repoPath := m.repoPath
+	statusPrefix := strings.ToUpper(verb[:1]) + verb[1:] + "ne: " // "Undone: " / "Redone: "
 	return func() tea.Msg {
-		subject, err := git.CommitSubject(repoPath, revertSHA)
+		subject, err := git.CommitSubject(repoPath, sha)
 		if err != nil {
 			// SHA is no longer accessible (e.g. cleared by rebase); treat as
 			// non-retriable so we don't push the stale SHA back.
-			return taskSavedMsg{err: fmt.Errorf("redo: %w", err)}
+			return taskSavedMsg{err: fmt.Errorf("%s: %w", verb, err)}
 		}
-		newSHA, err := git.RevertSHA(repoPath, revertSHA)
+		revertSHA, err := git.RevertSHA(repoPath, sha)
 		if err != nil {
-			// Revert failed (e.g. conflict). Signal the Update loop to push
-			// the SHA back via restoreRedoSHA — avoids mutating m.redoStack
-			// from inside the goroutine (data race with the Update loop).
-			return taskSavedMsg{err: fmt.Errorf("redo: %w", err), restoreRedoSHA: revertSHA}
+			// Revert failed (e.g. conflict). Retry SHA is carried back via
+			// onFailure — avoids mutating the stack from the goroutine.
+			msg := onFailure(sha)
+			msg.err = fmt.Errorf("%s: %w", verb, err)
+			return msg
 		}
-		return taskSavedMsg{status: "Redone: " + subject, redoneSHA: newSHA}
+		msg := onSuccess(revertSHA)
+		msg.status = statusPrefix + stripRevertPrefix(subject)
+		return msg
 	}
+}
+
+// stripRevertPrefix peels all leading `Revert "..."` wrappers off a commit
+// subject. `git revert` prefixes the subject with `Revert "<prev subject>"`,
+// and reverting a revert produces `Revert "Revert "<orig>""` — a redo→undo→redo
+// cycle keeps stacking layers. This helper returns the innermost subject by
+// stripping the outermost `Revert "` prefix and matching trailing quote as
+// long as the wrapper is intact.
+func stripRevertPrefix(s string) string {
+	const prefix = `Revert "`
+	for strings.HasPrefix(s, prefix) && strings.HasSuffix(s, `"`) {
+		s = strings.TrimSuffix(strings.TrimPrefix(s, prefix), `"`)
+	}
+	return s
 }
 
 // deleteCmd removes a task and commits the deletion.
@@ -3276,7 +3263,7 @@ func (m *Model) helpModalContent() string {
 		"  " + k("↵") + "    notes panel\n" +
 		"  " + k("s") + "    sync\n" +
 		"  " + k("u") + "    undo last action (also ctrl+z)\n" +
-		"  " + k("ctrl+y") + "    redo last undone action\n" +
+		"  " + k("ctrl+y") + " redo last undone action\n" +
 		"  " + k("h") + "    this help\n" +
 		"  " + k("q") + "    quit\n\n" +
 		"Search:\n\n" +
@@ -3415,6 +3402,17 @@ func indentContinuation(s, prefix string) string {
 
 func taskRelPath(id string) string {
 	return filepath.Join(".monolog", "tasks", id+".json")
+}
+
+// pushCappedSHA appends sha to stack and drops the oldest entry when the
+// capacity (undoStackCap) is exceeded. Centralising here keeps the cap
+// invariant enforced at every push site in the taskSavedMsg handler.
+func pushCappedSHA(stack []string, sha string) []string {
+	stack = append(stack, sha)
+	if len(stack) > undoStackCap {
+		stack = stack[1:]
+	}
+	return stack
 }
 
 func now() string {

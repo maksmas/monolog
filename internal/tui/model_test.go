@@ -22,6 +22,12 @@ import (
 	"github.com/mmaksmas/monolog/internal/store"
 )
 
+// bogusSHA is a syntactically valid but non-existent 40-char commit SHA used
+// by tests that seed undo/redo stacks to exercise error paths (e.g. stale SHA
+// lookup failures). The bytes decode as hex so git will reject it with a
+// "not found" error rather than a parse error.
+const bogusSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
 // expectSchedule resolves a bucket name to its ISO date for current now.
 func expectSchedule(t *testing.T, bucket string) string {
 	t.Helper()
@@ -81,6 +87,8 @@ func toKeyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "ctrl+z":
 		return tea.KeyMsg{Type: tea.KeyCtrlZ}
+	case "ctrl+y":
+		return tea.KeyMsg{Type: tea.KeyCtrlY}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -9813,5 +9821,416 @@ func TestClearHistory_ClearsBothStacks(t *testing.T) {
 	}
 	if m.redoStack != nil {
 		t.Errorf("redoStack = %v, want nil after clearHistory", m.redoStack)
+	}
+}
+
+// TestRedoStack_UndoRedoUndoCycle verifies the symmetric undo-of-redo path:
+// after done → undo → redo → undo, the task returns to its pre-redo (open)
+// state and redoStack has 1 entry again (the revert of the redo).
+func TestRedoStack_UndoRedoUndoCycle(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01X", Title: "cycle me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// done
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d key should return a cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("done error: %v", m.err)
+	}
+
+	// undo → task open, redoStack has 1 entry
+	m, undoC := key(t, m, "u")
+	m = runCmd(t, m, undoC)
+	if m.err != nil {
+		t.Fatalf("undo error: %v", m.err)
+	}
+	if len(m.redoStack) != 1 {
+		t.Fatalf("after undo: redoStack len = %d, want 1", len(m.redoStack))
+	}
+
+	// redo → task done again, undoStack has new SHA, redoStack empty
+	m, redoC := key(t, m, "ctrl+y")
+	m = runCmd(t, m, redoC)
+	if m.err != nil {
+		t.Fatalf("redo error: %v", m.err)
+	}
+	if len(m.redoStack) != 0 {
+		t.Fatalf("after redo: redoStack len = %d, want 0", len(m.redoStack))
+	}
+	if len(m.undoStack) != 1 {
+		t.Fatalf("after redo: undoStack len = %d, want 1", len(m.undoStack))
+	}
+
+	// undo AGAIN → undoes the redo. Task should return to open (pre-redo)
+	// state and redoStack should have 1 entry again (the new revert SHA).
+	m, undo2 := key(t, m, "u")
+	if undo2 == nil {
+		t.Fatal("second undo should return a cmd (undoes the redo)")
+	}
+	m = runCmd(t, m, undo2)
+	if m.err != nil {
+		t.Fatalf("second undo error: %v", m.err)
+	}
+	if len(m.redoStack) != 1 {
+		t.Errorf("after undo-of-redo: redoStack len = %d, want 1", len(m.redoStack))
+	}
+	// Task should be open again (pre-redo state).
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Fatalf("Today tab items = %d after undo-of-redo, want 1", got)
+	}
+	if st := m.lists[0].Items()[0].(item).task.Status; st != "open" {
+		t.Errorf("after undo-of-redo: task Status = %q, want %q", st, "open")
+	}
+}
+
+// TestRedoStack_MultiLevelRedo verifies two sequential redos both land: two
+// mutations on two tasks, two undos, two redos → both tasks end up done and
+// undoStack has 2 entries.
+func TestRedoStack_MultiLevelRedo(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01M1", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01M2", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// done on first task (cursor starts on first item).
+	m, cmd1 := key(t, m, "d")
+	m = runCmd(t, m, cmd1)
+	if m.err != nil {
+		t.Fatalf("first done error: %v", m.err)
+	}
+	// done on remaining task.
+	m, cmd2 := key(t, m, "d")
+	m = runCmd(t, m, cmd2)
+	if m.err != nil {
+		t.Fatalf("second done error: %v", m.err)
+	}
+	if len(m.undoStack) != 2 {
+		t.Fatalf("after two dones: undoStack len = %d, want 2", len(m.undoStack))
+	}
+
+	// undo twice → both tasks reopened, redoStack has 2 entries
+	m, u1 := key(t, m, "u")
+	m = runCmd(t, m, u1)
+	if m.err != nil {
+		t.Fatalf("first undo error: %v", m.err)
+	}
+	m, u2 := key(t, m, "u")
+	m = runCmd(t, m, u2)
+	if m.err != nil {
+		t.Fatalf("second undo error: %v", m.err)
+	}
+	if len(m.redoStack) != 2 {
+		t.Fatalf("after two undos: redoStack len = %d, want 2", len(m.redoStack))
+	}
+	if len(m.undoStack) != 0 {
+		t.Fatalf("after two undos: undoStack len = %d, want 0", len(m.undoStack))
+	}
+
+	// redo twice → both tasks done again, undoStack has 2 entries
+	m, r1 := key(t, m, "ctrl+y")
+	m = runCmd(t, m, r1)
+	if m.err != nil {
+		t.Fatalf("first redo error: %v", m.err)
+	}
+	m, r2 := key(t, m, "ctrl+y")
+	m = runCmd(t, m, r2)
+	if m.err != nil {
+		t.Fatalf("second redo error: %v", m.err)
+	}
+	if len(m.undoStack) != 2 {
+		t.Errorf("after two redos: undoStack len = %d, want 2", len(m.undoStack))
+	}
+	if len(m.redoStack) != 0 {
+		t.Errorf("after two redos: redoStack len = %d, want 0", len(m.redoStack))
+	}
+
+	// Both tasks should be done.
+	doneTab := findTabByLabel(t, m, "Done")
+	if got := len(m.lists[doneTab].Items()); got != 2 {
+		t.Errorf("Done tab items = %d after two redos, want 2", got)
+	}
+}
+
+// TestUndoStack_CommitSubjectFailure_DropsSHA verifies that when undoCmd's
+// CommitSubject lookup fails (stale SHA), the SHA is NOT restored — the
+// stack drops it. redoStack also stays empty because no revert happened.
+func TestUndoStack_CommitSubjectFailure_DropsSHA(t *testing.T) {
+	m := newTestModel(t)
+	// Seed a bogus SHA; CommitSubject will fail because the commit doesn't
+	// exist in the temp repo.
+	m.undoStack = []string{bogusSHA}
+
+	cmd := m.undoCmd()
+	if cmd == nil {
+		t.Fatal("undoCmd should return a cmd with non-empty stack")
+	}
+	// The cmd pops the SHA synchronously; execute its goroutine body.
+	m = runCmd(t, m, cmd)
+
+	if m.err == nil {
+		t.Fatal("m.err should be non-nil after bogus SHA lookup failed")
+	}
+	if !strings.Contains(m.err.Error(), "undo:") {
+		t.Errorf("m.err = %v, want prefix containing %q", m.err, "undo:")
+	}
+	if len(m.undoStack) != 0 {
+		t.Errorf("undoStack len = %d, want 0 (stale SHA dropped, not restored)", len(m.undoStack))
+	}
+	if len(m.redoStack) != 0 {
+		t.Errorf("redoStack len = %d, want 0 (no revert happened)", len(m.redoStack))
+	}
+}
+
+// TestRedoStack_CommitSubjectFailure_DropsSHA mirrors the undo case: when
+// redoCmd's CommitSubject lookup fails, the SHA is NOT restored.
+func TestRedoStack_CommitSubjectFailure_DropsSHA(t *testing.T) {
+	m := newTestModel(t)
+	m.redoStack = []string{bogusSHA}
+
+	cmd := m.redoCmd()
+	if cmd == nil {
+		t.Fatal("redoCmd should return a cmd with non-empty stack")
+	}
+	m = runCmd(t, m, cmd)
+
+	if m.err == nil {
+		t.Fatal("m.err should be non-nil after bogus SHA lookup failed")
+	}
+	if !strings.Contains(m.err.Error(), "redo:") {
+		t.Errorf("m.err = %v, want prefix containing %q", m.err, "redo:")
+	}
+	if len(m.redoStack) != 0 {
+		t.Errorf("redoStack len = %d, want 0 (stale SHA dropped, not restored)", len(m.redoStack))
+	}
+	if len(m.undoStack) != 0 {
+		t.Errorf("undoStack len = %d, want 0 (no revert happened)", len(m.undoStack))
+	}
+}
+
+// TestRedoStack_FailedRedo_PreservesUndoStack verifies that a failed redo
+// (taskSavedMsg with err + restoreRedoSHA set) does NOT touch undoStack.
+// Only the redoStack SHA is restored.
+func TestRedoStack_FailedRedo_PreservesUndoStack(t *testing.T) {
+	m := newTestModel(t)
+	m.undoStack = []string{"sha_u"}
+
+	next, _ := m.Update(taskSavedMsg{
+		err:            errors.New("redo: conflict"),
+		restoreRedoSHA: "abc",
+	})
+	m = next.(*Model)
+
+	if len(m.undoStack) != 1 || m.undoStack[0] != "sha_u" {
+		t.Errorf("undoStack = %v, want [sha_u] (preserved)", m.undoStack)
+	}
+	if len(m.redoStack) != 1 || m.redoStack[0] != "abc" {
+		t.Errorf("redoStack = %v, want [abc]", m.redoStack)
+	}
+}
+
+// TestRedoStack_RedoneSHA_CapDropsOldest verifies the cap is enforced on the
+// redoneSHA push path: pre-seed undoStack with undoStackCap entries, push one
+// more via redoneSHA, verify the oldest is dropped.
+func TestRedoStack_RedoneSHA_CapDropsOldest(t *testing.T) {
+	m := newTestModel(t)
+	// Pre-seed undoStack with exactly undoStackCap entries.
+	var seeded []string
+	for i := 0; i < undoStackCap; i++ {
+		seeded = append(seeded, fmt.Sprintf("sha_%d", i))
+	}
+	m.undoStack = seeded
+
+	next, _ := m.Update(taskSavedMsg{redoneSHA: "new", status: "Redone: x"})
+	m = next.(*Model)
+
+	if len(m.undoStack) != undoStackCap {
+		t.Fatalf("undoStack len = %d, want %d (capped)", len(m.undoStack), undoStackCap)
+	}
+	// Oldest (sha_0) must have been dropped; "new" is last.
+	if m.undoStack[0] != "sha_1" {
+		t.Errorf("undoStack[0] = %q, want %q (oldest dropped)", m.undoStack[0], "sha_1")
+	}
+	if got := m.undoStack[undoStackCap-1]; got != "new" {
+		t.Errorf("undoStack[last] = %q, want %q", got, "new")
+	}
+}
+
+// TestRedoStack_RestoreRedoSHA_CapDropsOldest verifies the cap is enforced on
+// the restoreRedoSHA path: pre-seed redoStack with undoStackCap entries,
+// trigger a failed redo that pushes another, verify oldest is dropped.
+func TestRedoStack_RestoreRedoSHA_CapDropsOldest(t *testing.T) {
+	m := newTestModel(t)
+	var seeded []string
+	for i := 0; i < undoStackCap; i++ {
+		seeded = append(seeded, fmt.Sprintf("sha_%d", i))
+	}
+	m.redoStack = seeded
+
+	next, _ := m.Update(taskSavedMsg{
+		err:            errors.New("redo: conflict"),
+		restoreRedoSHA: "new",
+	})
+	m = next.(*Model)
+
+	if len(m.redoStack) != undoStackCap {
+		t.Fatalf("redoStack len = %d, want %d (capped)", len(m.redoStack), undoStackCap)
+	}
+	if m.redoStack[0] != "sha_1" {
+		t.Errorf("redoStack[0] = %q, want %q (oldest dropped)", m.redoStack[0], "sha_1")
+	}
+	if got := m.redoStack[undoStackCap-1]; got != "new" {
+		t.Errorf("redoStack[last] = %q, want %q", got, "new")
+	}
+}
+
+// TestUndoStack_CapExactBoundary verifies that pushing exactly undoStackCap
+// entries preserves all of them; the 11th push drops only the oldest.
+func TestUndoStack_CapExactBoundary(t *testing.T) {
+	m := newTestModel(t)
+	// Push exactly undoStackCap (10) entries.
+	for i := 0; i < undoStackCap; i++ {
+		next, _ := m.Update(taskSavedMsg{sha: fmt.Sprintf("sha_%d", i), status: "ok"})
+		m = next.(*Model)
+	}
+	if len(m.undoStack) != undoStackCap {
+		t.Fatalf("after %d pushes: undoStack len = %d, want %d", undoStackCap, len(m.undoStack), undoStackCap)
+	}
+	// All 10 still present in order.
+	for i := 0; i < undoStackCap; i++ {
+		if want := fmt.Sprintf("sha_%d", i); m.undoStack[i] != want {
+			t.Errorf("undoStack[%d] = %q, want %q", i, m.undoStack[i], want)
+		}
+	}
+	// Push 11th — oldest ("sha_0") drops.
+	next, _ := m.Update(taskSavedMsg{sha: "sha_new", status: "ok"})
+	m = next.(*Model)
+	if len(m.undoStack) != undoStackCap {
+		t.Fatalf("after 11th push: undoStack len = %d, want %d", len(m.undoStack), undoStackCap)
+	}
+	if m.undoStack[0] != "sha_1" {
+		t.Errorf("undoStack[0] = %q, want %q (oldest dropped)", m.undoStack[0], "sha_1")
+	}
+	if got := m.undoStack[undoStackCap-1]; got != "sha_new" {
+		t.Errorf("undoStack[last] = %q, want %q", got, "sha_new")
+	}
+}
+
+// TestRedoStack_CapExactBoundary verifies that pushing exactly undoStackCap
+// entries to redoStack preserves all; the 11th push drops only the oldest.
+func TestRedoStack_CapExactBoundary(t *testing.T) {
+	m := newTestModel(t)
+	for i := 0; i < undoStackCap; i++ {
+		next, _ := m.Update(taskSavedMsg{redoSHA: fmt.Sprintf("sha_%d", i), status: "ok"})
+		m = next.(*Model)
+	}
+	if len(m.redoStack) != undoStackCap {
+		t.Fatalf("after %d pushes: redoStack len = %d, want %d", undoStackCap, len(m.redoStack), undoStackCap)
+	}
+	for i := 0; i < undoStackCap; i++ {
+		if want := fmt.Sprintf("sha_%d", i); m.redoStack[i] != want {
+			t.Errorf("redoStack[%d] = %q, want %q", i, m.redoStack[i], want)
+		}
+	}
+	next, _ := m.Update(taskSavedMsg{redoSHA: "sha_new", status: "ok"})
+	m = next.(*Model)
+	if len(m.redoStack) != undoStackCap {
+		t.Fatalf("after 11th push: redoStack len = %d, want %d", len(m.redoStack), undoStackCap)
+	}
+	if m.redoStack[0] != "sha_1" {
+		t.Errorf("redoStack[0] = %q, want %q (oldest dropped)", m.redoStack[0], "sha_1")
+	}
+	if got := m.redoStack[undoStackCap-1]; got != "sha_new" {
+		t.Errorf("redoStack[last] = %q, want %q", got, "sha_new")
+	}
+}
+
+// TestRedoStack_StatusStripsRevertPrefix verifies that after an undo→redo
+// cycle, the status bar shows the original commit subject (e.g. "Redone:
+// done: ...") instead of an accumulating `Revert "..."` chain.
+func TestRedoStack_StatusStripsRevertPrefix(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01R", Title: "strip me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// done
+	m, cmd := key(t, m, "d")
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("done error: %v", m.err)
+	}
+	// undo
+	m, u := key(t, m, "u")
+	m = runCmd(t, m, u)
+	if m.err != nil {
+		t.Fatalf("undo error: %v", m.err)
+	}
+	// redo
+	m, r := key(t, m, "ctrl+y")
+	m = runCmd(t, m, r)
+	if m.err != nil {
+		t.Fatalf("redo error: %v", m.err)
+	}
+
+	// After redo, status must NOT contain `Revert "` — the prefix is stripped.
+	if strings.Contains(m.statusMsg, `Revert "`) {
+		t.Errorf("statusMsg = %q, should not contain %q after strip", m.statusMsg, `Revert "`)
+	}
+	// Should still start with "Redone:" and include the original "done:" subject.
+	if !strings.HasPrefix(m.statusMsg, "Redone:") {
+		t.Errorf("statusMsg = %q, want prefix %q", m.statusMsg, "Redone:")
+	}
+	if !strings.Contains(m.statusMsg, "done:") {
+		t.Errorf("statusMsg = %q, want to contain original %q subject", m.statusMsg, "done:")
+	}
+
+	// Now undo again then redo again — the second redo also must not accumulate
+	// `Revert "` layers.
+	m, u2 := key(t, m, "u")
+	m = runCmd(t, m, u2)
+	if m.err != nil {
+		t.Fatalf("second undo error: %v", m.err)
+	}
+	// After undo-of-redo, the status should also NOT contain `Revert "` —
+	// both undoCmd and redoCmd must strip the prefix symmetrically.
+	if strings.Contains(m.statusMsg, `Revert "`) {
+		t.Errorf("after undo-of-redo: statusMsg = %q, should not contain %q", m.statusMsg, `Revert "`)
+	}
+	if !strings.HasPrefix(m.statusMsg, "Undone:") {
+		t.Errorf("after undo-of-redo: statusMsg = %q, want prefix %q", m.statusMsg, "Undone:")
+	}
+	m, r2 := key(t, m, "ctrl+y")
+	m = runCmd(t, m, r2)
+	if m.err != nil {
+		t.Fatalf("second redo error: %v", m.err)
+	}
+	if strings.Contains(m.statusMsg, `Revert "`) {
+		t.Errorf("after second redo: statusMsg = %q, should not contain %q", m.statusMsg, `Revert "`)
+	}
+}
+
+// TestStripRevertPrefix verifies the pure helper peels off arbitrarily nested
+// `Revert "..."` layers.
+func TestStripRevertPrefix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"done: foo", "done: foo"},
+		{`Revert "done: foo"`, "done: foo"},
+		{`Revert "Revert "done: foo""`, "done: foo"},
+		{`Revert "Revert "Revert "add: bar"""`, "add: bar"},
+		{"", ""},
+		{`Revert "unterminated`, `Revert "unterminated`}, // not a wrapped form, untouched
+	}
+	for _, c := range cases {
+		if got := stripRevertPrefix(c.in); got != c.want {
+			t.Errorf("stripRevertPrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
