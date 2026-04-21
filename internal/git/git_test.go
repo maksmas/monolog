@@ -48,6 +48,9 @@ func TestInit_CreatesDirectoryStructure(t *testing.T) {
 	if config["editor"] != "$EDITOR" {
 		t.Errorf("editor = %q, want %q", config["editor"], "$EDITOR")
 	}
+	if config["theme"] != "default" {
+		t.Errorf("theme = %q, want %q", config["theme"], "default")
+	}
 
 	// Check .gitignore exists
 	gitignorePath := filepath.Join(repoPath, ".gitignore")

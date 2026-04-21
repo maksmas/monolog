@@ -23,7 +23,7 @@ monolog sync                        # push/pull with a git remote
 monolog                             # launch the interactive TUI
 ```
 
-Set `MONOLOG_DIR` to store data somewhere other than `~/.monolog`.
+Set `MONOLOG_DIR` to store data somewhere other than `~/.monolog`. Set `MONOLOG_THEME` to `dracula` (or `default`) to switch TUI color themes; the same value can be persisted in `<MONOLOG_DIR>/.monolog/config.json` as the `"theme"` key.
 
 ## Commands
 

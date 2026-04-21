@@ -99,15 +99,15 @@ Search: `SearchDone`, `SearchActive`, `SearchCount`, `SearchMeta`, `SearchPrevie
 - Modify: `internal/tui/tui.go`
 - Modify: `internal/tui/model.go` (minor — usage sites)
 
-- [ ] define `tuiStyles` struct in `tui.go` holding all fields previously in the `var` block (tabBorder, tabStyle, activeTabStyle, statusStyle, helpStyle, separatorStyle, helpKeyStyle, helpTextStyle, suggestionBoldStyle, suggestionDimStyle, searchSelectedStyle, searchMatchStyle, searchDoneStyle, searchActiveStyle, searchCountStyle, searchMetaStyle, searchPreviewBorderStyle, searchResultsStyle, searchPreviewTitleStyle, searchPreviewDimStyle)
-- [ ] implement `buildStyles(t Theme) tuiStyles` that constructs all styles from theme fields
-- [ ] remove the 18-entry `var` block from `tui.go`
-- [ ] add `styles tuiStyles` field to `Model` struct in `model.go`
-- [ ] update `newModel()` to call `buildStyles(theme)` and store in `m.styles`
-- [ ] update all render sites in `model.go` and `search.go` that reference the old package-level vars to use `m.styles.*` instead
-- [ ] run `go build ./...` to catch missed references
-- [ ] write tests: `buildStyles(defaultTheme)` returns a styles struct where `helpKeyStyle` has non-nil foreground (smoke-tests the builder path)
-- [ ] run tests — must pass before task 4
+- [x] define `tuiStyles` struct in `tui.go` holding all fields previously in the `var` block (tabBorder, tabStyle, activeTabStyle, statusStyle, helpStyle, separatorStyle, helpKeyStyle, helpTextStyle, suggestionBoldStyle, suggestionDimStyle, searchSelectedStyle, searchMatchStyle, searchDoneStyle, searchActiveStyle, searchCountStyle, searchMetaStyle, searchPreviewBorderStyle, searchResultsStyle, searchPreviewTitleStyle, searchPreviewDimStyle)
+- [x] implement `buildStyles(t Theme) tuiStyles` that constructs all styles from theme fields
+- [x] remove the 18-entry `var` block from `tui.go`
+- [x] add `styles tuiStyles` field to `Model` struct in `model.go`
+- [x] update `newModel()` to call `buildStyles(theme)` and store in `m.styles`
+- [x] update all render sites in `model.go` and `search.go` that reference the old package-level vars to use `m.styles.*` instead
+- [x] run `go build ./...` to catch missed references
+- [x] write tests: `buildStyles(defaultTheme)` returns a styles struct where `helpKeyStyle` has non-nil foreground (smoke-tests the builder path)
+- [x] run tests — must pass before task 4
 
 ### Task 4: Wire theme through Model and fix inline color literals
 
@@ -115,15 +115,15 @@ Search: `SearchDone`, `SearchActive`, `SearchCount`, `SearchMeta`, `SearchPrevie
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/tui.go` (Run signature and newModel)
 
-- [ ] add `theme Theme` field to `Model`
-- [ ] update `newModel()` to call `config.Theme()` → `ThemeByName` → fallback to `defaultTheme`; pass theme to `initStyles` and `buildStyles`
-- [ ] update `initStyles()` signature to `initStyles(t Theme)` and replace hardcoded `AdaptiveColor` literals with `t.*` fields
-- [ ] replace inline color at line 2440 (`"28"`) with `m.theme.ActiveBorder`
-- [ ] replace inline color at line 2725 (`"240"`) with `m.theme.Borders`
-- [ ] replace inline color at line 2733 (`"62"`) with `m.theme.ModalBorder`
-- [ ] replace inline color at line 3022 (`"62"`) with `m.theme.ModalBorder`
-- [ ] run `go vet ./...` — zero warnings
-- [ ] run tests — must pass before task 5
+- [x] add `theme Theme` field to `Model`
+- [x] update `newModel()` to call `config.Theme()` → `ThemeByName` → fallback to `defaultTheme`; pass theme to `initStyles` and `buildStyles`
+- [x] update `initStyles()` signature to `initStyles(t Theme)` and replace hardcoded `AdaptiveColor` literals with `t.*` fields
+- [x] replace inline color at line 2440 (`"28"`) with `m.theme.ActiveBorder`
+- [x] replace inline color at line 2725 (`"240"`) with `m.theme.Borders`
+- [x] replace inline color at line 2733 (`"62"`) with `m.theme.ModalBorder`
+- [x] replace inline color at line 3022 (`"62"`) with `m.theme.ModalBorder`
+- [x] run `go vet ./...` — zero warnings
+- [x] run tests — must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 

@@ -12,7 +12,8 @@ type Theme struct {
 	Hotkey       lipgloss.AdaptiveColor // hotkey highlights in help bar
 	ActiveTabBg  lipgloss.AdaptiveColor // background of the active tab
 	ActiveTabFg  lipgloss.AdaptiveColor // foreground of the active tab
-	Borders      lipgloss.AdaptiveColor // tab border, dim text, separators
+	TabFg        lipgloss.AdaptiveColor // foreground of inactive tabs and status bar
+	Borders      lipgloss.AdaptiveColor // dim text, separators
 
 	// Task list colors
 	NormalText     lipgloss.AdaptiveColor // normal task title
@@ -39,6 +40,7 @@ var defaultTheme = Theme{
 	Hotkey:       lipgloss.AdaptiveColor{Light: "9", Dark: "9"},
 	ActiveTabBg:  lipgloss.AdaptiveColor{Light: "62", Dark: "62"},
 	ActiveTabFg:  lipgloss.AdaptiveColor{Light: "231", Dark: "231"},
+	TabFg:        lipgloss.AdaptiveColor{Light: "244", Dark: "244"},
 	Borders:      lipgloss.AdaptiveColor{Light: "240", Dark: "240"},
 
 	NormalText:     lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"},
@@ -64,6 +66,7 @@ var draculaTheme = Theme{
 	Hotkey:       lipgloss.AdaptiveColor{Light: "#ff5555", Dark: "#ff5555"},
 	ActiveTabBg:  lipgloss.AdaptiveColor{Light: "#44475a", Dark: "#44475a"},
 	ActiveTabFg:  lipgloss.AdaptiveColor{Light: "#f8f8f2", Dark: "#f8f8f2"},
+	TabFg:        lipgloss.AdaptiveColor{Light: "#44475a", Dark: "#6272a4"},
 	Borders:      lipgloss.AdaptiveColor{Light: "#44475a", Dark: "#6272a4"},
 
 	NormalText:     lipgloss.AdaptiveColor{Light: "#282a36", Dark: "#f8f8f2"},
@@ -87,9 +90,3 @@ var themes = map[string]Theme{
 	"dracula": draculaTheme,
 }
 
-// ThemeByName looks up a theme by name. Returns the Theme and true on success,
-// or the zero Theme and false when the name is not registered.
-func ThemeByName(name string) (Theme, bool) {
-	t, ok := themes[name]
-	return t, ok
-}

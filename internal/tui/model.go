@@ -121,6 +121,13 @@ type Model struct {
 	activeTab int
 	lists     []*vlist // one per tab
 
+	// theme is the active color theme resolved at startup.
+	theme Theme
+
+	// styles holds all lipgloss styles for this model instance, built from
+	// the active theme by buildStyles in newModel.
+	styles tuiStyles
+
 	// Style sets for list item rendering.
 	baseStyles   list.DefaultItemStyles
 	grabStyles   list.DefaultItemStyles
@@ -237,30 +244,23 @@ func (i item) FilterValue() string { return i.task.Title }
 // initStyles sets up the three style sets used for list item rendering.
 // Styles carry only foreground colors (no padding or borders) because bullet
 // prefixes handle indentation and selection indication.
-func initStyles() (base, grab, active list.DefaultItemStyles) {
-	normalFg := lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"}
-	selectedFg := lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"}
-	dimFg := lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"}
-
-	base.NormalTitle = lipgloss.NewStyle().Foreground(normalFg)
-	base.SelectedTitle = lipgloss.NewStyle().Foreground(selectedFg)
-	base.NormalDesc = lipgloss.NewStyle().Foreground(dimFg)
-	base.SelectedDesc = lipgloss.NewStyle().Foreground(selectedFg)
+func initStyles(t Theme) (base, grab, active list.DefaultItemStyles) {
+	base.NormalTitle = lipgloss.NewStyle().Foreground(t.NormalText)
+	base.SelectedTitle = lipgloss.NewStyle().Foreground(t.SelectedText)
+	base.NormalDesc = lipgloss.NewStyle().Foreground(t.DimText)
+	base.SelectedDesc = lipgloss.NewStyle().Foreground(t.SelectedText)
 
 	// Distinct from default pink selection: orange/yellow reads as "held".
 	grab = base
-	grabColor := lipgloss.AdaptiveColor{Light: "#D97706", Dark: "#FFB454"}
-	grab.SelectedTitle = lipgloss.NewStyle().Foreground(grabColor).Bold(true)
-	grab.SelectedDesc = lipgloss.NewStyle().Foreground(grabColor)
+	grab.SelectedTitle = lipgloss.NewStyle().Foreground(t.GrabText).Bold(true)
+	grab.SelectedDesc = lipgloss.NewStyle().Foreground(t.GrabText)
 
 	// Green styling for active tasks (persistent "currently working on" state).
 	active = base
-	activeColor := lipgloss.AdaptiveColor{Light: "#16A34A", Dark: "#22C55E"}
-	activeSelectedColor := lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#4ADE80"}
-	active.NormalTitle = lipgloss.NewStyle().Foreground(activeColor)
-	active.NormalDesc = lipgloss.NewStyle().Foreground(activeColor)
-	active.SelectedTitle = lipgloss.NewStyle().Foreground(activeSelectedColor).Bold(true)
-	active.SelectedDesc = lipgloss.NewStyle().Foreground(activeSelectedColor)
+	active.NormalTitle = lipgloss.NewStyle().Foreground(t.ActiveNormal)
+	active.NormalDesc = lipgloss.NewStyle().Foreground(t.ActiveNormal)
+	active.SelectedTitle = lipgloss.NewStyle().Foreground(t.ActiveSelected).Bold(true)
+	active.SelectedDesc = lipgloss.NewStyle().Foreground(t.ActiveSelected)
 
 	return
 }
@@ -274,7 +274,7 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 	}
 	if i.isSeparator {
 		label := "── " + i.task.Title + " ──"
-		return separatorStyle.Render(label)
+		return m.styles.separatorStyle.Render(label)
 	}
 
 	// Pick the style set based on mode and task state.
@@ -396,6 +396,12 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	noteTA.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	noteTA.BlurredStyle.Base = lipgloss.NewStyle()
 
+	// Resolve the active color theme: read config, look up by name, fall back.
+	activeTheme, ok := themes[config.Theme()]
+	if !ok {
+		activeTheme = defaultTheme
+	}
+
 	m := &Model{
 		store:      s,
 		repoPath:   repoPath,
@@ -406,8 +412,10 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		titleArea:  ta,
 		noteArea:   noteTA,
 		search:     searchState{input: searchTi},
+		theme:      activeTheme,
+		styles:     buildStyles(activeTheme),
 	}
-	m.baseStyles, m.grabStyles, m.activeStyles = initStyles()
+	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(activeTheme)
 
 	m.lists = m.initLists()
 
@@ -2437,7 +2445,7 @@ func (m *Model) activePanelView() string {
 	content := strings.Join(lines, "\n")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("28")).
+		BorderForeground(m.theme.ActiveBorder).
 		Padding(0, 1).
 		Render(content)
 }
@@ -2525,7 +2533,7 @@ func (m *Model) statsBarView() string {
 	tabParts = append(tabParts, fmt.Sprintf("%d in tab", tabCount))
 
 	line := strings.Join(overall, "  ") + "  |  " + strings.Join(tabParts, "  ")
-	return helpTextStyle.Padding(0, 1).Render(line)
+	return m.styles.helpTextStyle.Padding(0, 1).Render(line)
 }
 
 // detailPanelWidth returns the width allocated to the detail panel when it is
@@ -2722,15 +2730,14 @@ func (m *Model) detailPanelView() string {
 		parts = append(parts, strings.Join(bodyLines, "\n"))
 	}
 	sepLine := strings.Repeat("─", iw)
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	parts = append(parts, dimStyle.Render(sepLine))
+	parts = append(parts, m.styles.helpTextStyle.Render(sepLine))
 	parts = append(parts, m.noteArea.View())
 
 	content := strings.Join(parts, "\n")
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
+		BorderForeground(m.theme.ModalBorder).
 		Padding(0, 2).
 		Width(pw - 2). // subtract border columns
 		Render(content)
@@ -2746,9 +2753,9 @@ func (m *Model) View() string {
 	var tabBar []string
 	for i, t := range m.tabs {
 		if i == m.activeTab {
-			tabBar = append(tabBar, activeTabStyle.Render(t.label))
+			tabBar = append(tabBar, m.styles.activeTabStyle.Render(t.label))
 		} else {
-			tabBar = append(tabBar, tabStyle.Render(t.label))
+			tabBar = append(tabBar, m.styles.tabStyle.Render(t.label))
 		}
 	}
 	header := lipgloss.JoinHorizontal(lipgloss.Top, tabBar...)
@@ -2780,38 +2787,38 @@ func (m *Model) View() string {
 }
 
 // renderHelpBar composes a styled status-bar line from key/desc pairs.
-// Each key is rendered bold+light-red; descriptions and separators are dim grey.
+// Each key is rendered bold+hotkey-color; descriptions and separators are dim.
 // Pass an empty key ("") to render the desc as unstyled label (e.g., "GRAB").
 // Pass an empty desc ("") to render the key alone (e.g., "+d/e/r/t/a/c/x/s").
-func renderHelpBar(pairs ...[2]string) string {
+func (m *Model) renderHelpBar(pairs ...[2]string) string {
 	parts := make([]string, 0, len(pairs))
 	for _, p := range pairs {
 		key, desc := p[0], p[1]
 		switch {
 		case key == "":
-			parts = append(parts, helpTextStyle.Render(desc))
+			parts = append(parts, m.styles.helpTextStyle.Render(desc))
 		case desc == "":
-			parts = append(parts, helpKeyStyle.Render(key))
+			parts = append(parts, m.styles.helpKeyStyle.Render(key))
 		default:
-			parts = append(parts, helpKeyStyle.Render(key)+helpTextStyle.Render(" "+desc))
+			parts = append(parts, m.styles.helpKeyStyle.Render(key)+m.styles.helpTextStyle.Render(" "+desc))
 		}
 	}
 	return lipgloss.NewStyle().Padding(0, 1).Render(
-		strings.Join(parts, helpTextStyle.Render("  ")),
+		strings.Join(parts, m.styles.helpTextStyle.Render("  ")),
 	)
 }
 
 func (m *Model) helpLine() string {
 	if m.err != nil {
-		return statusStyle.Render("error: " + m.err.Error())
+		return m.styles.statusStyle.Render("error: " + m.err.Error())
 	}
 	if m.statusMsg != "" {
-		return statusStyle.Render(m.statusMsg)
+		return m.styles.statusStyle.Render(m.statusMsg)
 	}
 	switch m.mode {
 	case modeNormal:
 		if m.detailOpen {
-			return renderHelpBar(
+			return m.renderHelpBar(
 				[2]string{"esc", "close"},
 				[2]string{"enter", "submit"},
 				[2]string{"alt+enter", "newline"},
@@ -2819,7 +2826,7 @@ func (m *Model) helpLine() string {
 			)
 		}
 		if m.viewMode == viewTag {
-			return renderHelpBar(
+			return m.renderHelpBar(
 				[2]string{"←/→", "tabs"},
 				[2]string{"enter", "notes"},
 				[2]string{"d", "done"},
@@ -2837,7 +2844,7 @@ func (m *Model) helpLine() string {
 				[2]string{"q", "quit"},
 			)
 		}
-		return renderHelpBar(
+		return m.renderHelpBar(
 			[2]string{"←/→", "tabs"},
 			[2]string{"1-6", "jump"},
 			[2]string{"enter", "notes"},
@@ -2856,10 +2863,10 @@ func (m *Model) helpLine() string {
 			[2]string{"q", "quit"},
 		)
 	case modeHelp:
-		return helpStyle.Render("press any key to close")
+		return m.styles.helpStyle.Render("press any key to close")
 	case modeGrab:
 		if m.viewMode == viewTag {
-			return renderHelpBar(
+			return m.renderHelpBar(
 				[2]string{"", "GRAB"},
 				[2]string{"↑/↓", "reorder"},
 				[2]string{"g/G", "top/bottom"},
@@ -2868,7 +2875,7 @@ func (m *Model) helpLine() string {
 				[2]string{"+d/e/r/t/a/c/x/s", ""},
 			)
 		}
-		return renderHelpBar(
+		return m.renderHelpBar(
 			[2]string{"", "GRAB"},
 			[2]string{"↑/↓", "reorder"},
 			[2]string{"←/→", "bucket"},
@@ -2879,7 +2886,7 @@ func (m *Model) helpLine() string {
 		)
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
-			return renderHelpBar(
+			return m.renderHelpBar(
 				[2]string{"1", "today"},
 				[2]string{"2", "tomorrow"},
 				[2]string{"3", "week"},
@@ -2889,23 +2896,23 @@ func (m *Model) helpLine() string {
 				[2]string{"esc", "cancel"},
 			)
 		}
-		return renderHelpBar(
+		return m.renderHelpBar(
 			[2]string{"enter", "save"},
 			[2]string{"esc", "cancel"},
 		)
 	case modeRetag:
-		return renderHelpBar(
+		return m.renderHelpBar(
 			[2]string{"enter", "save"},
 			[2]string{"esc", "cancel"},
 		)
 	case modeAdd:
-		return renderHelpBar(
+		return m.renderHelpBar(
 			[2]string{"tab", "switch field"},
 			[2]string{"enter", "save"},
 			[2]string{"esc", "cancel"},
 		)
 	case modeConfirmDelete:
-		return renderHelpBar(
+		return m.renderHelpBar(
 			[2]string{"y", "confirm"},
 			[2]string{"", "anything else cancels"},
 		)
@@ -2913,8 +2920,8 @@ func (m *Model) helpLine() string {
 	return ""
 }
 
-func helpModalContent() string {
-	k := helpKeyStyle.Render
+func (m *Model) helpModalContent() string {
+	k := m.styles.helpKeyStyle.Render
 	return "Keybindings:\n\n" +
 		"  " + k("←/→") + "  navigate tabs\n" +
 		"  " + k("1-6") + "  jump to tab\n" +
@@ -2946,10 +2953,10 @@ func (m *Model) modalView() string {
 	iw := m.modalInnerWidth()
 	switch m.mode {
 	case modeHelp:
-		return modalBox(helpModalContent(), iw)
+		return m.modalBox(m.helpModalContent(), iw)
 	case modeReschedule:
 		if m.rescheduleSub == 0 {
-			return modalBox("Reschedule:\n\n"+
+			return m.modalBox("Reschedule:\n\n"+
 				"  1  Today\n"+
 				"  2  Tomorrow\n"+
 				"  3  Week\n"+
@@ -2957,10 +2964,10 @@ func (m *Model) modalView() string {
 				"  5  Someday\n"+
 				"  6  Custom date...", iw)
 		}
-		return modalBox("Custom date (or Nd/Nw/Nm):\n\n"+m.input.View(), iw)
+		return m.modalBox("Custom date (or Nd/Nw/Nm):\n\n"+m.input.View(), iw)
 	case modeRetag:
 		sugLines := m.renderSuggestions()
-		return modalBox("Tags (comma-separated):\n\n"+m.input.View()+sugLines, iw)
+		return m.modalBox("Tags (comma-separated):\n\n"+m.input.View()+sugLines, iw)
 	case modeAdd:
 		t := m.tabs[m.activeTab]
 		// The textarea's View() spans titleArea.Height() lines; align the "Title:"
@@ -2980,13 +2987,13 @@ func (m *Model) modalView() string {
 		// GrammarHint is always visible under the Recur input as a dim-styled
 		// reminder of the accepted grammar.
 		hintLine := "       " + suggestionDimStyle.Render("("+recurrence.GrammarHint+")")
-		return modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n%s%s\n\n(Alt+Enter = newline, Enter = save)",
+		return m.modalBox(fmt.Sprintf("Add task to %s:\n\nTitle: %s\nTags:  %s%s\nRecur: %s\n%s%s\n\n(Alt+Enter = newline, Enter = save)",
 			t.label, titleView, m.tagInput.View(), tagSug, m.recurInput.View(), hintLine, recurSug), iw)
 	case modeConfirmDelete:
 		if m.modalTask == nil {
 			return ""
 		}
-		return modalBox(fmt.Sprintf("Delete %q?\n\n(y = confirm, anything else cancels)", m.modalTask.Title), iw)
+		return m.modalBox(fmt.Sprintf("Delete %q?\n\n(y = confirm, anything else cancels)", m.modalTask.Title), iw)
 	}
 	return ""
 }
@@ -3016,10 +3023,10 @@ func (m *Model) modalInnerWidth() int {
 // innerWidth is the usable content-area width (where text wraps). lipgloss's
 // .Width() actually wraps at `Width - leftPadding - rightPadding`, so we pass
 // innerWidth+4 to get an effective wrap point of innerWidth.
-func modalBox(content string, innerWidth int) string {
+func (m *Model) modalBox(content string, innerWidth int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
+		BorderForeground(m.theme.ModalBorder).
 		Padding(1, 2).
 		Width(innerWidth + 4).
 		Render(content)

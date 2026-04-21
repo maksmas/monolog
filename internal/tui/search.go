@@ -221,10 +221,8 @@ func (m *Model) tagTabForTask(task model.Task) int {
 const searchNarrowThreshold = 80
 
 // searchHelpHint describes the in-search key set shown on the footer line.
-// Kept as a small function so tests can assert its content without depending
-// on rendering output.
-func searchHelpHint() string {
-	return renderHelpBar(
+func (m *Model) searchHelpHint() string {
+	return m.renderHelpBar(
 		[2]string{"type", "filter"},
 		[2]string{"↑/↓", "move"},
 		[2]string{"enter", "jump"},
@@ -259,7 +257,7 @@ func (m *Model) renderSearch() string {
 	// Input bar: `> ` + value with a right-aligned "visible/total" counter.
 	total := len(m.search.haystack)
 	visible := len(m.search.results)
-	counter := searchCountStyle.Render(fmt.Sprintf("%d/%d", visible, total))
+	counter := m.styles.searchCountStyle.Render(fmt.Sprintf("%d/%d", visible, total))
 	input := m.search.input.View()
 	inputLine := joinInputAndCounter(input, counter, m.width)
 
@@ -323,7 +321,7 @@ func (m *Model) renderSearch() string {
 	}
 
 	meta := m.renderSearchMeta()
-	help := searchHelpHint()
+	help := m.searchHelpHint()
 
 	return lipgloss.JoinVertical(lipgloss.Left, inputLine, body, meta, help)
 }
@@ -392,7 +390,7 @@ func (m *Model) renderSearchResults(width, height int) string {
 
 	var lines []string
 	if len(m.search.results) == 0 {
-		placeholder := searchPreviewDimStyle.Render("(no matches)")
+		placeholder := m.styles.searchPreviewDimStyle.Render("(no matches)")
 		lines = append(lines, placeholder)
 	} else {
 		// Determine which slice of results to render so the cursor stays visible.
@@ -452,9 +450,9 @@ func (m *Model) renderSearchResultRow(resultIdx, width int) string {
 	row := prefix + title
 	switch {
 	case task.IsActive():
-		row = searchActiveStyle.Render(row)
+		row = m.styles.searchActiveStyle.Render(row)
 	case task.Status == "done":
-		row = searchDoneStyle.Render(row)
+		row = m.styles.searchDoneStyle.Render(row)
 	}
 	if resultIdx == m.search.cursor {
 		row = searchSelectedStyle.Render(row)
@@ -478,12 +476,15 @@ func highlightMatches(s string, hits []int) string {
 	if len(hitSet) == 0 {
 		return s
 	}
+	// searchMatchStyle is theme-independent (bold only) so use a fixed style
+	// rather than going through the model.
+	matchStyle := lipgloss.NewStyle().Bold(true)
 	var b strings.Builder
 	// Walk the string by rune, keyed on the byte offset of each rune start,
 	// so multi-byte highlight positions line up with their source rune.
 	for i, r := range s {
 		if _, ok := hitSet[i]; ok {
-			b.WriteString(searchMatchStyle.Render(string(r)))
+			b.WriteString(matchStyle.Render(string(r)))
 		} else {
 			b.WriteRune(r)
 		}
@@ -521,8 +522,8 @@ func (m *Model) renderSearchPreview(width, height int) string {
 	}
 
 	if len(m.search.results) == 0 {
-		ph := searchPreviewDimStyle.Render("(no task selected)")
-		return searchPreviewBorderStyle.Width(width).Height(height).Render(ph)
+		ph := m.styles.searchPreviewDimStyle.Render("(no task selected)")
+		return m.styles.searchPreviewBorderStyle.Width(width).Height(height).Render(ph)
 	}
 
 	res := m.search.results[m.search.cursor]
@@ -531,20 +532,20 @@ func (m *Model) renderSearchPreview(width, height int) string {
 	title := searchPreviewTitleStyle.Render(truncateTitle(task.Title, innerWidth))
 	var body string
 	if strings.TrimSpace(task.Body) == "" {
-		body = searchPreviewDimStyle.Render("(no body)")
+		body = m.styles.searchPreviewDimStyle.Render("(no body)")
 	} else {
 		body = lipgloss.NewStyle().Width(innerWidth).Render(task.Body)
 	}
 
 	content := title + "\n\n" + body
-	return searchPreviewBorderStyle.Width(width).Height(height).Render(content)
+	return m.styles.searchPreviewBorderStyle.Width(width).Height(height).Render(content)
 }
 
 // renderSearchMeta formats the meta line: "schedule · status · created {date}".
 // Empty when there is no selection.
 func (m *Model) renderSearchMeta() string {
 	if len(m.search.results) == 0 {
-		return searchMetaStyle.Render(" ")
+		return m.styles.searchMetaStyle.Render(" ")
 	}
 	res := m.search.results[m.search.cursor]
 	task := m.search.haystack[res.docIdx].task
@@ -554,5 +555,5 @@ func (m *Model) renderSearchMeta() string {
 	if created != "" {
 		parts = append(parts, "created "+created)
 	}
-	return searchMetaStyle.Render(strings.Join(parts, " · "))
+	return m.styles.searchMetaStyle.Render(strings.Join(parts, " · "))
 }

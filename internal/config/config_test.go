@@ -134,7 +134,10 @@ func writeConfigJSON(t *testing.T, tmpDir, theme string) {
 	if err := os.MkdirAll(monologDir, 0o755); err != nil {
 		t.Fatalf("mkdir .monolog: %v", err)
 	}
-	data, _ := json.Marshal(map[string]string{"theme": theme})
+	data, err := json.Marshal(map[string]string{"theme": theme})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), data, 0o644); err != nil {
 		t.Fatalf("write config.json: %v", err)
 	}
@@ -173,6 +176,23 @@ func TestThemeEnvVarAloneIsRespected(t *testing.T) {
 	t.Setenv("MONOLOG_THEME", "dracula")
 	if got := Theme(); got != "dracula" {
 		t.Errorf("Theme() = %q, want %q", got, "dracula")
+	}
+}
+
+func TestThemeDefaultWhenMalformedJSON(t *testing.T) {
+	t.Setenv("MONOLOG_THEME", "")
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir .monolog: %v", err)
+	}
+	// Write clearly invalid JSON.
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), []byte("{not valid json"), 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", tmpDir)
+	if got := Theme(); got != "default" {
+		t.Errorf("Theme() = %q, want %q for malformed JSON", got, "default")
 	}
 }
 
