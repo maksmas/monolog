@@ -70,14 +70,14 @@ Search: `SearchDone`, `SearchActive`, `SearchCount`, `SearchMeta`, `SearchPrevie
 - Create: `internal/tui/theme.go`
 - Create: `internal/tui/theme_test.go`
 
-- [ ] define `Theme` struct in `internal/tui/theme.go` with `lipgloss.AdaptiveColor` fields for all color roles
-- [ ] define `defaultTheme` var with current palette extracted from `tui.go` and `model.go`
-- [ ] define `draculaTheme` var with dracula colors
-- [ ] define `themes = map[string]Theme{"default": defaultTheme, "dracula": draculaTheme}`
-- [ ] implement `ThemeByName(name string) (Theme, bool)`
-- [ ] write tests: `ThemeByName` finds known themes, returns false for unknown
-- [ ] write tests: `defaultTheme` and `draculaTheme` have non-zero `NormalText` fields (smoke test)
-- [ ] run tests — must pass before task 2
+- [x] define `Theme` struct in `internal/tui/theme.go` with `lipgloss.AdaptiveColor` fields for all color roles
+- [x] define `defaultTheme` var with current palette extracted from `tui.go` and `model.go`
+- [x] define `draculaTheme` var with dracula colors
+- [x] define `themes = map[string]Theme{"default": defaultTheme, "dracula": draculaTheme}`
+- [x] implement `ThemeByName(name string) (Theme, bool)`
+- [x] write tests: `ThemeByName` finds known themes, returns false for unknown
+- [x] write tests: `defaultTheme` and `draculaTheme` have non-zero `NormalText` fields (smoke test)
+- [x] run tests — must pass before task 2
 
 ### Task 2: Config Theme() accessor
 
