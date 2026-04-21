@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,8 @@ func toKeyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "ctrl+z":
+		return tea.KeyMsg{Type: tea.KeyCtrlZ}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -9264,6 +9267,263 @@ func TestSettingsThemeNames_ContainsBuiltins(t *testing.T) {
 	for _, want := range []string{"default", "dracula"} {
 		if !found[want] {
 			t.Errorf("settingsThemeNames missing %q", want)
+		}
+	}
+}
+
+// --- Undo stack tests ---
+
+// TestUndoStack_SuccessfulMutationPushesSHA verifies that a successful mutation
+// (taskSavedMsg with non-empty sha and no error) pushes the SHA onto undoStack.
+func TestUndoStack_SuccessfulMutationPushesSHA(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if len(m.undoStack) != 0 {
+		t.Fatalf("undoStack should start empty, got %d", len(m.undoStack))
+	}
+	next, _ := m.Update(taskSavedMsg{sha: "abc123", status: "Moved"})
+	m = next.(*Model)
+	if len(m.undoStack) != 1 {
+		t.Fatalf("undoStack len = %d, want 1", len(m.undoStack))
+	}
+	if m.undoStack[0] != "abc123" {
+		t.Errorf("undoStack[0] = %q, want %q", m.undoStack[0], "abc123")
+	}
+}
+
+// TestUndoStack_FailedMutationDoesNotPush verifies that a taskSavedMsg with
+// msg.err != nil does not push onto undoStack.
+func TestUndoStack_FailedMutationDoesNotPush(t *testing.T) {
+	m := newTestModel(t)
+	next, _ := m.Update(taskSavedMsg{sha: "abc123", err: errors.New("commit failed")})
+	m = next.(*Model)
+	if len(m.undoStack) != 0 {
+		t.Errorf("undoStack len = %d, want 0 (error must not push SHA)", len(m.undoStack))
+	}
+}
+
+// TestUndoStack_EmptyStack_NothingToUndo verifies that pressing "u" when the
+// undo stack is empty sets statusMsg to "nothing to undo" and returns nil cmd.
+func TestUndoStack_EmptyStack_NothingToUndo(t *testing.T) {
+	m := newTestModel(t)
+	if len(m.undoStack) != 0 {
+		t.Fatalf("precondition: undoStack not empty")
+	}
+	m, cmd := key(t, m, "u")
+	if m.statusMsg != "nothing to undo" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "nothing to undo")
+	}
+	if cmd != nil {
+		t.Errorf("cmd should be nil when stack empty, got non-nil")
+	}
+}
+
+// TestUndoStack_NonEmptyStack_DecrementsLength verifies that pressing "u" with
+// a non-empty undo stack decrements the stack (SHA popped) and returns a cmd
+// that performs the revert.
+func TestUndoStack_NonEmptyStack_DecrementsLength(t *testing.T) {
+	// Use a real git repo (from newTestModel) so git.Revert can run.
+	m := newTestModel(t,
+		model.Task{ID: "01B", Title: "undo me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Perform a real done mutation to get a real SHA on the stack.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d key should return a cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("done mutation error: %v", m.err)
+	}
+	if len(m.undoStack) != 1 {
+		t.Fatalf("undoStack len = %d, want 1 after done mutation", len(m.undoStack))
+	}
+
+	// Now press "u" — should pop the stack and return an undo cmd.
+	m, undoC := key(t, m, "u")
+	if len(m.undoStack) != 0 {
+		t.Errorf("undoStack len = %d, want 0 after u press", len(m.undoStack))
+	}
+	if undoC == nil {
+		t.Fatal("u key should return a cmd when stack non-empty")
+	}
+
+	// Execute the undo cmd — should succeed and restore the task.
+	m = runCmd(t, m, undoC)
+	if m.err != nil {
+		t.Errorf("undo cmd error: %v", m.err)
+	}
+	if !strings.HasPrefix(m.statusMsg, "Undone:") {
+		t.Errorf("statusMsg = %q, want prefix %q", m.statusMsg, "Undone:")
+	}
+	// The task should be back in the Today tab (open) with correct content.
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Errorf("Today tab items = %d after undo, want 1", got)
+	} else {
+		restored := m.lists[0].Items()[0].(item).task
+		if restored.Status != "open" {
+			t.Errorf("restored task Status = %q, want %q", restored.Status, "open")
+		}
+		if restored.Title != "undo me" {
+			t.Errorf("restored task Title = %q, want %q", restored.Title, "undo me")
+		}
+	}
+}
+
+// TestUndoStack_SyncWithRemote_ClearsStack verifies that a taskSavedMsg with
+// clearUndo=true clears the undo stack even when the stack is non-empty.
+func TestUndoStack_SyncWithRemote_ClearsStack(t *testing.T) {
+	m := newTestModel(t)
+	// Pre-populate stack with two SHAs.
+	m.undoStack = []string{"sha1", "sha2"}
+
+	next, _ := m.Update(taskSavedMsg{clearUndo: true, status: "Synced"})
+	m = next.(*Model)
+	if m.undoStack != nil {
+		t.Errorf("undoStack = %v, want nil after clearUndo=true", m.undoStack)
+	}
+}
+
+// TestUndoStack_SyncWithRemote_ClearsStackEvenOnError verifies that clearUndo
+// clears the stack even when msg.err is non-nil (remote sync error path).
+func TestUndoStack_SyncWithRemote_ClearsStackEvenOnError(t *testing.T) {
+	m := newTestModel(t)
+	m.undoStack = []string{"sha1", "sha2"}
+
+	next, _ := m.Update(taskSavedMsg{clearUndo: true, err: errors.New("sync failed")})
+	m = next.(*Model)
+	if m.undoStack != nil {
+		t.Errorf("undoStack = %v, want nil after clearUndo=true with error", m.undoStack)
+	}
+}
+
+// TestUndoStack_SyncWithoutRemote_PreservesStack verifies that a taskSavedMsg
+// with clearUndo=false does not touch the undo stack.
+func TestUndoStack_SyncWithoutRemote_PreservesStack(t *testing.T) {
+	m := newTestModel(t)
+	m.undoStack = []string{"sha1", "sha2"}
+
+	// clearUndo=false, no sha — local-only sync preserves stack.
+	next, _ := m.Update(taskSavedMsg{clearUndo: false, status: "No remote configured; committed locally"})
+	m = next.(*Model)
+	if len(m.undoStack) != 2 {
+		t.Errorf("undoStack len = %d, want 2 (stack should be preserved)", len(m.undoStack))
+	}
+}
+
+// TestUndoStack_Cap10_DropsOldest verifies that the undo stack is capped at 10
+// entries and that the oldest (index 0) is dropped when the 11th SHA arrives.
+func TestUndoStack_Cap10_DropsOldest(t *testing.T) {
+	m := newTestModel(t)
+
+	// Push 15 SHAs via successive taskSavedMsg updates.
+	for i := 0; i < 15; i++ {
+		sha := fmt.Sprintf("sha_%02d", i)
+		next, _ := m.Update(taskSavedMsg{sha: sha, status: "ok"})
+		m = next.(*Model)
+	}
+
+	if len(m.undoStack) != 10 {
+		t.Fatalf("undoStack len = %d, want 10 (capped)", len(m.undoStack))
+	}
+	// Oldest 5 (sha_00..sha_04) should have been dropped.
+	// Newest 10 (sha_05..sha_14) should remain in order.
+	for i, want := range []string{
+		"sha_05", "sha_06", "sha_07", "sha_08", "sha_09",
+		"sha_10", "sha_11", "sha_12", "sha_13", "sha_14",
+	} {
+		if m.undoStack[i] != want {
+			t.Errorf("undoStack[%d] = %q, want %q", i, m.undoStack[i], want)
+		}
+	}
+}
+
+// TestUndoStack_CtrlZ_EmptyStack_NothingToUndo verifies that ctrl+z also
+// triggers the "nothing to undo" path when the stack is empty.
+func TestUndoStack_CtrlZ_EmptyStack_NothingToUndo(t *testing.T) {
+	m := newTestModel(t)
+	m, cmd := key(t, m, "ctrl+z")
+	if m.statusMsg != "nothing to undo" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "nothing to undo")
+	}
+	if cmd != nil {
+		t.Errorf("cmd should be nil when stack empty")
+	}
+}
+
+// TestUndoStack_RevertFailure_RestoresSHA verifies that when undoCmd's
+// git.Revert fails, the SHA is pushed back onto undoStack via the
+// restoreUndoSHA field (not via direct goroutine mutation — CRITICAL-1 fix).
+func TestUndoStack_RevertFailure_RestoresSHA(t *testing.T) {
+	m := newTestModel(t)
+	// Start with an empty stack; simulate a revert-failure message as the
+	// undoCmd goroutine would return: err set, restoreUndoSHA set.
+	next, _ := m.Update(taskSavedMsg{
+		err:            errors.New("undo: conflict"),
+		restoreUndoSHA: "abc123",
+	})
+	m = next.(*Model)
+	if len(m.undoStack) != 1 {
+		t.Fatalf("undoStack len = %d, want 1 after revert failure", len(m.undoStack))
+	}
+	if m.undoStack[0] != "abc123" {
+		t.Errorf("undoStack[0] = %q, want %q", m.undoStack[0], "abc123")
+	}
+}
+
+// TestUndoStack_CtrlZ_NonEmptyStack_Reverts verifies that ctrl+z with a
+// non-empty stack pops the SHA and returns a non-nil cmd (same wiring as "u").
+func TestUndoStack_CtrlZ_NonEmptyStack_Reverts(t *testing.T) {
+	// Use a real git repo so git.Revert can run.
+	m := newTestModel(t,
+		model.Task{ID: "01C", Title: "ctrl+z me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Perform a real done mutation to get a real SHA on the stack.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d key should return a cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("done mutation error: %v", m.err)
+	}
+	if len(m.undoStack) != 1 {
+		t.Fatalf("undoStack len = %d, want 1 after done mutation", len(m.undoStack))
+	}
+
+	// Press ctrl+z — should pop the stack and return an undo cmd.
+	m, undoC := key(t, m, "ctrl+z")
+	if len(m.undoStack) != 0 {
+		t.Errorf("undoStack len = %d, want 0 after ctrl+z press", len(m.undoStack))
+	}
+	if undoC == nil {
+		t.Fatal("ctrl+z should return a cmd when stack non-empty")
+	}
+
+	// Execute the undo cmd — should succeed and restore the task.
+	m = runCmd(t, m, undoC)
+	if m.err != nil {
+		t.Errorf("undo cmd error: %v", m.err)
+	}
+	if !strings.HasPrefix(m.statusMsg, "Undone:") {
+		t.Errorf("statusMsg = %q, want prefix %q", m.statusMsg, "Undone:")
+	}
+	// The task should be back in the Today tab (open) with correct content.
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Errorf("Today tab items = %d after ctrl+z undo, want 1", got)
+	} else {
+		restored := m.lists[0].Items()[0].(item).task
+		if restored.Status != "open" {
+			t.Errorf("restored task Status = %q, want %q", restored.Status, "open")
+		}
+		if restored.Title != "ctrl+z me" {
+			t.Errorf("restored task Title = %q, want %q", restored.Title, "ctrl+z me")
 		}
 	}
 }

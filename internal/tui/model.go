@@ -72,6 +72,10 @@ type tagTab struct {
 // active panel: border (2) + padding (2) + ShortID (8) + separator (2) = 14.
 const activePanelChromeWidth = 14
 
+// undoStackCap is the maximum number of commit SHAs kept on the undo stack.
+// The oldest entry is dropped when the cap is exceeded.
+const undoStackCap = 10
+
 // reschedulePresets are the quick-pick bucket names shown in the reschedule
 // modal. The index + 1 is the numeric shortcut key. They are resolved into
 // concrete ISO dates via schedule.Parse before being written.
@@ -200,6 +204,11 @@ type Model struct {
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
+
+	// undoStack holds commit SHAs of recent undoable mutations, newest last.
+	// Capped at undoStackCap entries; the oldest is dropped when the cap is exceeded.
+	// Cleared when syncing with a remote (rebase may rewrite SHAs).
+	undoStack []string
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -343,10 +352,19 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
 // focusID, if non-empty, asks the handler to move the cursor to the task with
 // that ID after reload — used by add so a new task is autofocused.
+// sha, if non-empty, is the commit SHA to push onto the undo stack.
+// clearUndo, if true, clears the entire undo stack before any push (used by
+// sync with remote, where a rebase may have rewritten SHAs).
+// restoreUndoSHA, if non-empty, is pushed back onto undoStack before the
+// error early-return — used by undoCmd on revert failure so the SHA can be
+// retried. This avoids mutating undoStack from inside the goroutine closure.
 type taskSavedMsg struct {
-	status  string
-	err     error
-	focusID string
+	status         string
+	err            error
+	focusID        string
+	sha            string // commit SHA to push onto undoStack; empty → skip push
+	clearUndo      bool   // true → clear undoStack first (evaluated even on error)
+	restoreUndoSHA string // pushed back onto undoStack before error return (undo retry)
 }
 
 // newModel constructs a Model and loads initial task data for each tab.
@@ -892,6 +910,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case taskSavedMsg:
+		if msg.clearUndo {
+			m.undoStack = nil
+		}
+		if msg.restoreUndoSHA != "" {
+			m.undoStack = append(m.undoStack, msg.restoreUndoSHA)
+			if len(m.undoStack) > undoStackCap {
+				m.undoStack = m.undoStack[1:]
+			}
+		}
 		if msg.err != nil {
 			m.err = msg.err
 			m.statusMsg = ""
@@ -900,6 +927,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.statusMsg = msg.status
+		// Push SHA onto undo stack (cap undoStackCap, drop oldest).
+		if msg.sha != "" {
+			m.undoStack = append(m.undoStack, msg.sha)
+			if len(m.undoStack) > undoStackCap {
+				m.undoStack = m.undoStack[1:]
+			}
+		}
 		if err := m.reloadAll(); err != nil {
 			m.err = err
 		}
@@ -1034,6 +1068,12 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.statusMsg = "Syncing..."
 		return m, m.syncCmd()
+	case "u", "ctrl+z":
+		if len(m.undoStack) == 0 {
+			m.statusMsg = "nothing to undo"
+			return m, nil
+		}
+		return m, m.undoCmd()
 	case "v":
 		return m, m.toggleViewMode()
 	case "h":
@@ -1206,7 +1246,8 @@ func (m *Model) doneSelected() tea.Cmd {
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("done: %w", err)}
 		}
-		if err := git.AutoCommit(repoPath, commitMsg, commitFiles...); err != nil {
+		sha, err := git.AutoCommitSHA(repoPath, commitMsg, commitFiles...)
+		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
 		status := fmt.Sprintf("Completed: %s", flat)
@@ -1217,7 +1258,7 @@ func (m *Model) doneSelected() tea.Cmd {
 			// status line so the user sees the recurrence worked.
 			status = fmt.Sprintf("Completed: %s (next occurrence spawned)", flat)
 		}
-		return taskSavedMsg{status: status}
+		return taskSavedMsg{status: status, sha: sha}
 	}
 }
 
@@ -1899,10 +1940,11 @@ func (m *Model) openEdit() tea.Cmd {
 			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
 		}
 		flat := flattenTitle(updated.Title)
-		if err := git.AutoCommit(repoPath, fmt.Sprintf("edit: %s", flat), taskRelPath(updated.ID)); err != nil {
+		sha, err := git.AutoCommitSHA(repoPath, fmt.Sprintf("edit: %s", flat), taskRelPath(updated.ID))
+		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Edited: %s", flat)}
+		return taskSavedMsg{status: fmt.Sprintf("Edited: %s", flat), sha: sha}
 	})
 }
 
@@ -2230,10 +2272,14 @@ func (m *Model) commitGrab() tea.Cmd {
 			}
 		}
 		flat := flattenTitle(t.Title)
-		if err := git.AutoCommit(repoPath, fmt.Sprintf("move: %s", flat), taskRelPath(t.ID)); err != nil {
+		// Note: rebalanced sibling files are written to disk but not included in
+		// this commit, so undoing this commit only restores the grabbed task's
+		// position — sibling rebalanced positions are not reverted by undo.
+		sha, err := git.AutoCommitSHA(repoPath, fmt.Sprintf("move: %s", flat), taskRelPath(t.ID))
+		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Moved: %s", flat), focusID: t.ID}
+		return taskSavedMsg{status: fmt.Sprintf("Moved: %s", flat), focusID: t.ID, sha: sha}
 	}
 }
 
@@ -2296,16 +2342,17 @@ func (m *Model) computeGrabPosition(grabbedID string) float64 {
 
 // --- command dispatchers ---------------------------------------------------
 
-// saveCmd dispatches a store.Update + git.AutoCommit as a tea.Cmd.
+// saveCmd dispatches a store.Update + git.AutoCommitSHA as a tea.Cmd.
 func (m *Model) saveCmd(task model.Task, commitMsg, statusMsg string) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.store.Update(task); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
 		}
-		if err := git.AutoCommit(m.repoPath, commitMsg, taskRelPath(task.ID)); err != nil {
+		sha, err := git.AutoCommitSHA(m.repoPath, commitMsg, taskRelPath(task.ID))
+		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: statusMsg}
+		return taskSavedMsg{status: statusMsg, sha: sha}
 	}
 }
 
@@ -2377,10 +2424,11 @@ func (m *Model) createCmd(title string, tags []string, recur string) tea.Cmd {
 			return taskSavedMsg{err: fmt.Errorf("create: %w", err)}
 		}
 		flat := flattenTitle(title)
-		if err := git.AutoCommit(repoPath, fmt.Sprintf("add: %s", flat), taskRelPath(id)); err != nil {
+		sha, err := git.AutoCommitSHA(repoPath, fmt.Sprintf("add: %s", flat), taskRelPath(id))
+		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Added: %s", flat), focusID: id}
+		return taskSavedMsg{status: fmt.Sprintf("Added: %s", flat), focusID: id, sha: sha}
 	}
 }
 
@@ -2405,15 +2453,50 @@ func (m *Model) syncCmd() tea.Cmd {
 	return func() tea.Msg {
 		res, err := git.Sync(repoPath)
 		if err != nil {
+			// If we attempted a remote sync the SHAs may have changed;
+			// clear the stack even on error to avoid stale references.
+			if res.HasRemote {
+				return taskSavedMsg{err: err, clearUndo: true}
+			}
 			return taskSavedMsg{err: err}
 		}
 		if !res.HasRemote {
 			return taskSavedMsg{status: "No remote configured; committed locally"}
 		}
 		if res.Resolved > 0 {
-			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved)}
+			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved), clearUndo: true}
 		}
-		return taskSavedMsg{status: "Synced"}
+		return taskSavedMsg{status: "Synced", clearUndo: true}
+	}
+}
+
+// undoCmd pops the top SHA from undoStack and reverts that commit.
+// Callers must check len(undoStack) > 0 before calling. On a failed revert
+// the SHA is pushed back so the user can retry.
+func (m *Model) undoCmd() tea.Cmd {
+	if len(m.undoStack) == 0 {
+		// Defensive guard; callers should check before invoking.
+		return nil
+	}
+	// Pop the top SHA before launching the goroutine so a second keypress
+	// while the first revert is in-flight cannot race on the same SHA.
+	sha := m.undoStack[len(m.undoStack)-1]
+	m.undoStack = m.undoStack[:len(m.undoStack)-1]
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		subject, err := git.CommitSubject(repoPath, sha)
+		if err != nil {
+			// SHA is no longer accessible (e.g. cleared by rebase); treat as
+			// non-retriable so we don't push the stale SHA back.
+			return taskSavedMsg{err: fmt.Errorf("undo: %w", err)}
+		}
+		if err := git.Revert(repoPath, sha); err != nil {
+			// Revert failed (e.g. conflict). Signal the Update loop to push
+			// the SHA back via restoreUndoSHA — avoids mutating m.undoStack
+			// from inside the goroutine (data race with the Update loop).
+			return taskSavedMsg{err: fmt.Errorf("undo: %w", err), restoreUndoSHA: sha}
+		}
+		return taskSavedMsg{status: "Undone: " + subject}
 	}
 }
 
@@ -2424,10 +2507,11 @@ func (m *Model) deleteCmd(task model.Task) tea.Cmd {
 			return taskSavedMsg{err: fmt.Errorf("delete: %w", err)}
 		}
 		flat := flattenTitle(task.Title)
-		if err := git.AutoCommit(m.repoPath, fmt.Sprintf("rm: %s", flat), taskRelPath(task.ID)); err != nil {
+		sha, err := git.AutoCommitSHA(m.repoPath, fmt.Sprintf("rm: %s", flat), taskRelPath(task.ID))
+		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
-		return taskSavedMsg{status: fmt.Sprintf("Deleted: %s", flat)}
+		return taskSavedMsg{status: fmt.Sprintf("Deleted: %s", flat), sha: sha}
 	}
 }
 
@@ -3111,6 +3195,7 @@ func (m *Model) helpModalContent() string {
 		"  " + k("v") + "    toggle view\n" +
 		"  " + k("↵") + "    notes panel\n" +
 		"  " + k("s") + "    sync\n" +
+		"  " + k("u") + "    undo last action (also ctrl+z)\n" +
 		"  " + k("h") + "    this help\n" +
 		"  " + k("q") + "    quit\n\n" +
 		"Search:\n\n" +

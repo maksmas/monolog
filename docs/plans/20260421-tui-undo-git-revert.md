@@ -141,53 +141,53 @@ return taskSavedMsg{status: "Undone: " + subject, sha: ""}   // no SHA → not r
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] add `sha string` and `clearUndo bool` fields to `taskSavedMsg` (line ~346)
-- [ ] update `taskSavedMsg` handler (line ~894): move `clearUndo` check **before** the `msg.err` early-return; push `msg.sha` onto `undoStack` (cap 10) after error check
-- [ ] update `saveCmd` (~line 2300): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha` field in returned `taskSavedMsg`
-- [ ] update `createCmd` (~line 2315): same replacement
-- [ ] update `deleteCmd` (~line 2421): same replacement
-- [ ] update `doneSelected` (~line 1188): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha`
-- [ ] update grab-move path (~line 2233): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha`; add code comment noting that rebalanced sibling files are not part of this commit and will not be reverted by undo
-- [ ] update `openEdit` path (~line 1903): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha`
-- [ ] update `syncCmd` (~line 2401): set `clearUndo: true` only when `res.HasRemote` is true (local-only sync preserves stack)
-- [ ] run `go test ./internal/tui/` — must pass before Task 3
+- [x] add `sha string` and `clearUndo bool` fields to `taskSavedMsg` (line ~346)
+- [x] update `taskSavedMsg` handler (line ~894): move `clearUndo` check **before** the `msg.err` early-return; push `msg.sha` onto `undoStack` (cap 10) after error check
+- [x] update `saveCmd` (~line 2300): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha` field in returned `taskSavedMsg`
+- [x] update `createCmd` (~line 2315): same replacement
+- [x] update `deleteCmd` (~line 2421): same replacement
+- [x] update `doneSelected` (~line 1188): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha`
+- [x] update grab-move path (~line 2233): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha`; add code comment noting that rebalanced sibling files are not part of this commit and will not be reverted by undo
+- [x] update `openEdit` path (~line 1903): replace `git.AutoCommit` with `git.AutoCommitSHA`, set `sha`
+- [x] update `syncCmd` (~line 2401): set `clearUndo: true` only when `res.HasRemote` is true (local-only sync preserves stack)
+- [x] run `go test ./internal/tui/` — must pass before Task 3
 
 ### Task 3: Undo stack + key bindings + help modal
 
 **Files:**
 - Modify: `internal/tui/model.go`
 
-- [ ] add `undoStack []string` field to `Model` struct
-- [ ] add `"u"` and `"ctrl+z"` cases in `updateNormal` (~line 941): call `undoCmd()`
-- [ ] implement `undoCmd() tea.Cmd`:
+- [x] add `undoStack []string` field to `Model` struct (already added in Task 2)
+- [x] add `"u"` and `"ctrl+z"` cases in `updateNormal` (~line 941): call `undoCmd()`
+- [x] implement `undoCmd() tea.Cmd`:
   - if `undoStack` empty: set `m.statusMsg = "nothing to undo"`, return nil
   - pop top SHA
   - in the returned func: call `git.CommitSubject` to get subject; call `git.Revert`; on error push SHA back and return `taskSavedMsg{err: ...}`; on success return `taskSavedMsg{status: "Undone: " + subject, sha: ""}` (no SHA)
-- [ ] update `helpModalContent` (~line 3097) to add a row: `u / ctrl+z  undo last action`
-- [ ] run `go test ./internal/tui/` — must pass before Task 4
+- [x] update `helpModalContent` (~line 3097) to add a row: `u / ctrl+z  undo last action`
+- [x] run `go test ./internal/tui/` — must pass before Task 4
 
 ### Task 4: Tests
 
 **Files:**
 - Modify: `internal/tui/model_test.go`
 
-- [ ] write test: after a successful mutation, `undoStack` has length 1 with a non-empty SHA
-- [ ] write test: failed mutation (`msg.err != nil`) → `undoStack` remains empty (no SHA pushed)
-- [ ] write test: pressing `u` with a non-empty stack decrements stack length and reloads tasks
-- [ ] write test: pressing `u` with empty stack → status "nothing to undo", stack unchanged
-- [ ] write test: after sync with `HasRemote` true, `undoStack` is cleared (even if sync errors)
-- [ ] write test: after sync with `HasRemote` false (local-only), `undoStack` is preserved
-- [ ] write test: stack is capped at 10 after 15 mutations (oldest 5 dropped)
-- [ ] run `go test ./internal/tui/` — must pass before Task 5
+- [x] write test: after a successful mutation, `undoStack` has length 1 with a non-empty SHA
+- [x] write test: failed mutation (`msg.err != nil`) → `undoStack` remains empty (no SHA pushed)
+- [x] write test: pressing `u` with a non-empty stack decrements stack length and reloads tasks
+- [x] write test: pressing `u` with empty stack → status "nothing to undo", stack unchanged
+- [x] write test: after sync with `HasRemote` true, `undoStack` is cleared (even if sync errors)
+- [x] write test: after sync with `HasRemote` false (local-only), `undoStack` is preserved
+- [x] write test: stack is capped at 10 after 15 mutations (oldest 5 dropped)
+- [x] run `go test ./internal/tui/` — must pass before Task 5
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify all listed action types (done, reschedule, retag, toggle-active, add, delete, move, edit, note) push a SHA to `undoStack`
-- [ ] verify 10 sequential mutations fill the stack, 11th drops the oldest
-- [ ] verify `u` / `ctrl+z` walk back through all 10, each restoring task state and showing correct "Undone: ..." status
-- [ ] verify sync with remote clears the stack; sync without remote preserves it
-- [ ] run full test suite: `go test ./...`
-- [ ] run `go vet ./...`
+- [x] verify all listed action types (done, reschedule, retag, toggle-active, add, delete, move, edit, note) push a SHA to `undoStack`
+- [x] verify 10 sequential mutations fill the stack, 11th drops the oldest
+- [x] verify `u` / `ctrl+z` walk back through all 10, each restoring task state and showing correct "Undone: ..." status
+- [x] verify sync with remote clears the stack; sync without remote preserves it
+- [x] run full test suite: `go test ./...`
+- [x] run `go vet ./...`
 
 ### Task 6: Update documentation
 

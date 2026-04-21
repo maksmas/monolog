@@ -616,16 +616,16 @@ func TestHeadSHA_Success(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	sha, err := HeadSHA(repoPath)
+	sha, err := headSHA(repoPath)
 	if err != nil {
-		t.Fatalf("HeadSHA() error = %v", err)
+		t.Fatalf("headSHA() error = %v", err)
 	}
 	if sha == "" {
-		t.Error("HeadSHA() returned empty string")
+		t.Error("headSHA() returned empty string")
 	}
 	// SHA must be a valid hex string (40 chars for full SHA)
 	if len(sha) < 7 {
-		t.Errorf("HeadSHA() = %q, expected at least 7 chars", sha)
+		t.Errorf("headSHA() = %q, expected at least 7 chars", sha)
 	}
 	// Verify it matches the actual HEAD
 	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD")
@@ -635,13 +635,13 @@ func TestHeadSHA_Success(t *testing.T) {
 	}
 	want := strings.TrimSpace(string(out))
 	if sha != want {
-		t.Errorf("HeadSHA() = %q, want %q", sha, want)
+		t.Errorf("headSHA() = %q, want %q", sha, want)
 	}
 }
 
 func TestHeadSHA_NonGitDir(t *testing.T) {
 	dir := t.TempDir()
-	_, err := HeadSHA(dir)
+	_, err := headSHA(dir)
 	if err == nil {
 		t.Error("expected error for non-git directory")
 	}

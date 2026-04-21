@@ -109,8 +109,8 @@ func AutoCommit(repoPath string, message string, files ...string) error {
 	return nil
 }
 
-// HeadSHA returns the SHA of the current HEAD commit.
-func HeadSHA(repoPath string) (string, error) {
+// headSHA returns the SHA of the current HEAD commit.
+func headSHA(repoPath string) (string, error) {
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
@@ -126,7 +126,7 @@ func AutoCommitSHA(repoPath string, message string, files ...string) (string, er
 	if err := AutoCommit(repoPath, message, files...); err != nil {
 		return "", err
 	}
-	sha, err := HeadSHA(repoPath)
+	sha, err := headSHA(repoPath)
 	if err != nil {
 		return "", fmt.Errorf("get HEAD SHA after commit: %w", err)
 	}
@@ -152,8 +152,10 @@ func Revert(repoPath, sha string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Attempt to abort the revert to leave the repo in a clean state.
-		_ = run(repoPath, "git", "revert", "--abort")
-		return fmt.Errorf("git revert %s: %w\n%s", sha, err, out)
+		if abortErr := run(repoPath, "git", "revert", "--abort"); abortErr != nil {
+			return fmt.Errorf("git revert %s: %w (abort also failed: %v)", sha, err, abortErr)
+		}
+		return fmt.Errorf("git revert %s: %w\n%s", sha, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
