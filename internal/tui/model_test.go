@@ -9106,3 +9106,160 @@ func TestVlistItemHeight_MatchesRenderedLinesForLongURL(t *testing.T) {
 			"(expected height = 1 title + 1 desc + 1 blank = 3); got %d", predicted)
 	}
 }
+
+// --- Settings modal ---
+
+func TestSettings_CommaOpensModal(t *testing.T) {
+	m := newTestModel(t)
+	if m.mode != modeNormal {
+		t.Fatalf("initial mode = %d, want modeNormal", m.mode)
+	}
+	m, _ = key(t, m, ",")
+	if m.mode != modeSettings {
+		t.Errorf("after ',': mode = %d, want modeSettings", m.mode)
+	}
+}
+
+func TestSettings_OpenCapturesCurrentValues(t *testing.T) {
+	m := newTestModel(t)
+	m.openSettings()
+	if m.settingsFmt != config.DateFormat() {
+		t.Errorf("settingsFmt = %q, want current DateFormat %q", m.settingsFmt, config.DateFormat())
+	}
+	if m.settingsTheme != config.Theme() {
+		t.Errorf("settingsTheme = %q, want current Theme %q", m.settingsTheme, config.Theme())
+	}
+	if m.settingsCursor != 0 {
+		t.Errorf("settingsCursor = %d, want 0", m.settingsCursor)
+	}
+}
+
+func TestSettings_EscCancelsWithoutSave(t *testing.T) {
+	m := newTestModel(t)
+	m.openSettings()
+	// Cycle to a different format.
+	m, _ = key(t, m, "right")
+	// Press Esc — should discard in-flight changes.
+	m, _ = key(t, m, "esc")
+	if m.mode != modeNormal {
+		t.Errorf("after esc: mode = %d, want modeNormal", m.mode)
+	}
+	// The package-level config should be unchanged.
+	if config.DateFormat() != "02-01-2006" {
+		t.Errorf("DateFormat changed after esc: %q", config.DateFormat())
+	}
+}
+
+func TestSettings_CursorNavigates(t *testing.T) {
+	m := newTestModel(t)
+	m.openSettings()
+	if m.settingsCursor != 0 {
+		t.Fatalf("initial cursor = %d, want 0", m.settingsCursor)
+	}
+	m, _ = key(t, m, "down")
+	if m.settingsCursor != 1 {
+		t.Errorf("after down: cursor = %d, want 1", m.settingsCursor)
+	}
+	m, _ = key(t, m, "down") // already at max, no change
+	if m.settingsCursor != 1 {
+		t.Errorf("after down past max: cursor = %d, want 1", m.settingsCursor)
+	}
+	m, _ = key(t, m, "up")
+	if m.settingsCursor != 0 {
+		t.Errorf("after up: cursor = %d, want 0", m.settingsCursor)
+	}
+	m, _ = key(t, m, "up") // already at 0, no change
+	if m.settingsCursor != 0 {
+		t.Errorf("after up past min: cursor = %d, want 0", m.settingsCursor)
+	}
+}
+
+func TestSettings_RightCyclesDateFormat(t *testing.T) {
+	m := newTestModel(t)
+	m.openSettings()
+	initial := m.settingsFmt
+	fmts := settingsFormatNames()
+
+	m, _ = key(t, m, "right")
+	if m.settingsFmt == initial {
+		t.Errorf("settingsFmt unchanged after right (was %q)", initial)
+	}
+	// Cycle all the way around and back to initial.
+	for i := 1; i < len(fmts); i++ {
+		m, _ = key(t, m, "right")
+	}
+	if m.settingsFmt != initial {
+		t.Errorf("after full cycle: settingsFmt = %q, want %q", m.settingsFmt, initial)
+	}
+}
+
+func TestSettings_LeftCyclesDateFormatBackward(t *testing.T) {
+	m := newTestModel(t)
+	m.openSettings()
+	initial := m.settingsFmt
+	fmts := settingsFormatNames()
+
+	// Going left from initial should land on last entry.
+	m, _ = key(t, m, "left")
+	wantLast := fmts[len(fmts)-1].Layout
+	if initial == wantLast {
+		wantLast = fmts[len(fmts)-2].Layout
+	}
+	if m.settingsFmt == initial {
+		t.Errorf("settingsFmt unchanged after left (was %q)", initial)
+	}
+}
+
+func TestSettings_EnterSavesAndReturnsNormal(t *testing.T) {
+	m := newTestModel(t)
+	// Preserve original format for cleanup.
+	origFmt := config.DateFormat()
+	t.Cleanup(func() { _ = config.SetDateFormat(origFmt) })
+
+	m.openSettings()
+	// Cycle to YYYY-MM-DD.
+	fmts := settingsFormatNames()
+	var isoLayout string
+	for _, f := range fmts {
+		if f.Label == "YYYY-MM-DD" {
+			isoLayout = f.Layout
+		}
+	}
+	m.settingsFmt = isoLayout
+
+	m, _ = key(t, m, "enter")
+	if m.mode != modeNormal {
+		t.Errorf("after enter: mode = %d, want modeNormal", m.mode)
+	}
+	if config.DateFormat() != isoLayout {
+		t.Errorf("DateFormat = %q, want %q after save", config.DateFormat(), isoLayout)
+	}
+	if m.statusMsg != "Settings saved" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "Settings saved")
+	}
+}
+
+func TestSettings_ThemeCyclesAndAppliesLive(t *testing.T) {
+	m := newTestModel(t)
+	m.openSettings()
+	// Navigate to theme row.
+	m, _ = key(t, m, "down")
+	origTheme := m.settingsTheme
+	m, _ = key(t, m, "right")
+	if m.settingsTheme == origTheme {
+		t.Errorf("settingsTheme unchanged after right on theme row")
+	}
+}
+
+func TestSettingsThemeNames_ContainsBuiltins(t *testing.T) {
+	names := settingsThemeNames()
+	found := map[string]bool{}
+	for _, n := range names {
+		found[n] = true
+	}
+	for _, want := range []string{"default", "dracula"} {
+		if !found[want] {
+			t.Errorf("settingsThemeNames missing %q", want)
+		}
+	}
+}

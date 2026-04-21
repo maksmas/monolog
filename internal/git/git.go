@@ -35,7 +35,8 @@ func Init(path string, remote string) error {
 	configData := []byte(`{
   "default_schedule": "today",
   "editor": "$EDITOR",
-  "theme": "default"
+  "theme": "default",
+  "date_format": "02-01-2006"
 }
 `)
 	if err := os.WriteFile(configPath, configData, 0o644); err != nil {

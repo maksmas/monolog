@@ -40,6 +40,7 @@ const (
 	modeConfirmDelete
 	modeHelp
 	modeSearch
+	modeSettings
 )
 
 // addField tracks which input has focus in the add modal.
@@ -190,6 +191,12 @@ type Model struct {
 
 	// search holds the fuzzy-search overlay state (modeSearch).
 	search searchState
+
+	// Settings modal state (modeSettings). settingsFmt and settingsTheme hold
+	// in-flight values that are only persisted when the user presses Enter.
+	settingsCursor int    // 0 = date format row, 1 = theme row
+	settingsFmt    string // in-flight layout string (e.g. "02-01-2006")
+	settingsTheme  string // in-flight theme name (e.g. "default")
 
 	statusMsg string // transient status line
 	err       error  // sticky error; cleared on next successful action
@@ -921,6 +928,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case modeSearch:
 			return m.updateSearch(msg)
+		case modeSettings:
+			return m.updateSettings(msg)
 		default:
 			return m.updateModal(msg)
 		}
@@ -1029,6 +1038,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.toggleViewMode()
 	case "h":
 		m.mode = modeHelp
+		return m, nil
+	case ",":
+		m.openSettings()
 		return m, nil
 	case "/":
 		m.openSearch()
@@ -2859,9 +2871,12 @@ func (m *Model) helpLine() string {
 			[2]string{"/", "search"},
 			[2]string{"v", "tags"},
 			[2]string{"s", "sync"},
+			[2]string{",", "settings"},
 			[2]string{"h", "help"},
 			[2]string{"q", "quit"},
 		)
+	case modeSettings:
+		return m.styles.helpStyle.Render("↑↓ navigate  ←→ change  Enter save  Esc cancel")
 	case modeHelp:
 		return m.styles.helpStyle.Render("press any key to close")
 	case modeGrab:
@@ -2920,6 +2935,148 @@ func (m *Model) helpLine() string {
 	return ""
 }
 
+// openSettings captures the current date format and theme into the in-flight
+// settings state and switches to modeSettings.
+func (m *Model) openSettings() {
+	m.settingsCursor = 0
+	m.settingsFmt = config.DateFormat()
+	m.settingsTheme = config.Theme()
+	m.mode = modeSettings
+}
+
+// settingsFormatNames returns the ordered list of (layout, label) pairs for
+// the date format selector row.
+func settingsFormatNames() []config.FormatInfo {
+	return config.AllFormats()
+}
+
+// settingsThemeNames returns the ordered list of theme names for the theme
+// selector row.
+func settingsThemeNames() []string {
+	names := make([]string, 0, len(themes))
+	for k := range themes {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// updateSettings handles keyboard events in the settings modal.
+func (m *Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	fmts := settingsFormatNames()
+	themeNames := settingsThemeNames()
+
+	const numRows = 2
+	switch msg.String() {
+	case "up", "k":
+		if m.settingsCursor > 0 {
+			m.settingsCursor--
+		}
+	case "down", "j":
+		if m.settingsCursor < numRows-1 {
+			m.settingsCursor++
+		}
+	case "right", "l":
+		switch m.settingsCursor {
+		case 0: // date format
+			for i, f := range fmts {
+				if f.Layout == m.settingsFmt {
+					m.settingsFmt = fmts[(i+1)%len(fmts)].Layout
+					break
+				}
+			}
+		case 1: // theme
+			for i, name := range themeNames {
+				if name == m.settingsTheme {
+					m.settingsTheme = themeNames[(i+1)%len(themeNames)]
+					break
+				}
+			}
+		}
+	case "left", "h":
+		switch m.settingsCursor {
+		case 0: // date format
+			for i, f := range fmts {
+				if f.Layout == m.settingsFmt {
+					m.settingsFmt = fmts[(i+len(fmts)-1)%len(fmts)].Layout
+					break
+				}
+			}
+		case 1: // theme
+			for i, name := range themeNames {
+				if name == m.settingsTheme {
+					m.settingsTheme = themeNames[(i+len(themeNames)-1)%len(themeNames)]
+					break
+				}
+			}
+		}
+	case "enter":
+		return m.applySettings()
+	case "esc":
+		m.mode = modeNormal
+	}
+	return m, nil
+}
+
+// applySettings saves the in-flight settings, applies them live, and returns
+// to normal mode. On save error it stays in settings mode and shows the error.
+func (m *Model) applySettings() (tea.Model, tea.Cmd) {
+	if err := config.SetDateFormat(m.settingsFmt); err != nil {
+		m.statusMsg = "settings: " + err.Error()
+		return m, nil
+	}
+	if err := config.Save(m.repoPath, m.settingsTheme, m.settingsFmt); err != nil {
+		m.statusMsg = "settings: " + err.Error()
+		return m, nil
+	}
+	// Apply theme live.
+	t, ok := themes[m.settingsTheme]
+	if !ok {
+		t = defaultTheme
+	}
+	m.theme = t
+	m.styles = buildStyles(t)
+	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(t)
+	m.mode = modeNormal
+	m.statusMsg = "Settings saved"
+	return m, nil
+}
+
+// settingsModalContent renders the settings rows for the modal box.
+func (m *Model) settingsModalContent() string {
+	k := m.styles.helpKeyStyle.Render
+	fmts := settingsFormatNames()
+	themeNames := settingsThemeNames()
+
+	// Format the two rows.
+	var fmtLabel string
+	for _, f := range fmts {
+		if f.Layout == m.settingsFmt {
+			fmtLabel = f.Label
+			break
+		}
+	}
+
+	rows := [2]string{
+		fmt.Sprintf("Date format  [%-10s]", fmtLabel),
+		fmt.Sprintf("Theme        [%-10s]", m.settingsTheme),
+	}
+
+	var lines string
+	for i, row := range rows {
+		if i == m.settingsCursor {
+			lines += "  " + k(">") + " " + row + "\n"
+		} else {
+			lines += "    " + row + "\n"
+		}
+	}
+
+	_ = themeNames // used only in updateSettings
+
+	hint := "\n  " + m.styles.helpTextStyle.Render("↑↓ navigate  ←→ change  Enter save  Esc cancel")
+	return "Settings:\n\n" + lines + hint
+}
+
 func (m *Model) helpModalContent() string {
 	k := m.styles.helpKeyStyle.Render
 	return "Keybindings:\n\n" +
@@ -2952,6 +3109,8 @@ func (m *Model) helpModalContent() string {
 func (m *Model) modalView() string {
 	iw := m.modalInnerWidth()
 	switch m.mode {
+	case modeSettings:
+		return m.modalBox(m.settingsModalContent(), iw)
 	case modeHelp:
 		return m.modalBox(m.helpModalContent(), iw)
 	case modeReschedule:

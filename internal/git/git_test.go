@@ -51,6 +51,9 @@ func TestInit_CreatesDirectoryStructure(t *testing.T) {
 	if config["theme"] != "default" {
 		t.Errorf("theme = %q, want %q", config["theme"], "default")
 	}
+	if config["date_format"] != "02-01-2006" {
+		t.Errorf("date_format = %q, want %q", config["date_format"], "02-01-2006")
+	}
 
 	// Check .gitignore exists
 	gitignorePath := filepath.Join(repoPath, ".gitignore")

@@ -126,15 +126,24 @@ func assertPanics(t *testing.T, name string, fn func()) {
 	fn()
 }
 
-// writeConfigJSON writes a config.json with the given theme value into
+// resetDateFormat restores the package-level dateFormat to the default at
+// test cleanup. Always call this when a test modifies dateFormat directly or
+// via SetDateFormat.
+func resetDateFormat(t *testing.T) {
+	t.Helper()
+	prev := dateFormat
+	t.Cleanup(func() { dateFormat = prev })
+}
+
+// writeConfigJSON writes a config.json with the given content into
 // tmpDir/.monolog/config.json and sets MONOLOG_DIR=tmpDir for the test.
-func writeConfigJSON(t *testing.T, tmpDir, theme string) {
+func writeConfigJSON(t *testing.T, tmpDir string, content map[string]string) {
 	t.Helper()
 	monologDir := filepath.Join(tmpDir, ".monolog")
 	if err := os.MkdirAll(monologDir, 0o755); err != nil {
 		t.Fatalf("mkdir .monolog: %v", err)
 	}
-	data, err := json.Marshal(map[string]string{"theme": theme})
+	data, err := json.Marshal(content)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
@@ -155,7 +164,7 @@ func TestThemeDefaultWhenNoFile(t *testing.T) {
 
 func TestThemeReadFromFile(t *testing.T) {
 	t.Setenv("MONOLOG_THEME", "") // ensure env var does not interfere
-	writeConfigJSON(t, t.TempDir(), "dracula")
+	writeConfigJSON(t, t.TempDir(), map[string]string{"theme": "dracula"})
 	if got := Theme(); got != "dracula" {
 		t.Errorf("Theme() = %q, want %q", got, "dracula")
 	}
@@ -163,7 +172,7 @@ func TestThemeReadFromFile(t *testing.T) {
 
 func TestThemeEnvVarOverridesFile(t *testing.T) {
 	// File says "dracula", env var says "default" — env var must win.
-	writeConfigJSON(t, t.TempDir(), "dracula")
+	writeConfigJSON(t, t.TempDir(), map[string]string{"theme": "dracula"})
 	t.Setenv("MONOLOG_THEME", "default")
 	if got := Theme(); got != "default" {
 		t.Errorf("Theme() = %q, want %q when env var set", got, "default")
@@ -211,5 +220,175 @@ func TestThemeDefaultWhenKeyMissingInFile(t *testing.T) {
 	t.Setenv("MONOLOG_DIR", tmpDir)
 	if got := Theme(); got != "default" {
 		t.Errorf("Theme() = %q, want %q when key absent", got, "default")
+	}
+}
+
+// --- Load ---
+
+func TestLoadSetsDateFormatFromFile(t *testing.T) {
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	writeConfigJSON(t, tmpDir, map[string]string{"date_format": "2006-01-02"})
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := DateFormat(), "2006-01-02"; got != want {
+		t.Errorf("DateFormat() = %q, want %q after Load", got, want)
+	}
+}
+
+func TestLoadIgnoresMissingFile(t *testing.T) {
+	resetDateFormat(t)
+	tmpDir := t.TempDir() // no .monolog dir at all
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load returned error for missing file: %v", err)
+	}
+	if got, want := DateFormat(), "02-01-2006"; got != want {
+		t.Errorf("DateFormat() = %q, want default %q", got, want)
+	}
+}
+
+func TestLoadIgnoresUnknownDateFormat(t *testing.T) {
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	writeConfigJSON(t, tmpDir, map[string]string{"date_format": "bogus-layout"})
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := DateFormat(), "02-01-2006"; got != want {
+		t.Errorf("DateFormat() = %q, want default %q after unknown layout", got, want)
+	}
+}
+
+func TestLoadIgnoresMalformedJSON(t *testing.T) {
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), []byte("{bad"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load returned error for malformed JSON: %v", err)
+	}
+	if got, want := DateFormat(), "02-01-2006"; got != want {
+		t.Errorf("DateFormat() = %q, want default %q", got, want)
+	}
+}
+
+// --- SetDateFormat ---
+
+func TestSetDateFormatAcceptsSupported(t *testing.T) {
+	resetDateFormat(t)
+	for _, f := range AllFormats() {
+		if err := SetDateFormat(f.Layout); err != nil {
+			t.Errorf("SetDateFormat(%q) error: %v", f.Layout, err)
+		}
+		if got := DateFormat(); got != f.Layout {
+			t.Errorf("DateFormat() = %q, want %q", got, f.Layout)
+		}
+	}
+}
+
+func TestSetDateFormatRejectsUnknown(t *testing.T) {
+	resetDateFormat(t)
+	if err := SetDateFormat("bogus"); err == nil {
+		t.Error("SetDateFormat(bogus) expected error, got nil")
+	}
+	if got, want := DateFormat(), "02-01-2006"; got != want {
+		t.Errorf("DateFormat() = %q after rejection, want unchanged %q", got, want)
+	}
+}
+
+// --- Save ---
+
+func TestSaveWritesThemeAndDateFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := Save(tmpDir, "dracula", "2006-01-02"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(monologDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := cfg["theme"]; got != "dracula" {
+		t.Errorf("theme = %v, want dracula", got)
+	}
+	if got := cfg["date_format"]; got != "2006-01-02" {
+		t.Errorf("date_format = %v, want 2006-01-02", got)
+	}
+}
+
+func TestSavePreservesUnknownKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeConfigJSON(t, tmpDir, map[string]string{
+		"default_schedule": "today",
+		"editor":           "$EDITOR",
+		"theme":            "default",
+	})
+	if err := Save(tmpDir, "dracula", "02-01-2006"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".monolog", "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg["default_schedule"] != "today" {
+		t.Errorf("default_schedule lost after Save, got %v", cfg["default_schedule"])
+	}
+	if cfg["editor"] != "$EDITOR" {
+		t.Errorf("editor lost after Save, got %v", cfg["editor"])
+	}
+}
+
+func TestSaveCreatesFilWhenMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// No config.json exists yet.
+	if err := Save(tmpDir, "default", "02-01-2006"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(monologDir, "config.json")); err != nil {
+		t.Errorf("config.json not created: %v", err)
+	}
+}
+
+// --- AllFormats ---
+
+func TestAllFormatsReturnsThreeEntries(t *testing.T) {
+	fmts := AllFormats()
+	if len(fmts) != 3 {
+		t.Fatalf("AllFormats() returned %d entries, want 3", len(fmts))
+	}
+	labels := map[string]bool{}
+	for _, f := range fmts {
+		labels[f.Label] = true
+		if _, ok := supported[f.Layout]; !ok {
+			t.Errorf("AllFormats() returned unsupported layout %q", f.Layout)
+		}
+	}
+	for _, want := range []string{"DD-MM-YYYY", "MM-DD-YYYY", "YYYY-MM-DD"} {
+		if !labels[want] {
+			t.Errorf("AllFormats() missing label %q", want)
+		}
 	}
 }
