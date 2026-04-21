@@ -135,8 +135,8 @@ Search: `SearchDone`, `SearchActive`, `SearchCount`, `SearchMeta`, `SearchPrevie
 
 ### Task 6: [Final] Update documentation
 
-- [ ] update `CLAUDE.md` — add theme support to Key Design Decisions
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `CLAUDE.md` — add theme support to Key Design Decisions
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 
