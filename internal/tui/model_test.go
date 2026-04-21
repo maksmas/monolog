@@ -9375,40 +9375,40 @@ func TestUndoStack_NonEmptyStack_DecrementsLength(t *testing.T) {
 }
 
 // TestUndoStack_SyncWithRemote_ClearsStack verifies that a taskSavedMsg with
-// clearUndo=true clears the undo stack even when the stack is non-empty.
+// clearHistory=true clears the undo stack even when the stack is non-empty.
 func TestUndoStack_SyncWithRemote_ClearsStack(t *testing.T) {
 	m := newTestModel(t)
 	// Pre-populate stack with two SHAs.
 	m.undoStack = []string{"sha1", "sha2"}
 
-	next, _ := m.Update(taskSavedMsg{clearUndo: true, status: "Synced"})
+	next, _ := m.Update(taskSavedMsg{clearHistory: true, status: "Synced"})
 	m = next.(*Model)
 	if m.undoStack != nil {
-		t.Errorf("undoStack = %v, want nil after clearUndo=true", m.undoStack)
+		t.Errorf("undoStack = %v, want nil after clearHistory=true", m.undoStack)
 	}
 }
 
-// TestUndoStack_SyncWithRemote_ClearsStackEvenOnError verifies that clearUndo
+// TestUndoStack_SyncWithRemote_ClearsStackEvenOnError verifies that clearHistory
 // clears the stack even when msg.err is non-nil (remote sync error path).
 func TestUndoStack_SyncWithRemote_ClearsStackEvenOnError(t *testing.T) {
 	m := newTestModel(t)
 	m.undoStack = []string{"sha1", "sha2"}
 
-	next, _ := m.Update(taskSavedMsg{clearUndo: true, err: errors.New("sync failed")})
+	next, _ := m.Update(taskSavedMsg{clearHistory: true, err: errors.New("sync failed")})
 	m = next.(*Model)
 	if m.undoStack != nil {
-		t.Errorf("undoStack = %v, want nil after clearUndo=true with error", m.undoStack)
+		t.Errorf("undoStack = %v, want nil after clearHistory=true with error", m.undoStack)
 	}
 }
 
 // TestUndoStack_SyncWithoutRemote_PreservesStack verifies that a taskSavedMsg
-// with clearUndo=false does not touch the undo stack.
+// with clearHistory=false does not touch the undo stack.
 func TestUndoStack_SyncWithoutRemote_PreservesStack(t *testing.T) {
 	m := newTestModel(t)
 	m.undoStack = []string{"sha1", "sha2"}
 
-	// clearUndo=false, no sha — local-only sync preserves stack.
-	next, _ := m.Update(taskSavedMsg{clearUndo: false, status: "No remote configured; committed locally"})
+	// clearHistory=false, no sha — local-only sync preserves stack.
+	next, _ := m.Update(taskSavedMsg{clearHistory: false, status: "No remote configured; committed locally"})
 	m = next.(*Model)
 	if len(m.undoStack) != 2 {
 		t.Errorf("undoStack len = %d, want 2 (stack should be preserved)", len(m.undoStack))
@@ -9525,5 +9525,293 @@ func TestUndoStack_CtrlZ_NonEmptyStack_Reverts(t *testing.T) {
 		if restored.Title != "ctrl+z me" {
 			t.Errorf("restored task Title = %q, want %q", restored.Title, "ctrl+z me")
 		}
+	}
+}
+
+// TestUndoStack_SuccessfulUndoPushesToRedoStack verifies that after a real
+// mutation + successful undo, the revert commit SHA is captured onto
+// redoStack via the redoSHA field on taskSavedMsg.
+func TestUndoStack_SuccessfulUndoPushesToRedoStack(t *testing.T) {
+	// Use a real git repo (from newTestModel) so git.RevertSHA can run.
+	m := newTestModel(t,
+		model.Task{ID: "01D", Title: "redo me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// Perform a real done mutation to push a real SHA onto undoStack.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d key should return a cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("done mutation error: %v", m.err)
+	}
+	if len(m.undoStack) != 1 {
+		t.Fatalf("undoStack len = %d, want 1 after done mutation", len(m.undoStack))
+	}
+	if len(m.redoStack) != 0 {
+		t.Fatalf("redoStack len = %d, want 0 before undo", len(m.redoStack))
+	}
+
+	// Press "u" — pops undoStack and returns an undo cmd.
+	m, undoC := key(t, m, "u")
+	if undoC == nil {
+		t.Fatal("u key should return a cmd when stack non-empty")
+	}
+
+	// Execute the undo cmd — on success undoCmd returns a taskSavedMsg
+	// with redoSHA set to the revert commit's SHA, which the Update handler
+	// pushes onto redoStack.
+	m = runCmd(t, m, undoC)
+	if m.err != nil {
+		t.Fatalf("undo cmd error: %v", m.err)
+	}
+	if !strings.HasPrefix(m.statusMsg, "Undone:") {
+		t.Errorf("statusMsg = %q, want prefix %q", m.statusMsg, "Undone:")
+	}
+	if len(m.redoStack) != 1 {
+		t.Fatalf("redoStack len = %d, want 1 after successful undo", len(m.redoStack))
+	}
+	if m.redoStack[0] == "" {
+		t.Errorf("redoStack[0] is empty, want a non-empty revert SHA")
+	}
+}
+
+// TestUndoStack_FailedUndoDoesNotPushToRedoStack verifies that when undoCmd
+// returns a failure (taskSavedMsg with err + restoreUndoSHA set, redoSHA
+// empty), only undoStack is restored and redoStack remains empty.
+func TestUndoStack_FailedUndoDoesNotPushToRedoStack(t *testing.T) {
+	m := newTestModel(t)
+	if len(m.redoStack) != 0 {
+		t.Fatalf("precondition: redoStack not empty")
+	}
+	// Simulate the goroutine's failure return: err set, restoreUndoSHA set,
+	// redoSHA empty (RevertSHA returns "" on error).
+	next, _ := m.Update(taskSavedMsg{
+		err:            errors.New("undo: conflict"),
+		restoreUndoSHA: "abc",
+	})
+	m = next.(*Model)
+	if len(m.undoStack) != 1 {
+		t.Errorf("undoStack len = %d, want 1 (SHA restored)", len(m.undoStack))
+	}
+	if m.undoStack[0] != "abc" {
+		t.Errorf("undoStack[0] = %q, want %q", m.undoStack[0], "abc")
+	}
+	if len(m.redoStack) != 0 {
+		t.Errorf("redoStack len = %d, want 0 (failed undo must not push)", len(m.redoStack))
+	}
+}
+
+// --- Redo stack tests ---
+
+// TestRedoStack_EmptyStack_NothingToRedo verifies that pressing ctrl+y when
+// the redo stack is empty sets statusMsg to "nothing to redo" and returns
+// nil cmd, leaving the (already-empty) stack untouched.
+func TestRedoStack_EmptyStack_NothingToRedo(t *testing.T) {
+	m := newTestModel(t)
+	if len(m.redoStack) != 0 {
+		t.Fatalf("precondition: redoStack not empty")
+	}
+	m, cmd := key(t, m, "ctrl+y")
+	if m.statusMsg != "nothing to redo" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "nothing to redo")
+	}
+	if cmd != nil {
+		t.Errorf("cmd should be nil when redoStack empty, got non-nil")
+	}
+	if len(m.redoStack) != 0 {
+		t.Errorf("redoStack len = %d, want 0 (unchanged)", len(m.redoStack))
+	}
+}
+
+// TestRedoStack_DoneUndoRedo_RestoresDoneState walks through the full
+// mutation → undo → redo cycle using real git reverts and asserts the task
+// ends up done again after ctrl+y (mirror of the undo walk-back test).
+func TestRedoStack_DoneUndoRedo_RestoresDoneState(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01E", Title: "redo cycle", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	// done → pushes SHA onto undoStack.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d key should return a cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("done mutation error: %v", m.err)
+	}
+	if len(m.undoStack) != 1 {
+		t.Fatalf("undoStack len = %d, want 1 after done", len(m.undoStack))
+	}
+
+	// undo → pops undoStack, pushes revert SHA onto redoStack; task reopens.
+	m, undoC := key(t, m, "u")
+	if undoC == nil {
+		t.Fatal("u key should return a cmd")
+	}
+	m = runCmd(t, m, undoC)
+	if m.err != nil {
+		t.Fatalf("undo cmd error: %v", m.err)
+	}
+	if len(m.redoStack) != 1 {
+		t.Fatalf("redoStack len = %d, want 1 after undo", len(m.redoStack))
+	}
+	// Task should be open again.
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Fatalf("Today tab items = %d after undo, want 1", got)
+	}
+	if st := m.lists[0].Items()[0].(item).task.Status; st != "open" {
+		t.Fatalf("after undo: task Status = %q, want %q", st, "open")
+	}
+
+	// redo → pops redoStack, pushes new SHA onto undoStack; task done again.
+	m, redoC := key(t, m, "ctrl+y")
+	if redoC == nil {
+		t.Fatal("ctrl+y should return a cmd when redoStack non-empty")
+	}
+	if len(m.redoStack) != 0 {
+		t.Errorf("redoStack len = %d, want 0 after ctrl+y press (popped)", len(m.redoStack))
+	}
+	m = runCmd(t, m, redoC)
+	if m.err != nil {
+		t.Fatalf("redo cmd error: %v", m.err)
+	}
+	if !strings.HasPrefix(m.statusMsg, "Redone:") {
+		t.Errorf("statusMsg = %q, want prefix %q", m.statusMsg, "Redone:")
+	}
+	// Task should now be done — no longer in the Today (open) tab.
+	doneTab := findTabByLabel(t, m, "Done")
+	if got := len(m.lists[doneTab].Items()); got != 1 {
+		t.Fatalf("Done tab items = %d after redo, want 1", got)
+	}
+	redone := m.lists[doneTab].Items()[0].(item).task
+	if redone.Status != "done" {
+		t.Errorf("after redo: task Status = %q, want %q", redone.Status, "done")
+	}
+}
+
+// TestRedoStack_RedoneSHAPushesToUndoStackPreservingRedoStack verifies the
+// exact semantics of taskSavedMsg.redoneSHA: it pushes onto undoStack but
+// does NOT clear redoStack (unlike sha, which clears it).
+func TestRedoStack_RedoneSHAPushesToUndoStackPreservingRedoStack(t *testing.T) {
+	m := newTestModel(t)
+	// Seed both stacks with known values.
+	m.undoStack = []string{"sha_u"}
+	m.redoStack = []string{"sha_r"}
+
+	next, _ := m.Update(taskSavedMsg{status: "Redone: x", redoneSHA: "newsha"})
+	m = next.(*Model)
+
+	// undoStack gains newsha (original sha_u preserved, appended).
+	if len(m.undoStack) != 2 {
+		t.Fatalf("undoStack len = %d, want 2 (sha_u + newsha)", len(m.undoStack))
+	}
+	if m.undoStack[0] != "sha_u" {
+		t.Errorf("undoStack[0] = %q, want %q", m.undoStack[0], "sha_u")
+	}
+	if m.undoStack[1] != "newsha" {
+		t.Errorf("undoStack[1] = %q, want %q", m.undoStack[1], "newsha")
+	}
+	// redoStack must be unchanged (redoneSHA preserves it).
+	if len(m.redoStack) != 1 {
+		t.Fatalf("redoStack len = %d, want 1 (unchanged)", len(m.redoStack))
+	}
+	if m.redoStack[0] != "sha_r" {
+		t.Errorf("redoStack[0] = %q, want %q (unchanged)", m.redoStack[0], "sha_r")
+	}
+}
+
+// TestRedoStack_NewMutationClearsRedoStack verifies that a fresh mutation
+// (taskSavedMsg.sha non-empty) clears redoStack — redo history is invalidated
+// by new edits, standard redo semantics.
+func TestRedoStack_NewMutationClearsRedoStack(t *testing.T) {
+	m := newTestModel(t)
+	m.redoStack = []string{"stale_sha"}
+
+	next, _ := m.Update(taskSavedMsg{sha: "newsha", status: "Moved"})
+	m = next.(*Model)
+
+	if m.redoStack != nil {
+		t.Errorf("redoStack = %v, want nil after new mutation", m.redoStack)
+	}
+	// Sanity: sha also pushed onto undoStack.
+	if len(m.undoStack) != 1 || m.undoStack[0] != "newsha" {
+		t.Errorf("undoStack = %v, want [newsha]", m.undoStack)
+	}
+}
+
+// TestRedoStack_FailedRedo_RestoresSHA verifies that when redoCmd returns a
+// failure (taskSavedMsg with err + restoreRedoSHA set), the SHA is pushed
+// back onto redoStack so the user can retry.
+func TestRedoStack_FailedRedo_RestoresSHA(t *testing.T) {
+	m := newTestModel(t)
+	if len(m.redoStack) != 0 {
+		t.Fatalf("precondition: redoStack not empty")
+	}
+	next, _ := m.Update(taskSavedMsg{
+		err:            errors.New("redo: conflict"),
+		restoreRedoSHA: "abc",
+	})
+	m = next.(*Model)
+
+	if len(m.redoStack) != 1 {
+		t.Fatalf("redoStack len = %d, want 1 after failed redo", len(m.redoStack))
+	}
+	if m.redoStack[0] != "abc" {
+		t.Errorf("redoStack[0] = %q, want %q", m.redoStack[0], "abc")
+	}
+	if m.err == nil {
+		t.Error("m.err should be set after failed redo")
+	}
+}
+
+// TestRedoStack_Cap10_DropsOldest verifies that redoStack is capped at
+// undoStackCap (10) entries and the oldest is dropped when the 11th arrives.
+func TestRedoStack_Cap10_DropsOldest(t *testing.T) {
+	m := newTestModel(t)
+
+	// Push 15 SHAs via successive taskSavedMsg updates with redoSHA set.
+	for i := 0; i < 15; i++ {
+		sha := fmt.Sprintf("sha_%d", i)
+		next, _ := m.Update(taskSavedMsg{redoSHA: sha, status: "ok"})
+		m = next.(*Model)
+	}
+
+	if len(m.redoStack) != undoStackCap {
+		t.Fatalf("redoStack len = %d, want %d (capped)", len(m.redoStack), undoStackCap)
+	}
+	// Oldest 5 (sha_0..sha_4) should have been dropped; newest 10 (sha_5..sha_14) remain.
+	if m.redoStack[0] != "sha_5" {
+		t.Errorf("redoStack[0] = %q, want %q (oldest after drops)", m.redoStack[0], "sha_5")
+	}
+	for i, want := range []string{
+		"sha_5", "sha_6", "sha_7", "sha_8", "sha_9",
+		"sha_10", "sha_11", "sha_12", "sha_13", "sha_14",
+	} {
+		if m.redoStack[i] != want {
+			t.Errorf("redoStack[%d] = %q, want %q", i, m.redoStack[i], want)
+		}
+	}
+}
+
+// TestClearHistory_ClearsBothStacks verifies that a taskSavedMsg with
+// clearHistory=true nils BOTH undoStack and redoStack (remote sync path).
+func TestClearHistory_ClearsBothStacks(t *testing.T) {
+	m := newTestModel(t)
+	m.undoStack = []string{"sha_u"}
+	m.redoStack = []string{"sha_r"}
+
+	next, _ := m.Update(taskSavedMsg{clearHistory: true, status: "Synced"})
+	m = next.(*Model)
+
+	if m.undoStack != nil {
+		t.Errorf("undoStack = %v, want nil after clearHistory", m.undoStack)
+	}
+	if m.redoStack != nil {
+		t.Errorf("redoStack = %v, want nil after clearHistory", m.redoStack)
 	}
 }

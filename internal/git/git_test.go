@@ -784,6 +784,90 @@ func TestRevert_BadSHA(t *testing.T) {
 	}
 }
 
+func TestRevertSHA_ReturnsRevertCommitSHA(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Create a file and commit it — this is the baseline
+	testFile := filepath.Join(repoPath, ".monolog", "tasks", "revertsha-test.json")
+	if err := os.WriteFile(testFile, []byte(`{"id":"revertsha-test","title":"original"}`), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	relPath := filepath.Join(".monolog", "tasks", "revertsha-test.json")
+	if _, err := AutoCommitSHA(repoPath, "add: revertsha test task", relPath); err != nil {
+		t.Fatalf("AutoCommitSHA() error = %v", err)
+	}
+
+	// Modify and commit — this is the SHA we will revert
+	if err := os.WriteFile(testFile, []byte(`{"id":"revertsha-test","title":"modified"}`), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	sha, err := AutoCommitSHA(repoPath, "edit: revertsha test task", relPath)
+	if err != nil {
+		t.Fatalf("AutoCommitSHA() for modify: %v", err)
+	}
+
+	// RevertSHA should return the SHA of the new revert commit
+	revertSHA, err := RevertSHA(repoPath, sha)
+	if err != nil {
+		t.Fatalf("RevertSHA() error = %v", err)
+	}
+	if revertSHA == "" {
+		t.Fatal("RevertSHA() returned empty SHA")
+	}
+	if revertSHA == sha {
+		t.Errorf("RevertSHA() returned same SHA as the reverted one: %q", revertSHA)
+	}
+
+	// Returned SHA must match current HEAD
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	want := strings.TrimSpace(string(out))
+	if revertSHA != want {
+		t.Errorf("RevertSHA() = %q, want HEAD %q", revertSHA, want)
+	}
+
+	// The returned SHA's commit subject should start with "Revert"
+	subj, err := CommitSubject(repoPath, revertSHA)
+	if err != nil {
+		t.Fatalf("CommitSubject after RevertSHA: %v", err)
+	}
+	if !strings.HasPrefix(subj, "Revert") {
+		t.Errorf("revert commit subject = %q, expected to start with 'Revert'", subj)
+	}
+
+	// File should be back to original content
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file after revert: %v", err)
+	}
+	if string(data) != `{"id":"revertsha-test","title":"original"}` {
+		t.Errorf("file content after revert = %q, want original content", string(data))
+	}
+}
+
+func TestRevertSHA_BadSHA(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	sha, err := RevertSHA(repoPath, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	if err == nil {
+		t.Error("expected error when reverting a bad SHA")
+	}
+	if sha != "" {
+		t.Errorf("RevertSHA() returned %q for bad SHA, want empty", sha)
+	}
+}
+
 func TestAutoCommit_DeletedFile(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "test-monolog")

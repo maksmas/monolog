@@ -160,6 +160,20 @@ func Revert(repoPath, sha string) error {
 	return nil
 }
 
+// RevertSHA reverts the named commit with --no-edit and returns the resulting
+// HEAD SHA (the revert commit). On conflict, Revert runs git revert --abort
+// before returning the error. Mirror of AutoCommitSHA for the revert path.
+func RevertSHA(repoPath, sha string) (string, error) {
+	if err := Revert(repoPath, sha); err != nil {
+		return "", err
+	}
+	newSHA, err := headSHA(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("get HEAD SHA after revert: %w", err)
+	}
+	return newSHA, nil
+}
+
 // HasChanges returns true if the working tree has uncommitted changes
 // (untracked files, modified files, or staged changes).
 func HasChanges(repoPath string) (bool, error) {

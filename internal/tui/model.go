@@ -209,6 +209,13 @@ type Model struct {
 	// Capped at undoStackCap entries; the oldest is dropped when the cap is exceeded.
 	// Cleared when syncing with a remote (rebase may rewrite SHAs).
 	undoStack []string
+
+	// redoStack holds revert-commit SHAs produced by successful undos, newest
+	// last. Capped at undoStackCap entries (same cap as undoStack); the oldest
+	// is dropped when the cap is exceeded. Any new mutation clears redoStack
+	// (standard redo semantics). Cleared alongside undoStack when syncing with
+	// a remote.
+	redoStack []string
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -352,19 +359,30 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
 // focusID, if non-empty, asks the handler to move the cursor to the task with
 // that ID after reload — used by add so a new task is autofocused.
-// sha, if non-empty, is the commit SHA to push onto the undo stack.
-// clearUndo, if true, clears the entire undo stack before any push (used by
-// sync with remote, where a rebase may have rewritten SHAs).
+// sha, if non-empty, is the commit SHA to push onto the undo stack; it also
+// clears redoStack (new mutations invalidate the redo history).
+// clearHistory, if true, clears BOTH undoStack and redoStack before any push
+// (used by sync with remote, where a rebase may have rewritten SHAs).
 // restoreUndoSHA, if non-empty, is pushed back onto undoStack before the
 // error early-return — used by undoCmd on revert failure so the SHA can be
 // retried. This avoids mutating undoStack from inside the goroutine closure.
+// restoreRedoSHA mirrors restoreUndoSHA for the redo path: on a failed redo,
+// the SHA is pushed back onto redoStack so the user can retry.
+// redoSHA, if non-empty, is the revert-commit SHA pushed onto redoStack after
+// a successful undo.
+// redoneSHA, if non-empty, is the new commit SHA pushed onto undoStack after
+// a successful redo; unlike sha, it does NOT clear redoStack (redo itself is
+// not a "new" mutation from the user's perspective).
 type taskSavedMsg struct {
 	status         string
 	err            error
 	focusID        string
-	sha            string // commit SHA to push onto undoStack; empty → skip push
-	clearUndo      bool   // true → clear undoStack first (evaluated even on error)
+	sha            string // commit SHA to push onto undoStack AND clear redoStack; empty → skip
+	clearHistory   bool   // true → clear BOTH undoStack and redoStack first (evaluated even on error)
 	restoreUndoSHA string // pushed back onto undoStack before error return (undo retry)
+	redoSHA        string // revert-commit SHA to push onto redoStack (successful undo)
+	redoneSHA      string // commit SHA to push onto undoStack WITHOUT clearing redoStack (successful redo)
+	restoreRedoSHA string // pushed back onto redoStack before error return (redo retry)
 }
 
 // newModel constructs a Model and loads initial task data for each tab.
@@ -910,13 +928,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case taskSavedMsg:
-		if msg.clearUndo {
+		if msg.clearHistory {
 			m.undoStack = nil
+			m.redoStack = nil
 		}
 		if msg.restoreUndoSHA != "" {
 			m.undoStack = append(m.undoStack, msg.restoreUndoSHA)
 			if len(m.undoStack) > undoStackCap {
 				m.undoStack = m.undoStack[1:]
+			}
+		}
+		if msg.restoreRedoSHA != "" {
+			m.redoStack = append(m.redoStack, msg.restoreRedoSHA)
+			if len(m.redoStack) > undoStackCap {
+				m.redoStack = m.redoStack[1:]
 			}
 		}
 		if msg.err != nil {
@@ -928,10 +953,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.statusMsg = msg.status
 		// Push SHA onto undo stack (cap undoStackCap, drop oldest).
+		// A new mutation invalidates the redo history.
 		if msg.sha != "" {
 			m.undoStack = append(m.undoStack, msg.sha)
 			if len(m.undoStack) > undoStackCap {
 				m.undoStack = m.undoStack[1:]
+			}
+			m.redoStack = nil
+		}
+		// redoneSHA pushes onto undoStack like sha but preserves redoStack so
+		// successive redos can continue popping it.
+		if msg.redoneSHA != "" {
+			m.undoStack = append(m.undoStack, msg.redoneSHA)
+			if len(m.undoStack) > undoStackCap {
+				m.undoStack = m.undoStack[1:]
+			}
+		}
+		// redoSHA is the revert commit from a successful undo.
+		if msg.redoSHA != "" {
+			m.redoStack = append(m.redoStack, msg.redoSHA)
+			if len(m.redoStack) > undoStackCap {
+				m.redoStack = m.redoStack[1:]
 			}
 		}
 		if err := m.reloadAll(); err != nil {
@@ -1074,6 +1116,12 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.undoCmd()
+	case "ctrl+y":
+		if len(m.redoStack) == 0 {
+			m.statusMsg = "nothing to redo"
+			return m, nil
+		}
+		return m, m.redoCmd()
 	case "v":
 		return m, m.toggleViewMode()
 	case "h":
@@ -2454,9 +2502,9 @@ func (m *Model) syncCmd() tea.Cmd {
 		res, err := git.Sync(repoPath)
 		if err != nil {
 			// If we attempted a remote sync the SHAs may have changed;
-			// clear the stack even on error to avoid stale references.
+			// clear both stacks even on error to avoid stale references.
 			if res.HasRemote {
-				return taskSavedMsg{err: err, clearUndo: true}
+				return taskSavedMsg{err: err, clearHistory: true}
 			}
 			return taskSavedMsg{err: err}
 		}
@@ -2464,9 +2512,9 @@ func (m *Model) syncCmd() tea.Cmd {
 			return taskSavedMsg{status: "No remote configured; committed locally"}
 		}
 		if res.Resolved > 0 {
-			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved), clearUndo: true}
+			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved), clearHistory: true}
 		}
-		return taskSavedMsg{status: "Synced", clearUndo: true}
+		return taskSavedMsg{status: "Synced", clearHistory: true}
 	}
 }
 
@@ -2490,13 +2538,45 @@ func (m *Model) undoCmd() tea.Cmd {
 			// non-retriable so we don't push the stale SHA back.
 			return taskSavedMsg{err: fmt.Errorf("undo: %w", err)}
 		}
-		if err := git.Revert(repoPath, sha); err != nil {
+		revertSHA, err := git.RevertSHA(repoPath, sha)
+		if err != nil {
 			// Revert failed (e.g. conflict). Signal the Update loop to push
 			// the SHA back via restoreUndoSHA — avoids mutating m.undoStack
 			// from inside the goroutine (data race with the Update loop).
 			return taskSavedMsg{err: fmt.Errorf("undo: %w", err), restoreUndoSHA: sha}
 		}
-		return taskSavedMsg{status: "Undone: " + subject}
+		return taskSavedMsg{status: "Undone: " + subject, redoSHA: revertSHA}
+	}
+}
+
+// redoCmd pops the top SHA from redoStack and reverts that revert commit.
+// Callers must check len(redoStack) > 0 before calling. On a failed revert
+// the SHA is pushed back so the user can retry.
+func (m *Model) redoCmd() tea.Cmd {
+	if len(m.redoStack) == 0 {
+		// Defensive guard; callers should check before invoking.
+		return nil
+	}
+	// Pop the top SHA before launching the goroutine so a second keypress
+	// while the first revert is in-flight cannot race on the same SHA.
+	revertSHA := m.redoStack[len(m.redoStack)-1]
+	m.redoStack = m.redoStack[:len(m.redoStack)-1]
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		subject, err := git.CommitSubject(repoPath, revertSHA)
+		if err != nil {
+			// SHA is no longer accessible (e.g. cleared by rebase); treat as
+			// non-retriable so we don't push the stale SHA back.
+			return taskSavedMsg{err: fmt.Errorf("redo: %w", err)}
+		}
+		newSHA, err := git.RevertSHA(repoPath, revertSHA)
+		if err != nil {
+			// Revert failed (e.g. conflict). Signal the Update loop to push
+			// the SHA back via restoreRedoSHA — avoids mutating m.redoStack
+			// from inside the goroutine (data race with the Update loop).
+			return taskSavedMsg{err: fmt.Errorf("redo: %w", err), restoreRedoSHA: revertSHA}
+		}
+		return taskSavedMsg{status: "Redone: " + subject, redoneSHA: newSHA}
 	}
 }
 
@@ -3196,6 +3276,7 @@ func (m *Model) helpModalContent() string {
 		"  " + k("↵") + "    notes panel\n" +
 		"  " + k("s") + "    sync\n" +
 		"  " + k("u") + "    undo last action (also ctrl+z)\n" +
+		"  " + k("ctrl+y") + "    redo last undone action\n" +
 		"  " + k("h") + "    this help\n" +
 		"  " + k("q") + "    quit\n\n" +
 		"Search:\n\n" +
