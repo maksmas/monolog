@@ -195,8 +195,8 @@ return taskSavedMsg{status: "Undone: " + subject, sha: ""}   // no SHA → not r
 - Modify: `CLAUDE.md`
 - Move: `docs/plans/20260421-tui-undo-git-revert.md` → `docs/plans/completed/`
 
-- [ ] add undo design note to CLAUDE.md Key Design Decisions: `undoStack []string` on Model (max 10 SHAs); `u`/`ctrl+z` triggers `git revert <sha> --no-edit`; stack clears on remote sync (rebase may rewrite SHAs); grab-move rebalance positions not captured in the move commit so not undone by undo
-- [ ] move this plan to `docs/plans/completed/`
+- [x] add undo design note to CLAUDE.md Key Design Decisions: `undoStack []string` on Model (max 10 SHAs); `u`/`ctrl+z` triggers `git revert <sha> --no-edit`; stack clears on remote sync (rebase may rewrite SHAs); grab-move rebalance positions not captured in the move commit so not undone by undo
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 
