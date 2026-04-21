@@ -86,12 +86,12 @@ Search: `SearchDone`, `SearchActive`, `SearchCount`, `SearchMeta`, `SearchPrevie
 - Modify: `internal/git/git.go`
 - Modify: `internal/config/config_test.go` (create if absent)
 
-- [ ] add `Theme() string` to `internal/config/config.go` — reads `<MONOLOG_DIR>/.monolog/config.json`, returns `"theme"` field; defaults to `"default"` if file absent or key missing
-- [ ] `MONOLOG_THEME` env var takes precedence over file
-- [ ] use `os.Getenv("MONOLOG_DIR")` + `os.UserHomeDir()` fallback (same logic as `monologDir()` in `cmd/init.go`) to locate config.json
-- [ ] update `git.Init` config.json template in `internal/git/git.go` to include `"theme": "default"`
-- [ ] write tests for `Theme()`: returns `"default"` when no file, returns value from file, env var overrides
-- [ ] run tests — must pass before task 3
+- [x] add `Theme() string` to `internal/config/config.go` — reads `<MONOLOG_DIR>/.monolog/config.json`, returns `"theme"` field; defaults to `"default"` if file absent or key missing
+- [x] `MONOLOG_THEME` env var takes precedence over file
+- [x] use `os.Getenv("MONOLOG_DIR")` + `os.UserHomeDir()` fallback (same logic as `monologDir()` in `cmd/init.go`) to locate config.json
+- [x] update `git.Init` config.json template in `internal/git/git.go` to include `"theme": "default"`
+- [x] write tests for `Theme()`: returns `"default"` when no file, returns value from file, env var overrides
+- [x] run tests — must pass before task 3
 
 ### Task 3: Refactor tui.go styles into a theme-driven struct
 

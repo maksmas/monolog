@@ -34,7 +34,8 @@ func Init(path string, remote string) error {
 	configPath := filepath.Join(path, ".monolog", "config.json")
 	configData := []byte(`{
   "default_schedule": "today",
-  "editor": "$EDITOR"
+  "editor": "$EDITOR",
+  "theme": "default"
 }
 `)
 	if err := os.WriteFile(configPath, configData, 0o644); err != nil {

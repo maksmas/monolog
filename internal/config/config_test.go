@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 )
@@ -121,4 +124,72 @@ func assertPanics(t *testing.T, name string, fn func()) {
 		}
 	}()
 	fn()
+}
+
+// writeConfigJSON writes a config.json with the given theme value into
+// tmpDir/.monolog/config.json and sets MONOLOG_DIR=tmpDir for the test.
+func writeConfigJSON(t *testing.T, tmpDir, theme string) {
+	t.Helper()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir .monolog: %v", err)
+	}
+	data, _ := json.Marshal(map[string]string{"theme": theme})
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", tmpDir)
+}
+
+func TestThemeDefaultWhenNoFile(t *testing.T) {
+	// Point MONOLOG_DIR at a temp dir with no .monolog/ subdirectory.
+	t.Setenv("MONOLOG_DIR", t.TempDir())
+	t.Setenv("MONOLOG_THEME", "")
+	if got := Theme(); got != "default" {
+		t.Errorf("Theme() = %q, want %q", got, "default")
+	}
+}
+
+func TestThemeReadFromFile(t *testing.T) {
+	t.Setenv("MONOLOG_THEME", "") // ensure env var does not interfere
+	writeConfigJSON(t, t.TempDir(), "dracula")
+	if got := Theme(); got != "dracula" {
+		t.Errorf("Theme() = %q, want %q", got, "dracula")
+	}
+}
+
+func TestThemeEnvVarOverridesFile(t *testing.T) {
+	// File says "dracula", env var says "default" — env var must win.
+	writeConfigJSON(t, t.TempDir(), "dracula")
+	t.Setenv("MONOLOG_THEME", "default")
+	if got := Theme(); got != "default" {
+		t.Errorf("Theme() = %q, want %q when env var set", got, "default")
+	}
+}
+
+func TestThemeEnvVarAloneIsRespected(t *testing.T) {
+	// No config file at all, only env var.
+	t.Setenv("MONOLOG_DIR", t.TempDir())
+	t.Setenv("MONOLOG_THEME", "dracula")
+	if got := Theme(); got != "dracula" {
+		t.Errorf("Theme() = %q, want %q", got, "dracula")
+	}
+}
+
+func TestThemeDefaultWhenKeyMissingInFile(t *testing.T) {
+	t.Setenv("MONOLOG_THEME", "")
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir .monolog: %v", err)
+	}
+	// Write a config.json that has no "theme" key.
+	data := []byte(`{"default_schedule":"today","editor":"$EDITOR"}`)
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", tmpDir)
+	if got := Theme(); got != "default" {
+		t.Errorf("Theme() = %q, want %q when key absent", got, "default")
+	}
 }

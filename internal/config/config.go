@@ -16,6 +16,12 @@
 // package into that state.
 package config
 
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+)
+
 // formatEntry describes a supported date format: its user-facing label and
 // a regex fragment matching a date rendered in the corresponding Go layout.
 type formatEntry struct {
@@ -64,4 +70,50 @@ func DateRegex() string {
 		panic("config: unsupported date format: " + dateFormat)
 	}
 	return entry.Regex
+}
+
+// configJSON is the minimal shape of <MONOLOG_DIR>/.monolog/config.json that
+// Theme() cares about. Other fields are ignored.
+type configJSON struct {
+	Theme string `json:"theme"`
+}
+
+// monologConfigPath returns the path to config.json under the monolog data
+// directory, using the same MONOLOG_DIR / UserHomeDir logic as cmd.monologDir.
+func monologConfigPath() string {
+	base := os.Getenv("MONOLOG_DIR")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".monolog")
+	}
+	return filepath.Join(base, ".monolog", "config.json")
+}
+
+// Theme returns the name of the active TUI color theme. Resolution order:
+//  1. MONOLOG_THEME env var (if non-empty)
+//  2. "theme" field in <MONOLOG_DIR>/.monolog/config.json
+//  3. "default" (fallback when file is absent or the key is missing)
+func Theme() string {
+	if env := os.Getenv("MONOLOG_THEME"); env != "" {
+		return env
+	}
+	p := monologConfigPath()
+	if p == "" {
+		return "default"
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "default"
+	}
+	var cfg configJSON
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return "default"
+	}
+	if cfg.Theme == "" {
+		return "default"
+	}
+	return cfg.Theme
 }
