@@ -127,11 +127,11 @@ Search: `SearchDone`, `SearchActive`, `SearchCount`, `SearchMeta`, `SearchPrevie
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify `ThemeByName("default")` and `ThemeByName("dracula")` both return `ok=true`
-- [ ] verify unknown theme name silently falls back to default in `newModel()`
-- [ ] verify `config.Theme()` returns `"default"` on a fresh repo with no config changes
-- [ ] run full test suite: `go test ./...`
-- [ ] run `go vet ./...`
+- [x] verify `ThemeByName("default")` and `ThemeByName("dracula")` both return `ok=true`
+- [x] verify unknown theme name silently falls back to default in `newModel()`
+- [x] verify `config.Theme()` returns `"default"` on a fresh repo with no config changes
+- [x] run full test suite: `go test ./...`
+- [x] run `go vet ./...`
 
 ### Task 6: [Final] Update documentation
 
