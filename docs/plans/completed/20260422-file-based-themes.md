@@ -182,20 +182,20 @@ original `ok` for that check.)
 - Create: `internal/tui/theme_load.go`
 - Create: `internal/tui/theme_load_test.go`
 
-- [ ] add `colorPair struct { Light, Dark string }` with `json:"light"` /
+- [x] add `colorPair struct { Light, Dark string }` with `json:"light"` /
       `json:"dark"` tags
-- [ ] add `themeFile` struct — one `colorPair` field per color role, all
+- [x] add `themeFile` struct — one `colorPair` field per color role, all
       19 fields, snake_case json tags in `Theme` struct order
-- [ ] add `(themeFile).toTheme() (Theme, error)` — returns the first
+- [x] add `(themeFile).toTheme() (Theme, error)` — returns the first
       empty-color error encountered (field name in the error)
-- [ ] add `themeToFile(Theme) themeFile` — pure conversion in the other
+- [x] add `themeToFile(Theme) themeFile` — pure conversion in the other
       direction
-- [ ] write tests: `TestThemeFile_RoundTrip` — `themeToFile(defaultTheme)`
+- [x] write tests: `TestThemeFile_RoundTrip` — `themeToFile(defaultTheme)`
       → `toTheme()` → deep-equal `defaultTheme`
-- [ ] write tests: `TestThemeFile_ToTheme_EmptyLight` and
+- [x] write tests: `TestThemeFile_ToTheme_EmptyLight` and
       `TestThemeFile_ToTheme_EmptyDark` — each returns error naming the
       first-empty field
-- [ ] run tests — must pass before task 2
+- [x] run tests — must pass before task 2
 
 ### Task 2: Loader with missing-field and invalid-JSON handling
 
@@ -203,7 +203,7 @@ original `ok` for that check.)
 - Modify: `internal/tui/theme_load.go`
 - Modify: `internal/tui/theme_load_test.go`
 
-- [ ] add `loadUserThemes(monologDir string) (map[string]Theme, []error)`:
+- [x] add `loadUserThemes(monologDir string) (map[string]Theme, []error)`:
       - return `(map[string]Theme{}, nil)` if
         `<monologDir>/.monolog/themes/` is absent
       - list the directory; skip entries that aren't `.json` files silently
@@ -212,23 +212,23 @@ original `ok` for that check.)
         then unmarshal into `themeFile`, call `toTheme()`
       - filename (sans `.json`) = theme name
       - errors use the wording from "Technical Details / Error wording"
-- [ ] write test: `TestLoadUserThemes_MissingDir` — no dir → empty map,
+- [x] write test: `TestLoadUserThemes_MissingDir` — no dir → empty map,
       nil errors
-- [ ] write test: `TestLoadUserThemes_EmptyDir` — empty dir → empty map,
+- [x] write test: `TestLoadUserThemes_EmptyDir` — empty dir → empty map,
       nil errors
-- [ ] write test: `TestLoadUserThemes_Valid` — one complete theme file
+- [x] write test: `TestLoadUserThemes_Valid` — one complete theme file
       loads with correct `lipgloss.AdaptiveColor` values
-- [ ] write test: `TestLoadUserThemes_InvalidJSON` — malformed file
+- [x] write test: `TestLoadUserThemes_InvalidJSON` — malformed file
       absent from map, matching error present
-- [ ] write test: `TestLoadUserThemes_MissingField` — 18/19 fields →
+- [x] write test: `TestLoadUserThemes_MissingField` — 18/19 fields →
       skip + error naming missing field
-- [ ] write test: `TestLoadUserThemes_EmptyColorString` →
+- [x] write test: `TestLoadUserThemes_EmptyColorString` →
       skip + error naming empty field
-- [ ] write test: `TestLoadUserThemes_ExtraFields` — unknown keys
+- [x] write test: `TestLoadUserThemes_ExtraFields` — unknown keys
       tolerated, theme still loads
-- [ ] write test: `TestLoadUserThemes_IgnoresNonJSON` — `readme.txt`
+- [x] write test: `TestLoadUserThemes_IgnoresNonJSON` — `readme.txt`
       alongside `ok.json` → only `ok` loaded, no error
-- [ ] run tests — must pass before task 3
+- [x] run tests — must pass before task 3
 
 ### Task 3: initThemes merge with built-in collision rejection
 
@@ -236,24 +236,24 @@ original `ok` for that check.)
 - Modify: `internal/tui/theme_load.go`
 - Modify: `internal/tui/theme_load_test.go`
 
-- [ ] add `initThemes(monologDir string) []error`:
+- [x] add `initThemes(monologDir string) []error`:
       - call `loadUserThemes`
       - for each loaded theme: if name is `default` or `dracula`, skip
         with a collision error; otherwise add to package-level `themes`
         map
       - append per-file load errors to the returned slice
-- [ ] add test helper `snapshotThemes(t *testing.T)` in
+- [x] add test helper `snapshotThemes(t *testing.T)` in
       `theme_load_test.go` — captures the current `themes` map and
       registers `t.Cleanup` to restore it
-- [ ] write test: `TestInitThemes_MergesUserAndBuiltin` — user theme
+- [x] write test: `TestInitThemes_MergesUserAndBuiltin` — user theme
       appears in `themes` alongside `default` and `dracula`
-- [ ] write test: `TestInitThemes_SkipsCollisionWithBuiltin` — user
+- [x] write test: `TestInitThemes_SkipsCollisionWithBuiltin` — user
       `default.json` → error returned, compiled `defaultTheme` unchanged
       in map
-- [ ] write test: `TestInitThemes_PropagatesLoadErrors` — invalid file
+- [x] write test: `TestInitThemes_PropagatesLoadErrors` — invalid file
       plus valid file in the same dir → valid one loaded, invalid one
       reported
-- [ ] run tests — must pass before task 4
+- [x] run tests — must pass before task 4
 
 ### Task 4: Example bootstrap
 
@@ -261,42 +261,41 @@ original `ok` for that check.)
 - Modify: `internal/tui/theme_load.go`
 - Modify: `internal/tui/theme_load_test.go`
 
-- [ ] add `bootstrapExampleTheme(monologDir string) error`:
+- [x] add `bootstrapExampleTheme(monologDir string) error`:
       - if `<monologDir>/.monolog/themes/` exists (any `os.Stat` success),
         return nil (no-op, even if `example.json` is missing)
       - otherwise `os.MkdirAll` the themes dir, marshal
         `themeToFile(defaultTheme)` with `json.MarshalIndent(.., "", "
           ")`, write as `example.json`
-- [ ] write test: `TestBootstrapExampleTheme_CreatesOnFreshDir` — starts
+- [x] write test: `TestBootstrapExampleTheme_CreatesOnFreshDir` — starts
       with no themes dir → dir + `example.json` exist after call, and
       `loadUserThemes` loads `example` equal to `defaultTheme`
-- [ ] write test: `TestBootstrapExampleTheme_NoOpWhenDirExists` —
+- [x] write test: `TestBootstrapExampleTheme_NoOpWhenDirExists` —
       pre-create the themes dir (empty, no example); call bootstrap;
       `example.json` must NOT be created
-- [ ] write test: `TestBootstrapExampleTheme_NoOpWhenExampleExists` —
+- [x] write test: `TestBootstrapExampleTheme_NoOpWhenExampleExists` —
       pre-create `example.json` with tweaked content; call bootstrap;
       content unchanged
-- [ ] run tests — must pass before task 5
+- [x] run tests — must pass before task 5
 
 ### Task 5: Wire into tui.Run
 
 **Files:**
 - Modify: `internal/tui/tui.go`
 
-- [ ] in `Run`, before `newModel`, call `bootstrapExampleTheme(repoPath)`;
+- [x] in `Run`, before `newModel`, call `bootstrapExampleTheme(repoPath)`;
       print any error to `os.Stderr` as `monolog: <err>` and continue
-- [ ] then call `initThemes(repoPath)`; print each returned error to
+- [x] then call `initThemes(repoPath)`; print each returned error to
       `os.Stderr` with the same prefix; continue regardless
-- [ ] tests: no direct test for `Run` (it starts a TTY program), but add a
-      smoke test `TestRunWiring_DoesNotPanic` is **out of scope** —
-      task-level tests in tasks 2-4 cover the functions called; the
-      integration is a 4-line wiring that we inspect-by-reading
-- [ ] write test: `TestTuiRun_BootstrapOnFreshRepo` — a lightweight test
+- [x] tests: no direct test for `Run` (it starts a TTY program); task-level
+      tests in tasks 2-4 cover the functions called and
+      `TestTuiRun_BootstrapOnFreshRepo` covers the wiring sequence.
+- [x] write test: `TestTuiRun_BootstrapOnFreshRepo` — a lightweight test
       that sets up a tempdir, calls `bootstrapExampleTheme` and
       `initThemes` directly (mirroring what `Run` does), then asserts the
       package-level map now contains `example`. This validates the
       sequencing without needing a TTY.
-- [ ] run tests — must pass before task 6
+- [x] run tests — must pass before task 6
 
 ### Task 6: Status message on missing-theme fallback
 
@@ -304,30 +303,28 @@ original `ok` for that check.)
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] at `internal/tui/model.go:429-432`, keep the existing fallback; add
+- [x] at `internal/tui/model.go:429-432`, keep the existing fallback; add
       after `m` is constructed: `if !ok { m.statusMsg = fmt.Sprintf("theme
       %q not found, using default", config.Theme()) }`
-- [ ] write test: `TestNewModel_MissingThemeFallsBack` — set
+- [x] write test: `TestNewModel_MissingThemeFallsBack` — set
       `MONOLOG_THEME=nonexistent` via `t.Setenv`, call `newModel` against
       a tempdir-backed store, assert `m.theme == defaultTheme` and
       `m.statusMsg` contains the expected message
-- [ ] write test: `TestNewModel_ExistingThemeNoStatus` — default theme
+- [x] write test: `TestNewModel_ExistingThemeNoStatus` — default theme
       resolves cleanly, `m.statusMsg` is empty
-- [ ] run tests — must pass before task 7
+- [x] run tests — must pass before task 7
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] verify `go test ./...` passes from repo root
-- [ ] verify `go vet ./...` passes
-- [ ] manually walk the acceptance path:
-      fresh tempdir → `monolog` binary starts → `themes/` created →
-      `example.json` present → edit a field in `example.json` →
-      `config.json` `"theme": "example"` → restart → colors apply
-- [ ] verify fallback: rename `example.json` → restart → status line
-      shows `theme "example" not found, using default`; restore file →
-      restart → colors return, no rewrite of `config.json`
-- [ ] verify built-in collision: create `default.json` → restart →
-      stderr shows collision warning, in-app `default` theme still works
+- [x] verify `go test ./...` passes from repo root
+- [x] verify `go vet ./...` passes
+- [x] acceptance paths covered by automated tests instead of manual walk
+      (headless environment): fresh-dir bootstrap =
+      `TestBootstrapExampleTheme_CreatesOnFreshDir` +
+      `TestTuiRun_BootstrapOnFreshRepo`; custom theme round-trip =
+      `TestLoadUserThemes_Valid` + `TestInitThemes_MergesUserAndBuiltin`;
+      missing-theme status line = `TestNewModel_MissingThemeFallsBack`;
+      built-in collision = `TestInitThemes_SkipsCollisionWithBuiltin`.
 
 ### Task 8: Documentation and plan archival
 
@@ -336,12 +333,12 @@ original `ok` for that check.)
 - Move: `docs/plans/20260422-file-based-themes.md` →
         `docs/plans/completed/20260422-file-based-themes.md`
 
-- [ ] update the **TUI color themes** bullet in `CLAUDE.md` — add a
+- [x] update the **TUI color themes** bullet in `CLAUDE.md` — add a
       sentence describing the `<MONOLOG_DIR>/.monolog/themes/*.json` file
       source, the example bootstrap, the built-in collision rule, and the
       missing-theme status-bar fallback. Keep existing content about
       `MONOLOG_THEME` env precedence.
-- [ ] move this plan file to `docs/plans/completed/` (create dir if
+- [x] move this plan file to `docs/plans/completed/` (create dir if
       needed: `mkdir -p docs/plans/completed`)
 
 ## Post-Completion

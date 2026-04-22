@@ -5674,6 +5674,28 @@ func TestNewModel_StartInTagViewNoTasks(t *testing.T) {
 	}
 }
 
+func TestNewModel_MissingThemeFallsBack(t *testing.T) {
+	t.Setenv("MONOLOG_THEME", "does-not-exist")
+
+	m := newTestModelWithOpts(t, Options{})
+	if m.theme != defaultTheme {
+		t.Errorf("theme should fall back to defaultTheme when name missing")
+	}
+	wantFragment := `theme "does-not-exist" not found`
+	if !strings.Contains(m.statusMsg, wantFragment) {
+		t.Errorf("statusMsg = %q, want fragment %q", m.statusMsg, wantFragment)
+	}
+}
+
+func TestNewModel_ExistingThemeNoStatus(t *testing.T) {
+	t.Setenv("MONOLOG_THEME", "default")
+
+	m := newTestModelWithOpts(t, Options{})
+	if m.statusMsg != "" {
+		t.Errorf("statusMsg = %q, want empty (theme resolved cleanly)", m.statusMsg)
+	}
+}
+
 // --- finding 1: moveGrabTo G key regression fix ---
 
 func TestMoveGrabTo_GKeyPlacesLast(t *testing.T) {

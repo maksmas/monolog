@@ -4,6 +4,9 @@
 package tui
 
 import (
+	"fmt"
+	"os"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -17,6 +20,17 @@ type Options struct {
 
 // Run launches the interactive TUI. Blocks until the user quits.
 func Run(s *store.Store, repoPath string, opts Options) error {
+	// Bootstrap example theme file and load any user-authored themes
+	// before building the Model so the settings modal and theme lookup
+	// see them. Errors are informational — missing or bad theme files
+	// must never prevent the TUI from starting.
+	if err := bootstrapExampleTheme(repoPath); err != nil {
+		fmt.Fprintf(os.Stderr, "monolog: %v\n", err)
+	}
+	for _, err := range initThemes(repoPath) {
+		fmt.Fprintf(os.Stderr, "monolog: %v\n", err)
+	}
+
 	m, err := newModel(s, repoPath, opts)
 	if err != nil {
 		return err

@@ -426,7 +426,8 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	noteTA.BlurredStyle.Base = lipgloss.NewStyle()
 
 	// Resolve the active color theme: read config, look up by name, fall back.
-	activeTheme, ok := themes[config.Theme()]
+	themeName := config.Theme()
+	activeTheme, ok := themes[themeName]
 	if !ok {
 		activeTheme = defaultTheme
 	}
@@ -445,6 +446,9 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		styles:     buildStyles(activeTheme),
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(activeTheme)
+	if !ok {
+		m.statusMsg = fmt.Sprintf("theme %q not found, using default", themeName)
+	}
 
 	m.lists = m.initLists()
 
