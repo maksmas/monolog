@@ -392,3 +392,281 @@ func TestAllFormatsReturnsThreeEntries(t *testing.T) {
 		}
 	}
 }
+
+// --- Slack ---
+
+// resetSlackCfg saves and restores the package-level slackCfg across a
+// test, so assertions on default/override don't bleed between tests.
+func resetSlackCfg(t *testing.T) {
+	t.Helper()
+	prev := slackCfg
+	t.Cleanup(func() { slackCfg = prev })
+}
+
+func TestSlackDefaultsWhenBlockAbsent(t *testing.T) {
+	resetSlackCfg(t)
+	tmpDir := t.TempDir()
+	writeConfigJSON(t, tmpDir, map[string]string{"date_format": "02-01-2006"})
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Slack()
+	if got.Enabled {
+		t.Errorf("Enabled = true, want false default")
+	}
+	if got.PollIntervalSeconds != 60 {
+		t.Errorf("PollIntervalSeconds = %d, want 60 default", got.PollIntervalSeconds)
+	}
+	if got.Workspace != "" {
+		t.Errorf("Workspace = %q, want empty default", got.Workspace)
+	}
+	if !got.ChannelAsTag {
+		t.Errorf("ChannelAsTag = false, want true default")
+	}
+}
+
+func TestSlackLoadsParsedValues(t *testing.T) {
+	resetSlackCfg(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := []byte(`{
+		"slack": {
+			"enabled": true,
+			"poll_interval_seconds": 120,
+			"workspace": "myteam",
+			"channel_as_tag": false
+		}
+	}`)
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", tmpDir)
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Slack()
+	if !got.Enabled {
+		t.Errorf("Enabled = false, want true")
+	}
+	if got.PollIntervalSeconds != 120 {
+		t.Errorf("PollIntervalSeconds = %d, want 120", got.PollIntervalSeconds)
+	}
+	if got.Workspace != "myteam" {
+		t.Errorf("Workspace = %q, want myteam", got.Workspace)
+	}
+	if got.ChannelAsTag {
+		t.Errorf("ChannelAsTag = true, want false")
+	}
+}
+
+func TestSlackLoadIgnoresNonPositiveInterval(t *testing.T) {
+	// Guard against a zero or negative value — keep the 60s default.
+	resetSlackCfg(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := []byte(`{"slack": {"poll_interval_seconds": 0}}`)
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := Slack().PollIntervalSeconds; got != 60 {
+		t.Errorf("PollIntervalSeconds = %d after zero override, want 60", got)
+	}
+}
+
+func TestSlackTokenPrefersEnvVar(t *testing.T) {
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "slack_token"), []byte("file-tok"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", tmpDir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "env-tok")
+	tok, src, err := SlackToken()
+	if err != nil {
+		t.Fatalf("SlackToken: %v", err)
+	}
+	if tok != "env-tok" {
+		t.Errorf("token = %q, want env-tok", tok)
+	}
+	if src != "env" {
+		t.Errorf("source = %q, want env", src)
+	}
+}
+
+func TestSlackTokenFallsBackToFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "slack_token"), []byte("  file-tok\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", tmpDir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "")
+	tok, src, err := SlackToken()
+	if err != nil {
+		t.Fatalf("SlackToken: %v", err)
+	}
+	if tok != "file-tok" {
+		t.Errorf("token = %q, want file-tok (trimmed)", tok)
+	}
+	if src != "file" {
+		t.Errorf("source = %q, want file", src)
+	}
+}
+
+func TestSlackTokenEmptyWhenNeither(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("MONOLOG_DIR", tmpDir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "")
+	tok, src, err := SlackToken()
+	if err != nil {
+		t.Fatalf("SlackToken: %v", err)
+	}
+	if tok != "" || src != "" {
+		t.Errorf("SlackToken = (%q, %q), want (\"\", \"\")", tok, src)
+	}
+}
+
+func TestSlackTokenIgnoresEmptyFile(t *testing.T) {
+	// A file containing only whitespace counts as disabled — source="".
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "slack_token"), []byte("   \n\t"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", tmpDir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "")
+	tok, src, err := SlackToken()
+	if err != nil {
+		t.Fatalf("SlackToken: %v", err)
+	}
+	if tok != "" || src != "" {
+		t.Errorf("SlackToken = (%q, %q), want empty", tok, src)
+	}
+}
+
+func TestSetSlackWorkspacePreservesUnknownKeys(t *testing.T) {
+	resetSlackCfg(t)
+	tmpDir := t.TempDir()
+	writeConfigJSON(t, tmpDir, map[string]string{
+		"default_schedule": "today",
+		"editor":           "$EDITOR",
+		"theme":            "dracula",
+	})
+	if err := SetSlackWorkspace(tmpDir, "myteam"); err != nil {
+		t.Fatalf("SetSlackWorkspace: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".monolog", "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg["default_schedule"] != "today" {
+		t.Errorf("default_schedule lost, got %v", cfg["default_schedule"])
+	}
+	if cfg["editor"] != "$EDITOR" {
+		t.Errorf("editor lost, got %v", cfg["editor"])
+	}
+	if cfg["theme"] != "dracula" {
+		t.Errorf("theme lost, got %v", cfg["theme"])
+	}
+	slackBlock, ok := cfg["slack"].(map[string]any)
+	if !ok {
+		t.Fatalf("slack block missing/not-object: %T", cfg["slack"])
+	}
+	if slackBlock["workspace"] != "myteam" {
+		t.Errorf("slack.workspace = %v, want myteam", slackBlock["workspace"])
+	}
+	if got := Slack().Workspace; got != "myteam" {
+		t.Errorf("in-memory Slack().Workspace = %q, want myteam", got)
+	}
+}
+
+func TestSetSlackEnabledPersists(t *testing.T) {
+	resetSlackCfg(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SetSlackEnabled(tmpDir, true); err != nil {
+		t.Fatalf("SetSlackEnabled: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(monologDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	slackBlock, ok := cfg["slack"].(map[string]any)
+	if !ok {
+		t.Fatalf("slack block missing/not-object: %T", cfg["slack"])
+	}
+	if slackBlock["enabled"] != true {
+		t.Errorf("slack.enabled = %v, want true", slackBlock["enabled"])
+	}
+	if !Slack().Enabled {
+		t.Error("in-memory Slack().Enabled = false, want true")
+	}
+}
+
+func TestSetSlackEnabledPreservesExistingSlackFields(t *testing.T) {
+	// Ensure SetSlackEnabled doesn't clobber a previously-set workspace.
+	resetSlackCfg(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := []byte(`{
+		"slack": {"workspace": "myteam", "channel_as_tag": false}
+	}`)
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := SetSlackEnabled(tmpDir, true); err != nil {
+		t.Fatalf("SetSlackEnabled: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(monologDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	slackBlock, _ := cfg["slack"].(map[string]any)
+	if slackBlock["workspace"] != "myteam" {
+		t.Errorf("workspace lost, got %v", slackBlock["workspace"])
+	}
+	if slackBlock["channel_as_tag"] != false {
+		t.Errorf("channel_as_tag lost, got %v", slackBlock["channel_as_tag"])
+	}
+	if slackBlock["enabled"] != true {
+		t.Errorf("enabled = %v, want true", slackBlock["enabled"])
+	}
+}

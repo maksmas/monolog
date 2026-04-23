@@ -216,13 +216,13 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `internal/config/config.go`
 - Modify: `internal/config/config_test.go`
 
-- [ ] Add `SlackConfig` struct (exported): `Enabled bool`, `PollIntervalSeconds int`, `Workspace string`, `ChannelAsTag bool`.
-- [ ] Add `config.Slack() SlackConfig` with defaults: `Enabled=false` (no token ⇒ disabled), `PollIntervalSeconds=60`, `ChannelAsTag=true`. Extend `Load` to parse the `slack` block into a package-level `slackCfg` var (same pattern as `dateFormat`).
-- [ ] Add `config.SlackToken() (token string, source string, err error)` — parameterless, reads per call (matches the `Theme()` pattern at `config.go:167`). Returns env var `MONOLOG_SLACK_TOKEN` if set (source="env"), else reads `<MONOLOG_DIR>/.monolog/slack_token` (resolving `MONOLOG_DIR` the same way `Theme()` does), trimming whitespace (source="file"). Returns `("", "", nil)` if neither (disabled state).
-- [ ] Add `config.SetSlackWorkspace(monologDir, workspace string) error` — read-modify-write preserving other keys; updates `slack.workspace`. Follows the pattern of `Save`.
-- [ ] Add `config.SetSlackEnabled(monologDir string, enabled bool) error` — toggles `slack.enabled`.
-- [ ] Tests: `Slack()` returns defaults when block absent; returns parsed values when present; `SlackToken` prefers env var; falls back to file; returns empty on neither; `SetSlackWorkspace` round-trips through Save and preserves unknown keys (e.g. a dummy `"editor"` key added by the test).
-- [ ] Run `go test ./internal/config/...` — must pass before Task 5.
+- [x] Add `SlackConfig` struct (exported): `Enabled bool`, `PollIntervalSeconds int`, `Workspace string`, `ChannelAsTag bool`.
+- [x] Add `config.Slack() SlackConfig` with defaults: `Enabled=false` (no token ⇒ disabled), `PollIntervalSeconds=60`, `ChannelAsTag=true`. Extend `Load` to parse the `slack` block into a package-level `slackCfg` var (same pattern as `dateFormat`).
+- [x] Add `config.SlackToken() (token string, source string, err error)` — parameterless, reads per call (matches the `Theme()` pattern at `config.go:167`). Returns env var `MONOLOG_SLACK_TOKEN` if set (source="env"), else reads `<MONOLOG_DIR>/.monolog/slack_token` (resolving `MONOLOG_DIR` the same way `Theme()` does), trimming whitespace (source="file"). Returns `("", "", nil)` if neither (disabled state).
+- [x] Add `config.SetSlackWorkspace(monologDir, workspace string) error` — read-modify-write preserving other keys; updates `slack.workspace`. Follows the pattern of `Save`.
+- [x] Add `config.SetSlackEnabled(monologDir string, enabled bool) error` — toggles `slack.enabled`.
+- [x] Tests: `Slack()` returns defaults when block absent; returns parsed values when present; `SlackToken` prefers env var; falls back to file; returns empty on neither; `SetSlackWorkspace` round-trips through Save and preserves unknown keys (e.g. a dummy `"editor"` key added by the test).
+- [x] Run `go test ./internal/config/...` — must pass before Task 5.
 
 ### Task 5: Add `slack_token` to `.gitignore` on git init + upsert helper
 

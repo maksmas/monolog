@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // formatEntry describes a supported date format: its user-facing label and
@@ -47,6 +48,26 @@ var supported = map[string]formatEntry{
 
 // dateFormat is the currently configured date format as a Go layout.
 var dateFormat = "02-01-2006"
+
+// SlackConfig holds user-facing Slack integration settings. Zero value is
+// the disabled default: polling off, 60s interval, no workspace, tag
+// channels into task tags.
+type SlackConfig struct {
+	Enabled             bool
+	PollIntervalSeconds int
+	Workspace           string
+	ChannelAsTag        bool
+}
+
+// slackCfg is the currently configured Slack block, populated by Load from
+// config.json (defaults when absent). Module-level to match the dateFormat
+// pattern; reading and writing is single-goroutine at process start.
+var slackCfg = SlackConfig{
+	Enabled:             false,
+	PollIntervalSeconds: 60,
+	Workspace:           "",
+	ChannelAsTag:        true,
+}
 
 // DateFormat returns the currently configured date format as a Go layout
 // (e.g. "02-01-2006" for DD-MM-YYYY). Panics if the configured layout is
@@ -117,6 +138,15 @@ func configPath(monologDir string) string {
 // package-level vars. A missing file or unknown field values are silently
 // ignored; malformed JSON falls back to defaults. Call once at startup.
 func Load(monologDir string) error {
+	// Reset slackCfg to defaults before we (potentially) overwrite it, so
+	// repeated Load calls in tests start from a clean baseline.
+	slackCfg = SlackConfig{
+		Enabled:             false,
+		PollIntervalSeconds: 60,
+		Workspace:           "",
+		ChannelAsTag:        true,
+	}
+
 	data, err := os.ReadFile(configPath(monologDir))
 	if os.IsNotExist(err) {
 		return nil
@@ -126,6 +156,12 @@ func Load(monologDir string) error {
 	}
 	var cfg struct {
 		DateFormat string `json:"date_format"`
+		Slack      *struct {
+			Enabled             *bool   `json:"enabled"`
+			PollIntervalSeconds *int    `json:"poll_interval_seconds"`
+			Workspace           *string `json:"workspace"`
+			ChannelAsTag        *bool   `json:"channel_as_tag"`
+		} `json:"slack"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil // malformed JSON, keep defaults
@@ -133,6 +169,20 @@ func Load(monologDir string) error {
 	if cfg.DateFormat != "" {
 		if _, ok := supported[cfg.DateFormat]; ok {
 			dateFormat = cfg.DateFormat
+		}
+	}
+	if cfg.Slack != nil {
+		if cfg.Slack.Enabled != nil {
+			slackCfg.Enabled = *cfg.Slack.Enabled
+		}
+		if cfg.Slack.PollIntervalSeconds != nil && *cfg.Slack.PollIntervalSeconds > 0 {
+			slackCfg.PollIntervalSeconds = *cfg.Slack.PollIntervalSeconds
+		}
+		if cfg.Slack.Workspace != nil {
+			slackCfg.Workspace = *cfg.Slack.Workspace
+		}
+		if cfg.Slack.ChannelAsTag != nil {
+			slackCfg.ChannelAsTag = *cfg.Slack.ChannelAsTag
 		}
 	}
 	return nil
@@ -152,6 +202,106 @@ func Save(monologDir, theme, dateFormatLayout string) error {
 
 	existing["theme"] = theme
 	existing["date_format"] = dateFormatLayout
+
+	out, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(out, '\n'), 0o644)
+}
+
+// Slack returns the currently configured Slack block. Call Load first to
+// populate from config.json; before Load (or when the block is absent) the
+// returned zero-ish value carries safe defaults: Enabled=false,
+// PollIntervalSeconds=60, Workspace="", ChannelAsTag=true.
+func Slack() SlackConfig {
+	return slackCfg
+}
+
+// SlackToken resolves the active Slack user OAuth token. Resolution order:
+//  1. MONOLOG_SLACK_TOKEN env var (source="env")
+//  2. <MONOLOG_DIR>/.monolog/slack_token file, trimmed (source="file")
+//  3. Neither → ("", "", nil); caller treats as disabled.
+//
+// File-read errors other than ENOENT are returned as-is so callers can
+// surface a real problem (e.g. permission denied). Parameterless and read
+// per call — matches the Theme() pattern.
+func SlackToken() (token string, source string, err error) {
+	if env := strings.TrimSpace(os.Getenv("MONOLOG_SLACK_TOKEN")); env != "" {
+		return env, "env", nil
+	}
+
+	base := os.Getenv("MONOLOG_DIR")
+	if base == "" {
+		home, hErr := os.UserHomeDir()
+		if hErr != nil {
+			return "", "", nil
+		}
+		base = filepath.Join(home, ".monolog")
+	}
+	path := filepath.Join(base, ".monolog", "slack_token")
+	data, rErr := os.ReadFile(path)
+	if os.IsNotExist(rErr) {
+		return "", "", nil
+	}
+	if rErr != nil {
+		return "", "", rErr
+	}
+	tok := strings.TrimSpace(string(data))
+	if tok == "" {
+		return "", "", nil
+	}
+	return tok, "file", nil
+}
+
+// SetSlackWorkspace writes slack.workspace into config.json via a
+// read-modify-write that preserves all other top-level keys (and other slack
+// fields). Also updates the in-memory slackCfg so Slack() reflects the
+// change in the current process.
+func SetSlackWorkspace(monologDir, workspace string) error {
+	if err := mutateSlackConfig(monologDir, func(s map[string]any) {
+		s["workspace"] = workspace
+	}); err != nil {
+		return err
+	}
+	slackCfg.Workspace = workspace
+	return nil
+}
+
+// SetSlackEnabled toggles slack.enabled in config.json using the same
+// read-modify-write approach as SetSlackWorkspace. Updates slackCfg in
+// memory as well.
+func SetSlackEnabled(monologDir string, enabled bool) error {
+	if err := mutateSlackConfig(monologDir, func(s map[string]any) {
+		s["enabled"] = enabled
+	}); err != nil {
+		return err
+	}
+	slackCfg.Enabled = enabled
+	return nil
+}
+
+// mutateSlackConfig is a shared helper for the SetSlack* setters. It loads
+// config.json (missing file treated as empty object), ensures a top-level
+// "slack" object exists (creating one with defaults when absent), applies
+// the caller's mutation, and writes the whole thing back while preserving
+// unknown keys.
+func mutateSlackConfig(monologDir string, mutate func(map[string]any)) error {
+	p := configPath(monologDir)
+
+	existing := make(map[string]any)
+	if data, err := os.ReadFile(p); err == nil {
+		_ = json.Unmarshal(data, &existing) // ignore parse errors, overwrite anyway
+	}
+
+	var slackBlock map[string]any
+	if raw, ok := existing["slack"].(map[string]any); ok {
+		slackBlock = raw
+	} else {
+		slackBlock = make(map[string]any)
+	}
+	mutate(slackBlock)
+	existing["slack"] = slackBlock
 
 	out, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
