@@ -3,9 +3,12 @@ package store
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 )
 
@@ -692,6 +695,186 @@ func TestTagsMultipleTagsPerTask(t *testing.T) {
 	for i := range tags {
 		if tags[i] != want[i] {
 			t.Errorf("Tags()[%d] = %q, want %q", i, tags[i], want[i])
+		}
+	}
+}
+
+// --- CreateBatch tests ---
+
+// newGitStore sets up a fully initialized monolog repo via git.Init and
+// returns the Store plus the repo path. Required for CreateBatch success-path
+// tests because CreateBatch calls git.AutoCommit internally.
+func newGitStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	if err := git.Init(repoPath, ""); err != nil {
+		t.Fatalf("git.Init: %v", err)
+	}
+	s, err := New(filepath.Join(repoPath, ".monolog", "tasks"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s, repoPath
+}
+
+// headSubject returns the subject line of the current HEAD commit. Used to
+// assert that CreateBatch used the caller-provided commit message verbatim.
+func headSubject(t *testing.T, repoPath string) string {
+	t.Helper()
+	cmd := exec.Command("git", "log", "-1", "--format=%s")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git log -1: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestCreateBatch_EmptyInputIsNoOp(t *testing.T) {
+	s, repoPath := newGitStore(t)
+	before := headSubject(t, repoPath)
+	if err := s.CreateBatch(nil, "slack: ingest 0 items"); err != nil {
+		t.Fatalf("CreateBatch(nil): %v", err)
+	}
+	if err := s.CreateBatch([]model.Task{}, "slack: ingest 0 items"); err != nil {
+		t.Fatalf("CreateBatch([]): %v", err)
+	}
+	after := headSubject(t, repoPath)
+	if before != after {
+		t.Errorf("HEAD subject changed on empty batch: before=%q after=%q", before, after)
+	}
+}
+
+func TestCreateBatch_SuccessWritesAllAndCommitsOnce(t *testing.T) {
+	s, repoPath := newGitStore(t)
+
+	tasks := []model.Task{
+		sampleTask("01BATCH1", "First slack task"),
+		sampleTask("01BATCH2", "Second slack task"),
+		sampleTask("01BATCH3", "Third slack task"),
+	}
+	msg := "slack: ingest 3 items"
+	if err := s.CreateBatch(tasks, msg); err != nil {
+		t.Fatalf("CreateBatch: %v", err)
+	}
+
+	// All three files on disk.
+	for _, task := range tasks {
+		got, err := s.Get(task.ID)
+		if err != nil {
+			t.Errorf("Get(%s) after batch: %v", task.ID, err)
+			continue
+		}
+		if got.Title != task.Title {
+			t.Errorf("Title mismatch for %s: got %q, want %q", task.ID, got.Title, task.Title)
+		}
+	}
+
+	// Exactly one commit with the caller's message.
+	subj := headSubject(t, repoPath)
+	if subj != msg {
+		t.Errorf("HEAD commit subject: got %q, want %q", subj, msg)
+	}
+
+	// Verify only one commit was added for the batch (count commits since init).
+	cmd := exec.Command("git", "log", "--format=%s", "--since=1970-01-01")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	subjects := strings.Split(strings.TrimSpace(string(out)), "\n")
+	// init commit + batch commit = 2.
+	if len(subjects) != 2 {
+		t.Errorf("expected 2 commits (init + batch), got %d: %v", len(subjects), subjects)
+	}
+}
+
+// TestCreateBatch_RecalculatesNoteCount mirrors TestCreateRecalculatesNoteCount
+// for the batch path.
+func TestCreateBatch_RecalculatesNoteCount(t *testing.T) {
+	s, _ := newGitStore(t)
+	task := sampleTask("01BATCHN", "Task with notes")
+	task.Body = "intro\n--- 17-04-2026 10:00:00 ---\nfirst note\n" +
+		"--- 17-04-2026 11:00:00 ---\nsecond note"
+	task.NoteCount = 99 // stale on purpose
+	if err := s.CreateBatch([]model.Task{task}, "slack: ingest 1 items"); err != nil {
+		t.Fatalf("CreateBatch: %v", err)
+	}
+	got, err := s.Get("01BATCHN")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.NoteCount != 2 {
+		t.Errorf("NoteCount: got %d, want 2", got.NoteCount)
+	}
+}
+
+// TestCreateBatch_RollsBackOnDuplicateID verifies that a pre-check for
+// duplicate IDs prevents any file from being written if one of the inputs
+// collides with an existing task.
+func TestCreateBatch_RollsBackOnDuplicateID(t *testing.T) {
+	s, repoPath := newGitStore(t)
+
+	// Seed an existing task (and commit so HEAD moves past init).
+	existing := sampleTask("01DUP", "already exists")
+	if err := s.Create(existing); err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+	if err := git.AutoCommit(repoPath, "seed", filepath.Join(".monolog", "tasks", "01DUP.json")); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	headBefore := headSubject(t, repoPath)
+
+	// Batch has a NEW task first and then a DUPLICATE. Expect the batch to
+	// return an error and not create the first task either (pre-check).
+	tasks := []model.Task{
+		sampleTask("01NEW", "new task"),
+		sampleTask("01DUP", "dup task"),
+	}
+	err := s.CreateBatch(tasks, "slack: ingest 2 items")
+	if err == nil {
+		t.Fatal("expected error on duplicate ID, got nil")
+	}
+
+	// The new task should NOT exist on disk.
+	if _, err := os.Stat(s.taskPath("01NEW")); err == nil {
+		t.Errorf("01NEW.json should not exist after failed batch")
+	}
+
+	// HEAD unchanged.
+	if got := headSubject(t, repoPath); got != headBefore {
+		t.Errorf("HEAD moved after failed batch: before=%q after=%q", headBefore, got)
+	}
+}
+
+// TestCreateBatch_RollsBackOnCommitFailure verifies the post-write rollback
+// path: when git.AutoCommit fails (here: the store is not inside a git repo
+// at all), any files written in the batch are removed so the working tree
+// is not left dirty.
+func TestCreateBatch_RollsBackOnCommitFailure(t *testing.T) {
+	dir := t.TempDir() // NOT a git repo
+	tasksDir := filepath.Join(dir, ".monolog", "tasks")
+	s, err := New(tasksDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tasks := []model.Task{
+		sampleTask("01FAIL1", "first"),
+		sampleTask("01FAIL2", "second"),
+	}
+	err = s.CreateBatch(tasks, "slack: ingest 2 items")
+	if err == nil {
+		t.Fatal("expected error on commit failure, got nil")
+	}
+
+	// Both files rolled back.
+	for _, id := range []string{"01FAIL1", "01FAIL2"} {
+		if _, statErr := os.Stat(s.taskPath(id)); statErr == nil {
+			t.Errorf("%s.json should be rolled back after commit failure", id)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("unexpected stat error for %s: %v", id, statErr)
 		}
 	}
 }

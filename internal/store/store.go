@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mmaksmas/monolog/internal/config"
+	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 )
 
@@ -54,6 +55,63 @@ func (s *Store) Create(task model.Task) error {
 	}
 	task.NoteCount = model.CountNotes(task.Body, config.DateRegex())
 	return s.writeTask(path, task)
+}
+
+// CreateBatch writes N task files and commits all of them in a single git
+// commit with the given message. On empty input it is a no-op and returns nil.
+//
+// Atomicity: if any individual write fails, or if git.AutoCommit fails after
+// all writes succeeded, any files that were written during this batch are
+// removed (best-effort rollback, rollback errors are swallowed) before the
+// original error is returned. The goal is that a failed batch leaves no
+// .json files in the working tree that `git status` would pick up.
+//
+// NoteCount is recalculated from each task's Body so callers never need to
+// set it — identical behavior to Create.
+//
+// The repo path for the commit is derived from the tasks dir
+// (repoPath = parent of parent of s.dir), matching the convention that
+// Store is rooted at <repoPath>/.monolog/tasks.
+func (s *Store) CreateBatch(tasks []model.Task, commitMessage string) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	// Pre-check duplicate IDs before writing anything.
+	for _, t := range tasks {
+		if _, err := os.Stat(s.taskPath(t.ID)); err == nil {
+			return fmt.Errorf("task %s already exists", t.ID)
+		}
+	}
+
+	written := make([]string, 0, len(tasks))
+	relFiles := make([]string, 0, len(tasks))
+	dateRegex := config.DateRegex()
+	for _, t := range tasks {
+		t.NoteCount = model.CountNotes(t.Body, dateRegex)
+		path := s.taskPath(t.ID)
+		if err := s.writeTask(path, t); err != nil {
+			cleanupFiles(written)
+			return err
+		}
+		written = append(written, path)
+		relFiles = append(relFiles, filepath.Join(".monolog", "tasks", t.ID+".json"))
+	}
+
+	repoPath := filepath.Dir(filepath.Dir(s.dir))
+	if err := git.AutoCommit(repoPath, commitMessage, relFiles...); err != nil {
+		cleanupFiles(written)
+		return err
+	}
+	return nil
+}
+
+// cleanupFiles removes a slice of file paths, swallowing errors. Used by
+// CreateBatch for best-effort rollback on mid-batch failure.
+func cleanupFiles(paths []string) {
+	for _, p := range paths {
+		_ = os.Remove(p)
+	}
 }
 
 // Get reads a task by its full ID.

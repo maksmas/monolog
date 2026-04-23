@@ -204,11 +204,11 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `internal/store/store.go`
 - Modify: `internal/store/store_test.go`
 
-- [ ] Add `Store.CreateBatch(tasks []model.Task, commitMessage string) error` — writes all N task files atomically-ish (each via existing `writeTask`), then calls `git.AutoCommit` once with the batch message covering all `.monolog/tasks/*.json` paths.
-- [ ] On any write failure mid-loop OR on `git.AutoCommit` failure after all N writes succeeded, attempt to remove all files written in this batch (best-effort rollback, rollback errors discarded) before returning the original error. Goal: a failed batch leaves no `.json` files in the working tree that `git status` would pick up.
-- [ ] On empty input slice: no commit, no error, return nil.
-- [ ] Tests: success path (N tasks → N files + 1 commit with exact message); empty batch (no commit, no error); write failure mid-batch (leaked files cleaned up); `git.AutoCommit` failure after all writes (files rolled back); verify commit message matches caller-provided.
-- [ ] Run `go test ./internal/store/...` — must pass before Task 4.
+- [x] Add `Store.CreateBatch(tasks []model.Task, commitMessage string) error` — writes all N task files atomically-ish (each via existing `writeTask`), then calls `git.AutoCommit` once with the batch message covering all `.monolog/tasks/*.json` paths.
+- [x] On any write failure mid-loop OR on `git.AutoCommit` failure after all N writes succeeded, attempt to remove all files written in this batch (best-effort rollback, rollback errors discarded) before returning the original error. Goal: a failed batch leaves no `.json` files in the working tree that `git status` would pick up.
+- [x] On empty input slice: no commit, no error, return nil.
+- [x] Tests: success path (N tasks → N files + 1 commit with exact message); empty batch (no commit, no error); write failure mid-batch (leaked files cleaned up); `git.AutoCommit` failure after all writes (files rolled back); verify commit message matches caller-provided.
+- [x] Run `go test ./internal/store/...` — must pass before Task 4.
 
 ### Task 4: Config accessors for Slack block + token reader
 
