@@ -5696,6 +5696,25 @@ func TestNewModel_ExistingThemeNoStatus(t *testing.T) {
 	}
 }
 
+func TestHelpModalContent_MentionsThemesAndSettings(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{})
+	help := m.helpModalContent()
+
+	// The themes file source must be discoverable from the help dialog
+	// — that's the entire point of adding the section.
+	if !strings.Contains(help, ".monolog/themes/") {
+		t.Errorf("help should mention the themes directory path:\n%s", help)
+	}
+	if !strings.Contains(help, "example.json") {
+		t.Errorf("help should mention the example.json bootstrap:\n%s", help)
+	}
+	// The settings key was missing from the help pre-themes work; its
+	// presence is now part of the contract.
+	if !strings.Contains(help, "settings") {
+		t.Errorf("help should mention the settings key:\n%s", help)
+	}
+}
+
 // --- finding 1: moveGrabTo G key regression fix ---
 
 func TestMoveGrabTo_GKeyPlacesLast(t *testing.T) {

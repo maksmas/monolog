@@ -3272,6 +3272,7 @@ func (m *Model) helpModalContent() string {
 		"  " + k("s") + "    sync\n" +
 		"  " + k("u") + "    undo last action (also ctrl+z)\n" +
 		"  " + k("ctrl+y") + " redo last undone action\n" +
+		"  " + k(",") + "    settings (date format, theme)\n" +
 		"  " + k("h") + "    this help\n" +
 		"  " + k("q") + "    quit\n\n" +
 		"Search:\n\n" +
@@ -3281,7 +3282,13 @@ func (m *Model) helpModalContent() string {
 		"  " + k("ctrl+n/p") + "       move selection\n" +
 		"  " + k("pgdn/pgup") + "      page selection\n" +
 		"  " + k("enter") + "          jump to task\n" +
-		"  " + k("esc") + "            cancel"
+		"  " + k("esc") + "            cancel\n\n" +
+		"Themes:\n\n" +
+		"  Drop JSON files in " + k("<MONOLOG_DIR>/.monolog/themes/") + "\n" +
+		"  to add custom color themes. Filename (sans .json) becomes\n" +
+		"  the theme name, visible in the " + k(",") + " settings cycle.\n" +
+		"  An " + k("example.json") + " is written on first run — copy, edit,\n" +
+		"  and restart monolog to see your colors."
 }
 
 func (m *Model) modalView() string {

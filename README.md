@@ -23,7 +23,7 @@ monolog sync                        # push/pull with a git remote
 monolog                             # launch the interactive TUI
 ```
 
-Set `MONOLOG_DIR` to store data somewhere other than `~/.monolog`. Set `MONOLOG_THEME` to `dracula` (or `default`) to switch TUI color themes; the same value can be persisted in `<MONOLOG_DIR>/.monolog/config.json` as the `"theme"` key.
+Set `MONOLOG_DIR` to store data somewhere other than `~/.monolog`. Set `MONOLOG_THEME` to `dracula` (or `default`) to switch TUI color themes; the same value can be persisted in `<MONOLOG_DIR>/.monolog/config.json` as the `"theme"` key. Drop JSON files into `<MONOLOG_DIR>/.monolog/themes/` to add your own — see [Themes](#themes).
 
 ## Commands
 
@@ -164,9 +164,58 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
 | `x` | Delete task (with confirmation) |
 | `s` | Sync (commit, pull --rebase, push) |
+| `,` | Settings modal (date format, theme) |
+| `h` | Help modal |
 | `q` | Quit |
 
 Active tasks render in green in the list and appear in a dedicated panel above the tab bar. The panel auto-hides when no tasks are active.
+
+## Themes
+
+Monolog ships with two built-in color themes (`default` and `dracula`) and loads additional user-authored themes from `<MONOLOG_DIR>/.monolog/themes/*.json` at startup. The filename (minus `.json`) becomes the theme name and appears in the TUI settings cycle (`,` key).
+
+On the first TUI launch in a new repo, monolog writes `themes/example.json` containing a full dump of the `default` theme. Copy it, tweak colors, and restart:
+
+```bash
+cp ~/.monolog/.monolog/themes/example.json ~/.monolog/.monolog/themes/mytheme.json
+# edit mytheme.json — change any of the 19 color roles
+# then select it from the TUI settings modal (,) or set
+# "theme": "mytheme" in <MONOLOG_DIR>/.monolog/config.json
+```
+
+A theme file is plain JSON with one `{"light", "dark"}` pair per color role. All 19 fields are required; values are hex (`#ff79c6`) or ANSI codes (`"240"`):
+
+```json
+{
+  "active_border":         {"light": "28",      "dark": "28"},
+  "modal_border":          {"light": "62",      "dark": "62"},
+  "hotkey":                {"light": "9",       "dark": "9"},
+  "active_tab_bg":         {"light": "62",      "dark": "62"},
+  "active_tab_fg":         {"light": "231",     "dark": "231"},
+  "tab_fg":                {"light": "244",     "dark": "244"},
+  "borders":               {"light": "240",     "dark": "240"},
+  "normal_text":           {"light": "#1a1a1a", "dark": "#dddddd"},
+  "selected_text":         {"light": "#EE6FF8", "dark": "#EE6FF8"},
+  "dim_text":              {"light": "#A49FA5", "dark": "#777777"},
+  "grab_text":             {"light": "#D97706", "dark": "#FFB454"},
+  "active_normal":         {"light": "#16A34A", "dark": "#22C55E"},
+  "active_selected":       {"light": "#15803D", "dark": "#4ADE80"},
+  "search_done":           {"light": "244",     "dark": "244"},
+  "search_active":         {"light": "76",      "dark": "76"},
+  "search_count":          {"light": "240",     "dark": "240"},
+  "search_meta":           {"light": "244",     "dark": "244"},
+  "search_preview_border": {"light": "240",     "dark": "240"},
+  "search_preview_dim":    {"light": "240",     "dark": "240"}
+}
+```
+
+Rules:
+
+- Reload is edit-and-restart — there is no file watcher.
+- Missing fields, invalid JSON, or empty color values cause the file to be skipped with a warning on stderr. The TUI continues with whatever loaded cleanly.
+- Files named `default.json` or `dracula.json` are rejected — built-ins are immutable.
+- If the configured theme disappears from disk, monolog falls back to `default` and shows `theme "<name>" not found, using default` in the status bar without rewriting `config.json`, so restoring the file brings the selection back.
+- `MONOLOG_THEME` env var takes precedence over the `config.json` setting.
 
 ## How it works
 
