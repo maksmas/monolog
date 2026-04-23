@@ -183,10 +183,10 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `internal/model/task.go`
 - Modify: `internal/model/task_test.go` (file already exists)
 
-- [ ] Add `SourceID string \`json:"source_id,omitempty"\`` to `Task` struct alongside existing `Source`.
-- [ ] Write test: `Task` with `Source="slack"` and `SourceID="C123/1712345.678"` round-trips through JSON marshal/unmarshal with the correct key name and omitempty behavior when empty.
-- [ ] Write test: existing tasks without the field unmarshal with empty `SourceID`.
-- [ ] Run `go test ./internal/model/...` and `go vet ./...` — must pass before Task 2.
+- [x] Add `SourceID string \`json:"source_id,omitempty"\`` to `Task` struct alongside existing `Source`.
+- [x] Write test: `Task` with `Source="slack"` and `SourceID="C123/1712345.678"` round-trips through JSON marshal/unmarshal with the correct key name and omitempty behavior when empty.
+- [x] Write test: existing tasks without the field unmarshal with empty `SourceID`.
+- [x] Run `go test ./internal/model/...` and `go vet ./...` — must pass before Task 2.
 
 ### Task 2: Clear `SourceID` on recurrence spawn
 

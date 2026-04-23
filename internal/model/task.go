@@ -16,6 +16,7 @@ type Task struct {
 	Title       string   `json:"title"`
 	Body        string   `json:"body,omitempty"`
 	Source      string   `json:"source"`
+	SourceID    string   `json:"source_id,omitempty"`
 	Status      string   `json:"status"`
 	Position    float64  `json:"position"`
 	Schedule    string   `json:"schedule"`

@@ -352,6 +352,66 @@ func TestTask_RecurrenceRoundTrip_NonEmpty(t *testing.T) {
 	}
 }
 
+func TestTask_SourceIDRoundTrip_Empty(t *testing.T) {
+	// A task JSON without a source_id field should decode to an empty
+	// SourceID and re-encode without introducing the key (omitempty).
+	original := `{"id":"01ABC","title":"t","source":"cli","status":"open","position":1000,"schedule":"2026-04-17","created_at":"2026-04-17T00:00:00Z","updated_at":"2026-04-17T00:00:00Z"}`
+
+	var task Task
+	if err := json.Unmarshal([]byte(original), &task); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if task.SourceID != "" {
+		t.Errorf("expected empty SourceID, got %q", task.SourceID)
+	}
+
+	out, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(out), "source_id") {
+		t.Errorf("expected omitempty to omit source_id key, got %s", string(out))
+	}
+}
+
+func TestTask_SourceIDRoundTrip_NonEmpty(t *testing.T) {
+	// A task with Source="slack" and SourceID set should serialize with the
+	// source_id field and deserialize back to the same value.
+	task := Task{
+		ID:        "01ABC",
+		Title:     "review the PR",
+		Source:    "slack",
+		SourceID:  "C123/1712345.678",
+		Status:    "open",
+		Position:  1000,
+		Schedule:  "2026-04-17",
+		CreatedAt: "2026-04-17T00:00:00Z",
+		UpdatedAt: "2026-04-17T00:00:00Z",
+	}
+
+	raw, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(raw), `"source_id":"C123/1712345.678"`) {
+		t.Errorf("expected source_id field in output, got %s", string(raw))
+	}
+	if !strings.Contains(string(raw), `"source":"slack"`) {
+		t.Errorf("expected source field in output, got %s", string(raw))
+	}
+
+	var decoded Task
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if decoded.Source != "slack" {
+		t.Errorf("Source = %q, want %q", decoded.Source, "slack")
+	}
+	if decoded.SourceID != "C123/1712345.678" {
+		t.Errorf("SourceID = %q, want %q", decoded.SourceID, "C123/1712345.678")
+	}
+}
+
 func TestSanitizeTags(t *testing.T) {
 	tests := []struct {
 		name string
