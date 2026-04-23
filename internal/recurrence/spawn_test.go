@@ -252,6 +252,76 @@ func listTaskFiles(t *testing.T, dir string) []string {
 	return names
 }
 
+// TestCompleteAndSpawn_ClearsSourceID verifies that a recurring task whose
+// original was ingested from an external source (e.g. Slack, with a non-
+// empty SourceID like "C0123/1712345.678") spawns a follow-up that copies
+// Source as provenance but resets SourceID to empty. The follow-up is a
+// fresh task in mlog's own ordering and has no external anchor, so leaking
+// the old SourceID would make external-system dedup caches treat the spawn
+// as a duplicate of the original.
+func TestCompleteAndSpawn_ClearsSourceID(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "tasks")
+	s, err := store.New(tasksDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	id, err := model.NewID()
+	if err != nil {
+		t.Fatalf("model.NewID: %v", err)
+	}
+	task := model.Task{
+		ID:         id,
+		Title:      "review PR",
+		Status:     "open",
+		Schedule:   "2026-04-18",
+		Recurrence: "days:3",
+		Source:     "slack",
+		SourceID:   "C0123/1712345.678",
+		Position:   1000,
+		CreatedAt:  "2026-04-18T00:00:00Z",
+		UpdatedAt:  "2026-04-18T00:00:00Z",
+	}
+	if err := s.Create(task); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	now := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
+	var warn bytes.Buffer
+	_, commitFiles, err := CompleteAndSpawn(s, &task, now, &warn, "02-01-2006")
+	if err != nil {
+		t.Fatalf("CompleteAndSpawn: %v (stderr: %s)", err, warn.String())
+	}
+	if len(commitFiles) != 2 {
+		t.Fatalf("expected 2 commit files (old + spawn), got %d", len(commitFiles))
+	}
+
+	// Locate the spawn file (the non-old entry).
+	var spawnID string
+	oldFile := filepath.Join(".monolog", "tasks", task.ID+".json")
+	for _, f := range commitFiles {
+		if f == oldFile {
+			continue
+		}
+		spawnID = strings.TrimSuffix(filepath.Base(f), ".json")
+	}
+	if spawnID == "" {
+		t.Fatalf("spawn file not found in commitFiles: %v", commitFiles)
+	}
+	spawn, err := s.Get(spawnID)
+	if err != nil {
+		t.Fatalf("store.Get spawn: %v", err)
+	}
+
+	if spawn.Source != "slack" {
+		t.Errorf("spawn.Source = %q, want %q (provenance should be copied)", spawn.Source, "slack")
+	}
+	if spawn.SourceID != "" {
+		t.Errorf("spawn.SourceID = %q, want empty (external anchor should be cleared)", spawn.SourceID)
+	}
+}
+
 // TestTagsWithoutActive_ReturnsFreshSlice verifies that mutating the output
 // does not affect the input. The spawn flow relies on this so that
 // subsequent SetActive/reslice work on the spawn doesn't corrupt the old

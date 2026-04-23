@@ -194,9 +194,9 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `internal/recurrence/spawn.go`
 - Modify: `internal/recurrence/spawn_test.go`
 
-- [ ] At the new-task construction site (currently `Source: old.Source,` at `spawn.go:60`), leave `Source` copy as-is but explicitly do not copy `SourceID` (defaults to empty).
-- [ ] Write test: given an old task with `Source="slack"` and `SourceID="C/ts"` and a recurrence rule, the spawned task has `Source="slack"` (provenance copied) and `SourceID=""` (cleared).
-- [ ] Run `go test ./internal/recurrence/...` — must pass before Task 3.
+- [x] At the new-task construction site (currently `Source: old.Source,` at `spawn.go:60`), leave `Source` copy as-is but explicitly do not copy `SourceID` (defaults to empty).
+- [x] Write test: given an old task with `Source="slack"` and `SourceID="C/ts"` and a recurrence rule, the spawned task has `Source="slack"` (provenance copied) and `SourceID=""` (cleared).
+- [x] Run `go test ./internal/recurrence/...` — must pass before Task 3.
 
 ### Task 3: Add `store.CreateBatch` for bulk ingest
 
