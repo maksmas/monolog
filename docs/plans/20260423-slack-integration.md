@@ -230,10 +230,10 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `internal/git/git.go`
 - Modify: `internal/git/git_test.go`
 
-- [ ] Update `git.Init` (`git.go:21`) to write `.gitignore` with two lines: `# monolog gitignore\nslack_token\n` instead of the current single line.
-- [ ] Add `git.EnsureGitignoreEntry(repoPath, entry string) error` — idempotent: reads existing `.gitignore`, checks if `entry` (whole line) is present, appends with newline if missing; no-op otherwise. Used by `slack-login` to upgrade repos initialized before this feature.
-- [ ] Tests: `Init` creates `.gitignore` containing `slack_token`; `EnsureGitignoreEntry` appends new entry; calling twice is idempotent; preserves existing entries.
-- [ ] Run `go test ./internal/git/...` — must pass before Task 6.
+- [x] Update `git.Init` (`git.go:21`) to write `.gitignore` with two lines: `# monolog gitignore\nslack_token\n` instead of the current single line.
+- [x] Add `git.EnsureGitignoreEntry(repoPath, entry string) error` — idempotent: reads existing `.gitignore`, checks if `entry` (whole line) is present, appends with newline if missing; no-op otherwise. Used by `slack-login` to upgrade repos initialized before this feature.
+- [x] Tests: `Init` creates `.gitignore` containing `slack_token`; `EnsureGitignoreEntry` appends new entry; calling twice is idempotent; preserves existing entries.
+- [x] Run `go test ./internal/git/...` — must pass before Task 6.
 
 ### Task 6: Slack HTTP client (`internal/slack/client.go`)
 

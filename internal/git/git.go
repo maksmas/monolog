@@ -45,7 +45,7 @@ func Init(path string, remote string) error {
 
 	// Write .gitignore
 	gitignorePath := filepath.Join(path, ".gitignore")
-	gitignoreData := []byte("# monolog gitignore\n")
+	gitignoreData := []byte("# monolog gitignore\nslack_token\n")
 	if err := os.WriteFile(gitignorePath, gitignoreData, 0o644); err != nil {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}
@@ -91,6 +91,55 @@ func Init(path string, remote string) error {
 		}
 	}
 
+	return nil
+}
+
+// EnsureGitignoreEntry appends entry as a new line to the .gitignore file at
+// repoPath if it is not already present (as a whole line). Used to upgrade
+// older repos that pre-date a gitignore addition — e.g. adding `slack_token`
+// to a repo initialized before the Slack integration landed.
+//
+// Behavior:
+//   - If .gitignore does not exist, it is created with "# monolog gitignore\n"
+//     followed by entry.
+//   - If .gitignore exists and already contains entry as a whole line, no-op.
+//   - Otherwise entry is appended on a new line (ensuring a trailing newline on
+//     the existing file first).
+//
+// The comparison is exact whole-line: "slack_token" does not match "slack_token/"
+// or "# slack_token". This is intentionally strict so entries remain easy to
+// reason about.
+func EnsureGitignoreEntry(repoPath, entry string) error {
+	gitignorePath := filepath.Join(repoPath, ".gitignore")
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("read .gitignore: %w", err)
+		}
+		// Create a fresh .gitignore with the monolog header + the entry.
+		contents := []byte("# monolog gitignore\n" + entry + "\n")
+		if err := os.WriteFile(gitignorePath, contents, 0o644); err != nil {
+			return fmt.Errorf("write .gitignore: %w", err)
+		}
+		return nil
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == entry {
+			return nil // already present
+		}
+	}
+
+	// Append entry on a new line, ensuring the existing file ends with a newline
+	// so the appended entry lands on its own line.
+	appended := data
+	if len(appended) > 0 && appended[len(appended)-1] != '\n' {
+		appended = append(appended, '\n')
+	}
+	appended = append(appended, []byte(entry+"\n")...)
+	if err := os.WriteFile(gitignorePath, appended, 0o644); err != nil {
+		return fmt.Errorf("write .gitignore: %w", err)
+	}
 	return nil
 }
 

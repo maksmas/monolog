@@ -55,10 +55,25 @@ func TestInit_CreatesDirectoryStructure(t *testing.T) {
 		t.Errorf("date_format = %q, want %q", config["date_format"], "02-01-2006")
 	}
 
-	// Check .gitignore exists
+	// Check .gitignore exists and contains slack_token entry
 	gitignorePath := filepath.Join(repoPath, ".gitignore")
-	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
-		t.Error(".gitignore should exist after init")
+	gitignoreData, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf(".gitignore should exist after init: %v", err)
+	}
+	if !strings.Contains(string(gitignoreData), "slack_token") {
+		t.Errorf(".gitignore should contain 'slack_token' entry, got: %q", string(gitignoreData))
+	}
+	// Sanity check: the entry is on its own line (whole-line match).
+	found := false
+	for _, line := range strings.Split(string(gitignoreData), "\n") {
+		if line == "slack_token" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf(".gitignore should contain 'slack_token' as a whole line, got: %q", string(gitignoreData))
 	}
 }
 
@@ -904,5 +919,176 @@ func TestAutoCommit_DeletedFile(t *testing.T) {
 	}
 	if got := string(out); !strings.Contains(got, "rm: del task") {
 		t.Errorf("commit log should contain 'rm: del task', got: %s", got)
+	}
+}
+
+func TestEnsureGitignoreEntry_AppendsWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Fresh Init already writes slack_token; use a different entry for this test.
+	if err := EnsureGitignoreEntry(repoPath, "secrets.env"); err != nil {
+		t.Fatalf("EnsureGitignoreEntry() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	// Both entries should be present.
+	if !strings.Contains(string(data), "slack_token") {
+		t.Errorf(".gitignore should still contain 'slack_token', got: %q", string(data))
+	}
+	if !strings.Contains(string(data), "secrets.env") {
+		t.Errorf(".gitignore should contain appended 'secrets.env', got: %q", string(data))
+	}
+	// Both entries should be on their own lines.
+	lines := strings.Split(string(data), "\n")
+	seenSlack, seenSecrets := false, false
+	for _, l := range lines {
+		if l == "slack_token" {
+			seenSlack = true
+		}
+		if l == "secrets.env" {
+			seenSecrets = true
+		}
+	}
+	if !seenSlack || !seenSecrets {
+		t.Errorf("expected both entries as whole lines, got: %q", string(data))
+	}
+}
+
+func TestEnsureGitignoreEntry_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Call twice for the same entry; second call must be a no-op.
+	if err := EnsureGitignoreEntry(repoPath, "dup.token"); err != nil {
+		t.Fatalf("first call error = %v", err)
+	}
+	first, err := os.ReadFile(filepath.Join(repoPath, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+
+	if err := EnsureGitignoreEntry(repoPath, "dup.token"); err != nil {
+		t.Fatalf("second call error = %v", err)
+	}
+	second, err := os.ReadFile(filepath.Join(repoPath, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+
+	if string(first) != string(second) {
+		t.Errorf(".gitignore changed between idempotent calls:\nfirst:  %q\nsecond: %q", string(first), string(second))
+	}
+
+	// Call with an existing built-in entry (slack_token) is also a no-op.
+	if err := EnsureGitignoreEntry(repoPath, "slack_token"); err != nil {
+		t.Fatalf("call for existing slack_token error = %v", err)
+	}
+	third, err := os.ReadFile(filepath.Join(repoPath, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if string(third) != string(second) {
+		t.Errorf(".gitignore changed after no-op for existing entry:\nbefore: %q\nafter:  %q", string(second), string(third))
+	}
+}
+
+func TestEnsureGitignoreEntry_PreservesExistingEntries(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// Write a customized .gitignore with user-added entries.
+	custom := "# monolog gitignore\nslack_token\nuser-secret.env\n.DS_Store\n"
+	if err := os.WriteFile(filepath.Join(repoPath, ".gitignore"), []byte(custom), 0o644); err != nil {
+		t.Fatalf("write custom .gitignore: %v", err)
+	}
+
+	if err := EnsureGitignoreEntry(repoPath, "new-entry"); err != nil {
+		t.Fatalf("EnsureGitignoreEntry() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	for _, entry := range []string{"slack_token", "user-secret.env", ".DS_Store", "new-entry"} {
+		found := false
+		for _, line := range strings.Split(string(data), "\n") {
+			if line == entry {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected entry %q preserved/present, got: %q", entry, string(data))
+		}
+	}
+}
+
+func TestEnsureGitignoreEntry_CreatesFileIfMissing(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "bare")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// No Init — no .gitignore exists. EnsureGitignoreEntry should create one.
+	if err := EnsureGitignoreEntry(repoPath, "slack_token"); err != nil {
+		t.Fatalf("EnsureGitignoreEntry() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(data), "slack_token") {
+		t.Errorf("expected created .gitignore to contain 'slack_token', got: %q", string(data))
+	}
+}
+
+func TestEnsureGitignoreEntry_NoTrailingNewlineExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write a .gitignore without a trailing newline — edge case.
+	if err := os.WriteFile(filepath.Join(repoPath, ".gitignore"), []byte("existing"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := EnsureGitignoreEntry(repoPath, "slack_token"); err != nil {
+		t.Fatalf("EnsureGitignoreEntry() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	seenExisting, seenSlack := false, false
+	for _, l := range lines {
+		if l == "existing" {
+			seenExisting = true
+		}
+		if l == "slack_token" {
+			seenSlack = true
+		}
+	}
+	if !seenExisting || !seenSlack {
+		t.Errorf("expected both 'existing' and 'slack_token' as whole lines, got: %q", string(data))
 	}
 }
