@@ -328,10 +328,10 @@ Unknown top-level keys preserved on rewrite.
 - Create: `cmd/slack_status_test.go`
 - Modify: `cmd/root.go` (register both)
 
-- [ ] `slack-logout`: delete `<MONOLOG_DIR>/.monolog/slack_token` if present; call `config.SetSlackEnabled(monologDir, false)`; print `Slack disconnected.` If file doesn't exist, print `Already disconnected.` (exit 0).
-- [ ] `slack-status`: print workspace (from `config.Slack().Workspace`), token source (from `config.SlackToken()` return: "env" / "file" / "none"), enabled state, and a count of on-disk tasks with `Source=="slack"` as `ingested so far: N`. Do NOT print a "last sync" line (the TUI-session-only state isn't worth the noise — trimmed on reviewer YAGNI feedback).
-- [ ] Tests for each: logout removes the file and updates config; status prints the expected fields from a fixture config + fixture task set.
-- [ ] Run `go test ./cmd/...` — must pass before Task 10.
+- [x] `slack-logout`: delete `<MONOLOG_DIR>/.monolog/slack_token` if present; call `config.SetSlackEnabled(monologDir, false)`; print `Slack disconnected.` If file doesn't exist, print `Already disconnected.` (exit 0).
+- [x] `slack-status`: print workspace (from `config.Slack().Workspace`), token source (from `config.SlackToken()` return: "env" / "file" / "none"), enabled state, and a count of on-disk tasks with `Source=="slack"` as `ingested so far: N`. Do NOT print a "last sync" line (the TUI-session-only state isn't worth the noise — trimmed on reviewer YAGNI feedback).
+- [x] Tests for each: logout removes the file and updates config; status prints the expected fields from a fixture config + fixture task set.
+- [x] Run `go test ./cmd/...` — must pass before Task 10.
 
 ### Task 10: `monolog slack-sync` CLI command (headless)
 
