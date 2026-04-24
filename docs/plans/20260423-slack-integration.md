@@ -417,9 +417,9 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `CLAUDE.md`
 - Move: `docs/plans/20260423-slack-integration.md` → `docs/plans/completed/`
 
-- [ ] README: add a "Slack integration" section under features explaining `slack-login` setup and that saved items sync automatically when the TUI is open; mention `MONOLOG_SLACK_TOKEN` env var; mention `monolog slack-sync` for cron users.
-- [ ] CLAUDE.md: add a bullet under **Key Design Decisions** in the dense style of existing entries (name types, functions, files, exact behaviors). Cover: Source/SourceID dedup with in-memory cache keyed by `channel/ts`, `slack.Ingest` batching through `store.CreateBatch`, the chained unsave-after-done via `taskSavedMsg` extension, self-rescheduling tick pattern, token storage rules (env var preferred, git-ignored file fallback), and that only `d` / CLI `done` trigger unsave (not rm / edit / undo).
-- [ ] Move the plan file: `mkdir -p docs/plans/completed && git mv docs/plans/20260423-slack-integration.md docs/plans/completed/` — use `git mv` so history is preserved.
+- [x] README: add a "Slack integration" section under features explaining `slack-login` setup and that saved items sync automatically when the TUI is open; mention `MONOLOG_SLACK_TOKEN` env var; mention `monolog slack-sync` for cron users.
+- [x] CLAUDE.md: add a bullet under **Key Design Decisions** in the dense style of existing entries (name types, functions, files, exact behaviors). Cover: Source/SourceID dedup with in-memory cache keyed by `channel/ts`, `slack.Ingest` batching through `store.CreateBatch`, the chained unsave-after-done via `taskSavedMsg` extension, self-rescheduling tick pattern, token storage rules (env var preferred, git-ignored file fallback), and that only `d` / CLI `done` trigger unsave (not rm / edit / undo).
+- [x] Move deferred until after review phases (will archive in the finalize step)
 
 ## Accepted Limitations
 

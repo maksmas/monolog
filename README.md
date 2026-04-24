@@ -217,6 +217,32 @@ Rules:
 - If the configured theme disappears from disk, monolog falls back to `default` and shows `theme "<name>" not found, using default` in the status bar without rewriting `config.json`, so restoring the file brings the selection back.
 - `MONOLOG_THEME` env var takes precedence over the `config.json` setting.
 
+## Slack integration
+
+Messages you save for later in Slack (the bookmark / "Saved items" feature) flow into monolog as tasks automatically, so mlog becomes the single inbox.
+
+Run the interactive wizard once to connect a workspace:
+
+```bash
+monolog slack-login       # creates a Slack app, asks for the xoxp token, validates, stores
+monolog slack-status      # show workspace, token source, enabled state, ingested count
+monolog slack-logout      # disconnect and remove the stored token
+```
+
+When the TUI is open, monolog polls Slack on startup and every 60 seconds (override with `"slack": {"poll_interval_seconds": N}` in `<MONOLOG_DIR>/.monolog/config.json`). New saved messages appear as tasks scheduled for today, tagged `slack` (plus the channel name by default). Pressing `s` in the TUI triggers an immediate poll alongside the git sync.
+
+Completing a Slack-sourced task (`d` in the TUI, or `monolog done <id>`) also un-saves the underlying message in Slack via `stars.remove` — so the bookmark list clears as you work through mlog. Only the done transition triggers the unsave: `rm`, edit, reschedule, and undo leave Slack untouched.
+
+Set `MONOLOG_SLACK_TOKEN` to supply the token via environment variable (takes precedence over the on-disk file at `<MONOLOG_DIR>/.monolog/slack_token`, which is mode `0600` and git-ignored).
+
+For headless or cron setups, `monolog slack-sync` runs a one-shot ingest and exits:
+
+```bash
+monolog slack-sync        # ingest any new saved items, batched into one git commit
+```
+
+Accepted limitations: bookmarks on direct messages (`D...`) and group DMs are skipped; Slack markup (`<@U123>`, `<#C456|name>`, `<url|label>`) renders literally in task bodies; the integration depends on Slack's `stars.*` Web API.
+
 ## How it works
 
 Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-commits to git. Ordering uses fractional positions with automatic rebalancing.
