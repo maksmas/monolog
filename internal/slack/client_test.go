@@ -381,8 +381,14 @@ func TestUnsave_SendsCorrectForm(t *testing.T) {
 	if !strings.Contains(form, "channel=C0123ABC") {
 		t.Fatalf("form body missing channel: %q", form)
 	}
-	if !strings.Contains(form, "timestamp=1712345678.000100") {
+	// Match the `&` delimiter so this assertion is not satisfied by the
+	// old, buggy `channel_timestamp=...` name (which contains `timestamp=`
+	// as a substring). Also explicitly reject the old name.
+	if !strings.Contains(form, "&timestamp=1712345678.000100") {
 		t.Fatalf("form body missing timestamp: %q", form)
+	}
+	if strings.Contains(form, "channel_timestamp") {
+		t.Fatalf("form body must not use legacy channel_timestamp name: %q", form)
 	}
 }
 

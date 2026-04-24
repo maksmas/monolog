@@ -10898,6 +10898,70 @@ func TestSlack_TickMsgSuppressedWhileGitOpInFlight(t *testing.T) {
 	}
 }
 
+// TestSlack_FetchedMsgSuppressedWhileGitOpInFlight covers the case where a
+// tick-driven slackPollCmd goroutine was launched BEFORE the sync started,
+// so the slackTickMsg gate didn't catch it. Its eventual slackFetchedMsg
+// lands during the in-flight sync; handleSlackFetched must drop the items
+// (no ingest, no store writes, synced unchanged) to avoid a concurrent
+// git.AutoCommit racing sync's add/commit/pull. Tick cadence is preserved
+// when fromTick=true; manual fetches return no command so the in-flight
+// sync's chained post-sync poll is the canonical next trigger.
+func TestSlack_FetchedMsgSuppressedWhileGitOpInFlight(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+	m.gitOpInFlight = true
+
+	// Snapshot synced state and store contents before dispatch.
+	syncedBefore := len(m.slackSynced)
+	tasksBefore, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("store.List: %v", err)
+	}
+	countBefore := len(tasksBefore)
+
+	items := []slack.SavedItem{
+		{Channel: "C1", ChannelName: "general", TS: "1700000042.000001",
+			Text: "would-be ingest", AuthorName: "alice",
+			Permalink: "https://x.slack.com/archives/C1/p1700000042000001"},
+	}
+
+	// fromTick=true: must re-schedule a tick so cadence doesn't go dark.
+	next, cmd := m.Update(slackFetchedMsg{items: items, fromTick: true})
+	m = next.(*Model)
+
+	if cmd == nil {
+		t.Fatal("fromTick fetched during git op should re-schedule a tick, not return nil")
+	}
+	if got := cmd(); got != nil {
+		if _, ok := got.(slackTickMsg); !ok {
+			t.Errorf("fromTick re-schedule should return slackTickMsg; got %T", got)
+		}
+	}
+	if len(m.slackSynced) != syncedBefore {
+		t.Errorf("synced map mutated despite gitOpInFlight: before=%d after=%d",
+			syncedBefore, len(m.slackSynced))
+	}
+	tasksAfter, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("store.List after: %v", err)
+	}
+	if got, want := len(tasksAfter), countBefore; got != want {
+		t.Errorf("store wrote task(s) during gitOpInFlight: before=%d after=%d", want, got)
+	}
+
+	// fromTick=false: manual fetches return no command — the in-flight sync
+	// will dispatch a chained poll via pendingSlackPollAfterSync.
+	next, cmd = m.Update(slackFetchedMsg{items: items, fromTick: false})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Errorf("manual fetch during git op should return nil cmd, got non-nil")
+	}
+	if len(m.slackSynced) != syncedBefore {
+		t.Errorf("synced map mutated on manual fetch during gitOpInFlight")
+	}
+}
+
 // TestSlack_SKeyDoesNotBatchPollDuringSync asserts that pressing `s` returns
 // ONLY the sync command (no concurrent slackPollCmd batched alongside it).
 // The chained poll fires AFTER the sync completes via

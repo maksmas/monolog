@@ -1187,6 +1187,18 @@ func (m *Model) handleSlackFetched(msg slackFetchedMsg) (tea.Model, tea.Cmd) {
 		nextTick = m.slackTickCmd(m.slackPollInterval)
 	}
 
+	// A tick-driven slackPollCmd goroutine may have been launched BEFORE a
+	// sync started (so the slackTickMsg gate didn't catch it). Its eventual
+	// slackFetchedMsg could land mid-sync and race `git.AutoCommit` inside
+	// ingest against sync's `git add -A`/`git commit`/`git pull --rebase` —
+	// the same .git/index.lock collision the tick gate prevents for NEW
+	// polls. Drop the fetched items on the floor; they are not lost because
+	// `synced` is keyed by channel/ts and Slack still has them, so the next
+	// poll re-fetches. Preserve tick cadence when fromTick=true.
+	if m.gitOpInFlight {
+		return m, nextTick
+	}
+
 	if msg.err != nil {
 		errMsg := msg.err.Error()
 		if errMsg != m.slackLastErr {
