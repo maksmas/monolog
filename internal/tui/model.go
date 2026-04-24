@@ -232,6 +232,11 @@ type Model struct {
 	// config.Slack().PollIntervalSeconds at startup). Ignored when slackClient
 	// is nil.
 	slackPollInterval time.Duration
+	// slackChannelAsTag captures config.Slack().ChannelAsTag at startup.
+	// Consulted live by handleSlackFetched; matches the restart-to-apply
+	// contract that slackPollInterval follows, so all slack config reads flow
+	// through Model fields rather than a mix of captured + live lookups.
+	slackChannelAsTag bool
 	// slackLastErr holds the most recent poll error message to rate-limit
 	// identical consecutive errors in the status bar. Cleared on the next
 	// successful poll.
@@ -394,6 +399,15 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 
 	return title + "\n" + desc + "\n"
 }
+
+// slackTUIPollTimeout bounds a single ListSaved request fired from the TUI
+// tick loop or s-key. Matches the CLI slackSyncTimeout constant — named
+// separately to make the TUI-vs-CLI boundary explicit.
+const slackTUIPollTimeout = 30 * time.Second
+
+// slackTUIUnsaveTimeout bounds a single stars.remove call fired after a done
+// transition. Matches the CLI doneSlackUnsaveTimeout constant.
+const slackTUIUnsaveTimeout = 5 * time.Second
 
 // slackTickMsg fires on the tea.Tick scheduled after each poll cycle. The
 // Update loop responds by kicking off the next poll; the next tick is
@@ -572,6 +586,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 			interval = 60
 		}
 		m.slackPollInterval = time.Duration(interval) * time.Second
+		m.slackChannelAsTag = slackCfg.ChannelAsTag
 	}
 
 	return m, nil
@@ -1223,10 +1238,10 @@ func (m *Model) handleSlackFetched(msg slackFetchedMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Discard ingest stderr explicitly: Bubble Tea runs in alt-screen, so a
-	// "slack: skipping DM bookmark <ts>" notice written to os.Stderr would
-	// corrupt the rendered output until the next full redraw.
+	// "slack: skipped N DM/group-DM bookmark(s)" summary written to os.Stderr
+	// would corrupt the rendered output until the next full redraw.
 	newCount, err := slack.Ingest(m.store, msg.items, m.slackSynced, slack.Options{
-		ChannelAsTag: config.Slack().ChannelAsTag,
+		ChannelAsTag: m.slackChannelAsTag,
 		DateFormat:   config.DateFormat(),
 		Stderr:       io.Discard,
 	})
@@ -2797,7 +2812,7 @@ func (m *Model) slackPollCmd(fromTick bool) tea.Cmd {
 	}
 	client := m.slackClient
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), slackTUIPollTimeout)
 		defer cancel()
 		items, err := client.ListSaved(ctx)
 		return slackFetchedMsg{items: items, err: err, fromTick: fromTick}
@@ -2813,14 +2828,14 @@ func (m *Model) slackUnsaveCmd(channel, ts string) tea.Cmd {
 	}
 	client := m.slackClient
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), slackTUIUnsaveTimeout)
 		defer cancel()
 		return slackUnsaveDoneMsg{err: client.Unsave(ctx, channel, ts)}
 	}
 }
 
 // handleSlackUnsaveDone routes unsave results to the status bar. nil err is
-// silent (completion already reported by the done handler). ErrMissingScope
+// silent (completion already reported by the done handler). ErrReauthRequired
 // surfaces the re-run-login remedy. Other errors are rate-limited against
 // slackUnsaveLastErr so repeated failures on a wedged connection do not
 // spam the status bar. A successful unsave clears slackUnsaveLastErr so the
@@ -2830,7 +2845,7 @@ func (m *Model) handleSlackUnsaveDone(msg slackUnsaveDoneMsg) (tea.Model, tea.Cm
 		m.slackUnsaveLastErr = ""
 		return m, nil
 	}
-	if errors.Is(msg.err, slack.ErrMissingScope) {
+	if errors.Is(msg.err, slack.ErrReauthRequired) {
 		status := "Slack unsave needs stars:write — run monolog slack-login"
 		if status != m.slackUnsaveLastErr {
 			m.statusMsg = status

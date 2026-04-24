@@ -53,7 +53,6 @@ func sampleItem() SavedItem {
 		ChannelName: "general",
 		TS:          "1712345678.000100",
 		Text:        "remember to review the PR",
-		AuthorID:    "U0456",
 		AuthorName:  "alice",
 		Permalink:   "https://myteam.slack.com/archives/C0123/p1712345678000100",
 	}
@@ -220,43 +219,20 @@ func TestBuildTask_BodyVerbatimPassthrough(t *testing.T) {
 	}
 }
 
-func TestBuildTask_ThreadedReplyBodyEqualsNonThreaded(t *testing.T) {
-	// ThreadTS is metadata only — BuildTask consumes Text, not ThreadTS, so a
-	// threaded-reply body is identical to the same item without ThreadTS.
-	// Asserts exact body equality (both cases) rather than a weak "contains"
-	// check that would pass even if ThreadTS were accidentally wired in.
-	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(time.Now())}
-
-	plain := sampleItem()
-	plain.Text = "follow-up reply"
-	threaded := plain
-	threaded.ThreadTS = "1712345670.000001"
-
-	if got, want := BuildTask(threaded, opts).Body, BuildTask(plain, opts).Body; got != want {
-		t.Errorf("threaded body differed from plain body:\nthreaded=%q\nplain=%q", got, want)
-	}
-}
-
-func TestBuildTask_AttachmentsDroppedFromBody(t *testing.T) {
-	// HasFiles=true must not alter the body — attachments are metadata, not
-	// rendered in v1. Strong assertion: body is exactly Text + attribution +
-	// permalink, with no extra lines introduced by the HasFiles flag.
+func TestBuildTask_BodyStructureIsExact(t *testing.T) {
+	// Strong assertion: body is exactly Text + attribution + permalink, with
+	// no extra lines or metadata leaked from the raw Slack API (files,
+	// reactions, thread replies, etc.). Guards against future raw-API changes
+	// bleeding into the rendered body.
 	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(time.Now())}
 	item := sampleItem()
 
-	plain := BuildTask(item, opts).Body
-	item.HasFiles = true
-	withFiles := BuildTask(item, opts).Body
+	got := BuildTask(item, opts).Body
 
-	if plain != withFiles {
-		t.Errorf("HasFiles changed body rendering:\nplain=%q\nwithFiles=%q", plain, withFiles)
-	}
-
-	// Also verify exact structure: Text + "\n\n— @author in #channel, date\n\n" + permalink.
 	// sampleItem() TS "1712345678.000100" = 2024-04-05 UTC.
 	want := "remember to review the PR\n\n— @alice in #general, 05-04-2024\n\nhttps://myteam.slack.com/archives/C0123/p1712345678000100"
-	if plain != want {
-		t.Errorf("body structure mismatch:\ngot:  %q\nwant: %q", plain, want)
+	if got != want {
+		t.Errorf("body structure mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
 }
 
@@ -466,18 +442,19 @@ func TestIngest_DMChannelsSkippedSilentlyToStderr(t *testing.T) {
 	}
 
 	msg := stderr.String()
-	for _, ts := range []string{"1.000", "3.000"} {
-		if !strings.Contains(msg, ts) {
-			t.Errorf("stderr missing DM-skip for %s; got:\n%s", ts, msg)
+	// A single summary line reports the skip count; no per-item spam.
+	if !strings.Contains(msg, "skipped 2") {
+		t.Errorf("stderr missing DM-skip summary; got:\n%s", msg)
+	}
+	// Per-item TS values must NOT appear — that was the pre-fix spam pattern.
+	for _, ts := range []string{"1.000", "2.000", "3.000", "4.000"} {
+		if strings.Contains(msg, ts) {
+			t.Errorf("stderr should not mention per-item TS %s; got:\n%s", ts, msg)
 		}
 	}
-	// Private channel (G-prefix) should NOT appear as a DM skip.
-	if strings.Contains(msg, "2.000") {
-		t.Errorf("G-prefixed private channel should not be skipped as DM; got:\n%s", msg)
-	}
-	// Public channel should not appear in stderr.
-	if strings.Contains(msg, "4.000") {
-		t.Errorf("stderr should not mention public channel TS; got:\n%s", msg)
+	// Exactly one line: one summary, no per-item lines.
+	if got := strings.Count(strings.TrimRight(msg, "\n"), "\n"); got != 0 {
+		t.Errorf("stderr should be a single summary line; got %d extra newlines:\n%s", got, msg)
 	}
 }
 
@@ -648,9 +625,9 @@ func TestParseSourceID(t *testing.T) {
 
 func TestIsDMChannel(t *testing.T) {
 	cases := map[string]bool{
-		"":                false,
-		"C0123":           false,
-		"D0123":           true,
+		"":      false,
+		"C0123": false,
+		"D0123": true,
 		// G-prefix is NOT treated as a DM — Slack uses it for private
 		// channels (primary use) AND legacy group DMs (rare). Private
 		// channel bookmarks must ingest; the occasional legacy group DM

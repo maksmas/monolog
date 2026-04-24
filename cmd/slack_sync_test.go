@@ -14,7 +14,6 @@ import (
 
 	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/slack"
 )
 
 // enableSlack flips slack.enabled=true in config.json at dir. slack-sync no
@@ -91,15 +90,11 @@ func (m *slackSyncMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // installSlackSyncClient wires a test Slack client (pointing at server) into
-// the shared CLI factory used by slack-sync. Returns a restore closure that
-// tests defer to undo the override.
+// the shared CLI factory used by slack-sync. Thin wrapper kept so existing
+// call sites read clearly; actual override lives in installSlackClient.
 func installSlackSyncClient(t *testing.T, server *httptest.Server) func() {
 	t.Helper()
-	orig := newSlackClientFn
-	newSlackClientFn = func(token, workspace string) *slack.Client {
-		return &slack.Client{Token: token, Workspace: workspace, BaseURL: server.URL}
-	}
-	return func() { newSlackClientFn = orig }
+	return installSlackClient(t, server.URL)
 }
 
 // stars.list body with N message items starting at ts offset. Channel is

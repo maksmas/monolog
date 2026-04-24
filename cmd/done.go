@@ -92,7 +92,7 @@ func maybeSlackUnsave(cmd *cobra.Command, source, sourceID string) {
 	defer cancel()
 
 	if err := client.Unsave(ctx, channel, ts); err != nil {
-		if errors.Is(err, slack.ErrMissingScope) {
+		if errors.Is(err, slack.ErrReauthRequired) {
 			fmt.Fprintln(cmd.ErrOrStderr(), "monolog: slack unsave needs stars:write — run monolog slack-login")
 			return
 		}

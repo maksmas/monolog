@@ -147,8 +147,8 @@ func TestAuthTest_InvalidAuthReturnsMissingScope(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !errors.Is(err, ErrMissingScope) {
-		t.Fatalf("err = %v, want errors.Is(ErrMissingScope)", err)
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("err = %v, want errors.Is(ErrReauthRequired)", err)
 	}
 }
 
@@ -437,8 +437,8 @@ func TestUnsave_ReturnsMissingScopeSentinel(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Unsave(%s) err = nil, want non-nil", tc.name)
 			}
-			if !errors.Is(err, ErrMissingScope) {
-				t.Fatalf("Unsave(%s) err = %v, want errors.Is(ErrMissingScope)", tc.name, err)
+			if !errors.Is(err, ErrReauthRequired) {
+				t.Fatalf("Unsave(%s) err = %v, want errors.Is(ErrReauthRequired)", tc.name, err)
 			}
 		})
 	}
@@ -455,8 +455,8 @@ func TestUnsave_UnknownErrorReturnsDescriptive(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if errors.Is(err, ErrMissingScope) {
-		t.Fatalf("err %v should not match ErrMissingScope", err)
+	if errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("err %v should not match ErrReauthRequired", err)
 	}
 	if !strings.Contains(err.Error(), "ratelimited") {
 		t.Fatalf("err = %v, want to contain Slack error text", err)

@@ -20,10 +20,11 @@ const defaultBaseURL = "https://slack.com/api"
 // defaultTimeout is the per-request timeout used when Client.HTTP is unset.
 const defaultTimeout = 10 * time.Second
 
-// ErrMissingScope is returned by Client methods when Slack responds with
-// missing_scope or invalid_auth. Callers use errors.Is to detect this and
-// surface a "re-run monolog slack-login" remedy.
-var ErrMissingScope = errors.New("slack: missing scope")
+// ErrReauthRequired is returned by Client methods when Slack responds with
+// any error that requires re-running the login flow to resolve: missing_scope,
+// invalid_auth, not_authed, token_revoked, or account_inactive. Callers use
+// errors.Is to detect this and surface a "re-run monolog slack-login" remedy.
+var ErrReauthRequired = errors.New("slack: reauthentication required")
 
 // Client calls Slack's Web API. Zero value is usable after Token is set, but
 // callers typically construct via a literal.
@@ -48,11 +49,8 @@ type SavedItem struct {
 	ChannelName string
 	TS          string
 	Text        string
-	AuthorID    string
 	AuthorName  string
 	Permalink   string
-	ThreadTS    string
-	HasFiles    bool
 }
 
 // base returns the effective base URL, falling back to Slack's public endpoint.
@@ -162,7 +160,7 @@ func (c *Client) postFormRaw(ctx context.Context, method string, form url.Values
 		}
 		switch env.Error {
 		case "missing_scope", "invalid_auth", "not_authed", "token_revoked", "account_inactive":
-			return fmt.Errorf("%w (%s)", ErrMissingScope, env.Error)
+			return fmt.Errorf("%w (%s)", ErrReauthRequired, env.Error)
 		default:
 			return fmt.Errorf("slack %s: %s", method, env.Error)
 		}
@@ -239,19 +237,17 @@ func subdomainFromURL(raw string) string {
 // fields we use — Slack wraps file/channel/group items in the same array but
 // we filter those out).
 type starsListItem struct {
-	Type    string           `json:"type"`
-	Channel string           `json:"channel,omitempty"`
-	Message *starsListMsg    `json:"message,omitempty"`
+	Type    string        `json:"type"`
+	Channel string        `json:"channel,omitempty"`
+	Message *starsListMsg `json:"message,omitempty"`
 	// Other types (file, channel, im, group, …) are present but we ignore them.
 }
 
 type starsListMsg struct {
-	TS        string              `json:"ts"`
-	Text      string              `json:"text"`
-	User      string              `json:"user"`
-	ThreadTS  string              `json:"thread_ts,omitempty"`
-	Permalink string              `json:"permalink,omitempty"`
-	Files     []map[string]any    `json:"files,omitempty"`
+	TS        string `json:"ts"`
+	Text      string `json:"text"`
+	User      string `json:"user"`
+	Permalink string `json:"permalink,omitempty"`
 }
 
 type starsListResponse struct {
@@ -385,11 +381,8 @@ func (c *Client) ListSaved(ctx context.Context) ([]SavedItem, error) {
 				ChannelName: channelName,
 				TS:          msg.TS,
 				Text:        msg.Text,
-				AuthorID:    msg.User,
 				AuthorName:  authorName,
 				Permalink:   permalink,
-				ThreadTS:    msg.ThreadTS,
-				HasFiles:    len(msg.Files) > 0,
 			})
 		}
 

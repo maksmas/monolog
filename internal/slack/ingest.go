@@ -3,7 +3,6 @@ package slack
 import (
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -37,8 +36,10 @@ type Options struct {
 	// Now is the current-time provider. Defaults to time.Now when nil.
 	// Tests inject a fixed time to make output deterministic.
 	Now func() time.Time
-	// Stderr receives per-item diagnostic messages (e.g. DM-skip notices).
-	// When nil, os.Stderr is used. Tests inject a bytes.Buffer.
+	// Stderr receives diagnostic messages (e.g. DM-skip summaries). Callers
+	// must pass a non-nil writer; tests inject a bytes.Buffer, CLI wires
+	// cmd.ErrOrStderr(), TUI passes io.Discard. When nil, the skip notice is
+	// dropped silently.
 	Stderr io.Writer
 }
 
@@ -212,10 +213,6 @@ func Ingest(s *store.Store, items []SavedItem, synced map[string]bool, opts Opti
 	if len(items) == 0 {
 		return 0, nil
 	}
-	stderr := opts.Stderr
-	if stderr == nil {
-		stderr = os.Stderr
-	}
 
 	// Position base: compute once, increment per ingested task.
 	existing, err := s.List(store.ListOptions{})
@@ -226,6 +223,7 @@ func Ingest(s *store.Store, items []SavedItem, synced map[string]bool, opts Opti
 
 	newTasks := make([]model.Task, 0, len(items))
 	newKeys := make([]string, 0, len(items))
+	skippedDMs := 0
 
 	for _, item := range items {
 		key := item.Channel + "/" + item.TS
@@ -233,7 +231,7 @@ func Ingest(s *store.Store, items []SavedItem, synced map[string]bool, opts Opti
 			continue
 		}
 		if isDMChannel(item.Channel) {
-			fmt.Fprintf(stderr, "slack: skipping DM bookmark %s\n", item.TS)
+			skippedDMs++
 			continue
 		}
 
@@ -248,6 +246,10 @@ func Ingest(s *store.Store, items []SavedItem, synced map[string]bool, opts Opti
 
 		newTasks = append(newTasks, task)
 		newKeys = append(newKeys, key)
+	}
+
+	if skippedDMs > 0 && opts.Stderr != nil {
+		fmt.Fprintf(opts.Stderr, "slack: skipped %d DM/group-DM bookmark(s)\n", skippedDMs)
 	}
 
 	if len(newTasks) == 0 {

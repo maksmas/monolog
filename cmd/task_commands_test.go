@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/slack"
 )
 
 // addTestTask adds a task via the CLI and returns its ID.
@@ -1178,15 +1177,11 @@ func (m *doneSlackMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // installDoneSlackClient substitutes the shared CLI factory (newSlackClientFn)
-// to point at the httptest server so CLI done's unsave hits the mock. Returns
-// a restore closure for defer.
+// to point at the httptest server so CLI done's unsave hits the mock. Thin
+// wrapper over installSlackClient kept so existing call sites read clearly.
 func installDoneSlackClient(t *testing.T, server *httptest.Server) func() {
 	t.Helper()
-	orig := newSlackClientFn
-	newSlackClientFn = func(token, workspace string) *slack.Client {
-		return &slack.Client{Token: token, Workspace: workspace, BaseURL: server.URL}
-	}
-	return func() { newSlackClientFn = orig }
+	return installSlackClient(t, server.URL)
 }
 
 // writeSlackSourcedTaskFile plants a Source="slack" task on disk. Tests use

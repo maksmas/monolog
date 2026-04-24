@@ -10651,7 +10651,7 @@ func TestSlack_UnsaveDoneNilErrSilent(t *testing.T) {
 // missing-scope errors rather than the generic "failed" message.
 func TestSlack_UnsaveDoneMissingScope(t *testing.T) {
 	m := newTestModel(t)
-	next, _ := m.Update(slackUnsaveDoneMsg{err: slack.ErrMissingScope})
+	next, _ := m.Update(slackUnsaveDoneMsg{err: slack.ErrReauthRequired})
 	m = next.(*Model)
 	if !strings.Contains(m.statusMsg, "stars:write") {
 		t.Errorf("statusMsg = %q, want to mention stars:write", m.statusMsg)
@@ -10727,8 +10727,9 @@ func TestSlack_FetchedMsgDoesNotLeakToStderr(t *testing.T) {
 	m.slackClient = &slack.Client{Token: "xoxp-test"}
 	m.slackPollInterval = 60 * time.Second
 
-	// DM bookmark — ingest would write "slack: skipping DM bookmark <ts>\n"
-	// to os.Stderr if Options.Stderr fell through to the default.
+	// DM bookmark — ingest would write "slack: skipped N DM/group-DM bookmark(s)\n"
+	// to os.Stderr if Options.Stderr fell through to the default. Because the
+	// TUI explicitly passes io.Discard, nothing should reach os.Stderr.
 	items := []slack.SavedItem{
 		{Channel: "D999", ChannelName: "", TS: "1700000099.000001",
 			Text: "dm", AuthorName: "a",
