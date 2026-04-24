@@ -240,13 +240,16 @@ type Model struct {
 	// same way slackLastErr does for polls. Kept separate so a poll error and
 	// an unsave error do not silence each other.
 	slackUnsaveLastErr string
-	// gitOpInFlight is true between the dispatch of syncCmd (or any git-shelling
-	// async command that wants to serialize with Slack ingest) and the arrival
-	// of its taskSavedMsg. Tick-driven slack polls skip firing while set, and
-	// the s-key chains its slack poll AFTER the sync result instead of running
-	// it in parallel — otherwise two concurrent git invocations in the same
-	// working tree could race on .git/index.lock or on `git add -A` picking up
-	// ingest-created files mid-flight.
+	// gitOpInFlight is true while a git.Sync goroutine started by the `s` key
+	// is running. Prevents the Slack tick from firing a concurrent poll and
+	// ingest during that window, and the s-key chains its slack poll AFTER the
+	// sync result instead of running it in parallel — otherwise two concurrent
+	// git invocations in the same working tree could race on .git/index.lock
+	// or on `git add -A` picking up ingest-created files mid-flight.
+	// NOT set by other mutations (done/edit/retag/reschedule/commit-grab/delete/
+	// toggle-active/undo/redo) — those dispatch git.AutoCommitSHA in goroutines
+	// that race with tick-driven ingests on the narrow .git/index.lock window.
+	// See Accepted Limitations in docs/plans/20260423-slack-integration.md.
 	gitOpInFlight bool
 	// pendingSlackPollAfterSync, when true at taskSavedMsg time, queues a
 	// manual (fromTick=false) slack poll after the sync completes. Cleared by
