@@ -12,9 +12,20 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/slack"
 )
+
+// enableSlack flips slack.enabled=true in config.json at dir. slack-sync now
+// refuses to run when disabled, so every happy-path test flips it on after
+// initTestRepo (which initializes with enabled=false).
+func enableSlack(t *testing.T, dir string) {
+	t.Helper()
+	if err := config.SetSlackEnabled(dir, true); err != nil {
+		t.Fatalf("enable slack: %v", err)
+	}
+}
 
 // gitLog returns the concatenated commit subjects in the repo at dir, newest
 // first. Used to assert that slack-sync produced (or skipped) a batched
@@ -78,15 +89,15 @@ func (m *slackSyncMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // installSlackSyncClient wires a test Slack client (pointing at server) into
-// the slack-sync command's factory. Returns a restore closure that tests
-// defer to undo the override.
+// the shared CLI factory used by slack-sync. Returns a restore closure that
+// tests defer to undo the override.
 func installSlackSyncClient(t *testing.T, server *httptest.Server) func() {
 	t.Helper()
-	orig := newSlackSyncClientFn
-	newSlackSyncClientFn = func(token, workspace string) *slack.Client {
+	orig := newSlackClientFn
+	newSlackClientFn = func(token, workspace string) *slack.Client {
 		return &slack.Client{Token: token, Workspace: workspace, BaseURL: server.URL}
 	}
-	return func() { newSlackSyncClientFn = orig }
+	return func() { newSlackClientFn = orig }
 }
 
 // stars.list body with N message items starting at ts offset. Channel is
@@ -113,6 +124,7 @@ func starsListBody(tsStart, count int) string {
 func TestSlackSync_IngestsNewItems(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
+	enableSlack(t, dir)
 	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
 
 	mock := newSlackSyncMock()
@@ -160,6 +172,7 @@ func TestSlackSync_IngestsNewItems(t *testing.T) {
 func TestSlackSync_NoNewItems(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
+	enableSlack(t, dir)
 	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
 
 	mock := newSlackSyncMock()
@@ -198,6 +211,7 @@ func TestSlackSync_NoNewItems(t *testing.T) {
 func TestSlackSync_DedupAndOnlyNewIngested(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
+	enableSlack(t, dir)
 	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
 
 	mock := newSlackSyncMock()
@@ -295,6 +309,12 @@ func TestSlackSync_NotAGitRepo(t *testing.T) {
 	}
 	t.Setenv("MONOLOG_DIR", dir)
 	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+	// Write a minimal config.json with slack.enabled=true so slack-sync's
+	// enabled-guard passes (we want the test to fail on the git.AutoCommit
+	// step, not on the config gate).
+	if err := config.SetSlackEnabled(dir, true); err != nil {
+		t.Fatalf("enable slack: %v", err)
+	}
 
 	mock := newSlackSyncMock()
 	mock.pushStars(starsListBody(1712345678, 1))
@@ -313,6 +333,40 @@ func TestSlackSync_NotAGitRepo(t *testing.T) {
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Fatalf("expected error on non-git dir, got nil (out=%s)", outBuf.String())
+	}
+	// Finding 22: assert error text mentions git (non-git repo) so regressions
+	// from config-gate collisions or other layers are visible.
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "git") && !strings.Contains(msg, "commit") {
+		t.Errorf("error should mention git/commit problem, got: %v", err)
+	}
+}
+
+func TestSlackSync_RefusesWhenDisabled(t *testing.T) {
+	// slack-sync now refuses to run when slack.enabled=false, even if a token
+	// env var is set. Otherwise a logged-out user with lingering
+	// MONOLOG_SLACK_TOKEN would see ingests resume on their next cron fire.
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	// Deliberately do NOT call enableSlack(). initTestRepo leaves
+	// slack.enabled=false.
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+
+	rootCmd := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(outBuf)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"slack-sync"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error when slack disabled; got nil (out=%s)", outBuf.String())
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error should mention 'disabled', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "slack-login") {
+		t.Errorf("error should steer user to slack-login, got: %v", err)
 	}
 }
 

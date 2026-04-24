@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
-	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 )
 
@@ -51,17 +51,21 @@ func BuildTask(item SavedItem, opts Options) model.Task {
 	nowStr := now.UTC().Format(time.RFC3339)
 
 	title := buildTitle(item.Text)
-	body := buildBody(item, opts)
+	// Display time prefers the Slack message timestamp (item.TS) over ingest
+	// time — a bookmark saved weeks ago should read with its original date,
+	// not the current wall clock. Falls back to now on parse failure so the
+	// attribution line is always populated.
+	displayTime := messageDisplayTime(item.TS, now, opts.DateFormat)
+	body := buildBody(item, displayTime)
 
 	tags := []string{"slack"}
 	if opts.ChannelAsTag && item.ChannelName != "" {
 		tags = append(tags, item.ChannelName)
 	}
 
-	// Schedule is always "today" for Slack imports. We resolve it via
-	// schedule.Parse so the stored value is ISO (the caller's DateFormat
-	// doesn't apply — on-disk schedule is always ISO).
-	scheduleDate, _ := schedule.Parse(schedule.Today, now, opts.DateFormat)
+	// Schedule is always "today" for Slack imports. On-disk schedule is
+	// always ISO, so we format directly without going through schedule.Parse.
+	scheduleDate := now.Format("2006-01-02")
 
 	return model.Task{
 		Title:     title,
@@ -74,6 +78,23 @@ func BuildTask(item SavedItem, opts Options) model.Task {
 		CreatedAt: nowStr,
 		UpdatedAt: nowStr,
 	}
+}
+
+// messageDisplayTime parses a Slack ts ("1712345678.000100") into a formatted
+// date string using dateFormat. Falls back to fallback formatted with
+// dateFormat on any parse failure so callers always get a non-empty value.
+func messageDisplayTime(ts string, fallback time.Time, dateFormat string) string {
+	if ts == "" {
+		return fallback.Format(dateFormat)
+	}
+	// Slack ts is a float "seconds.subseconds" — ParseFloat handles both the
+	// integer (whole seconds) and the subsecond parts; we only care about
+	// seconds for a date string.
+	secs, err := strconv.ParseFloat(ts, 64)
+	if err != nil || secs <= 0 {
+		return fallback.Format(dateFormat)
+	}
+	return time.Unix(int64(secs), 0).UTC().Format(dateFormat)
 }
 
 // buildTitle derives the task title from the first non-blank line of text,
@@ -104,16 +125,22 @@ func buildTitle(text string) string {
 
 // buildBody composes the task body: the raw Slack text (verbatim, no
 // markup decoding), a blank line, an attribution line, a blank line, and
-// the permalink. The display time is rendered in the caller-provided date
-// format to match the rest of mlog.
-func buildBody(item SavedItem, opts Options) string {
-	displayTime := nowFrom(opts).Format(opts.DateFormat)
-
+// the permalink. displayTime is rendered by the caller (already formatted
+// with the configured layout) so BuildTask can source it from the Slack
+// message ts rather than ingest time.
+func buildBody(item SavedItem, displayTime string) string {
 	var b strings.Builder
 	b.WriteString(item.Text)
-	b.WriteString("\n\n— @")
-	b.WriteString(item.AuthorName)
-	b.WriteString(" in #")
+	b.WriteString("\n\n— ")
+	// Drop the "@" entirely when AuthorName is empty (bot / deleted-user
+	// tombstones) so the attribution reads "— in #channel, date" instead of
+	// a dangling "— @ in …".
+	if item.AuthorName != "" {
+		b.WriteString("@")
+		b.WriteString(item.AuthorName)
+		b.WriteString(" ")
+	}
+	b.WriteString("in #")
 	b.WriteString(item.ChannelName)
 	b.WriteString(", ")
 	b.WriteString(displayTime)
@@ -128,6 +155,21 @@ func nowFrom(opts Options) time.Time {
 		return opts.Now()
 	}
 	return time.Now()
+}
+
+// ParseSourceID splits a Task.SourceID in the "channel/ts" shape used by the
+// Slack ingest into its components. Returns ok=false when the input is empty,
+// lacks a slash, or has an empty channel/ts part. Shared by CLI done and TUI
+// doneSelected to keep the parse rule in one place.
+func ParseSourceID(s string) (channel, ts string, ok bool) {
+	if s == "" {
+		return "", "", false
+	}
+	idx := strings.Index(s, "/")
+	if idx <= 0 || idx >= len(s)-1 {
+		return "", "", false
+	}
+	return s[:idx], s[idx+1:], true
 }
 
 // isDMChannel reports whether a Slack channel ID represents a DM, group DM,

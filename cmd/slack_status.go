@@ -23,13 +23,10 @@ tasks ingested from Slack so far.`,
 // runSlackStatus prints the current Slack integration state. Does not contact
 // Slack — purely a local snapshot.
 func runSlackStatus(cmd *cobra.Command, args []string) error {
-	s, repoPath, err := openStore()
+	s, _, err := openStore()
 	if err != nil {
 		return err
 	}
-	// openStore calls config.Load; keep repoPath to stay symmetric if we ever
-	// need it below.
-	_ = repoPath
 
 	out := cmd.OutOrStdout()
 	slackCfg := config.Slack()

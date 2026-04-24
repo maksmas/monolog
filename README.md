@@ -102,6 +102,10 @@ Show tasks completed in the last 7 days, with `created→done` compact dates.
 
 Commit local changes, pull with rebase, and push. Warns if no remote is configured.
 
+### `monolog slack-login` / `slack-logout` / `slack-status` / `slack-sync`
+
+Connect or disconnect a Slack workspace, inspect the current state, or run a one-shot poll for headless setups. See the [Slack integration](#slack-integration) section for the full flow and configuration keys.
+
 ### `monolog --version`
 
 Print the monolog version.
@@ -229,7 +233,9 @@ monolog slack-status      # show workspace, token source, enabled state, ingeste
 monolog slack-logout      # disconnect and remove the stored token
 ```
 
-When the TUI is open, monolog polls Slack on startup and every 60 seconds (override with `"slack": {"poll_interval_seconds": N}` in `<MONOLOG_DIR>/.monolog/config.json`). New saved messages appear as tasks scheduled for today, tagged `slack` (plus the channel name by default). Pressing `s` in the TUI triggers an immediate poll alongside the git sync.
+The Slack app you create needs both `stars:read` and `stars:write` **user** OAuth scopes. `stars:read` alone lets polling succeed but completion-driven unsave will fail with a `needs stars:write — run monolog slack-login` warning until the scope is added and re-installed.
+
+When the TUI is open, monolog polls Slack on startup and every 60 seconds (override with `"slack": {"poll_interval_seconds": N}` in `<MONOLOG_DIR>/.monolog/config.json`). New saved messages appear as tasks scheduled for today, tagged `slack` (plus the channel name by default — set `"slack": {"channel_as_tag": false}` in `config.json` to tag with only `slack`). Pressing `s` in the TUI triggers an immediate poll alongside the git sync.
 
 Completing a Slack-sourced task (`d` in the TUI, or `monolog done <id>`) also un-saves the underlying message in Slack via `stars.remove` — so the bookmark list clears as you work through mlog. Only the done transition triggers the unsave: `rm`, edit, reschedule, and undo leave Slack untouched.
 

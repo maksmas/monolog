@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -388,9 +389,15 @@ type slackTickMsg struct{}
 // slackFetchedMsg carries the result of a slackPollCmd goroutine back to the
 // main goroutine. Ingest and status-bar updates run in Update so the store is
 // never touched off-thread.
+//
+// fromTick distinguishes a fetch dispatched by the recurring tea.Tick loop
+// from one triggered by a manual action (s-key sync). Only tick-driven
+// fetches re-schedule the next tick; otherwise a burst of s-key presses within
+// one poll window would stack N+1 concurrent tick chains.
 type slackFetchedMsg struct {
-	items []slack.SavedItem
-	err   error
+	items    []slack.SavedItem
+	err      error
+	fromTick bool
 }
 
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
@@ -503,10 +510,15 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	}
 
 	m.lists = m.initLists()
+	// Pre-initialize slackSynced so reloadAll's reseedSlackSynced (which
+	// wipes and re-populates) has a non-nil target; also guards any code
+	// path that touches the cache between construction and the first reload.
+	m.slackSynced = make(map[string]bool)
 
 	if err := m.reloadAll(); err != nil {
 		return nil, err
 	}
+	// reloadAll re-seeds slackSynced from disk — no separate seed call needed.
 
 	// If the caller requested tag view at launch, switch now.
 	if opts.StartInTagView {
@@ -515,18 +527,18 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		}
 	}
 
-	// Seed the Slack dedup cache from already-ingested tasks so the first
-	// poll does not re-create tasks for messages that landed in a prior
-	// session. Always initialize the map (even when slack is disabled) so
-	// helpers can check it without a nil guard.
-	m.slackSynced = make(map[string]bool)
-	m.seedSlackSynced(m.allTasks)
-
 	// Build the slack client only when both the feature is enabled AND a
 	// token is available. Any other combination (no token, not enabled) is
 	// treated as "disabled" and leaves slackClient nil so polling is a no-op.
 	slackCfg := config.Slack()
-	token, _, _ := config.SlackToken()
+	token, _, tokErr := config.SlackToken()
+	if tokErr != nil {
+		// Do not fail startup on a token-read error (e.g. permission
+		// problems). Surface through the status bar so the user sees a
+		// diagnostic and can fix it (or ignore it) without the TUI
+		// silently running with Slack disabled.
+		m.statusMsg = "Slack token unreadable: " + tokErr.Error()
+	}
 	if slackCfg.Enabled && token != "" {
 		m.slackClient = &slack.Client{
 			Token:     token,
@@ -540,20 +552,6 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	}
 
 	return m, nil
-}
-
-// seedSlackSynced walks the given task list and populates m.slackSynced
-// for every task that carries a Slack source identifier. Separated into a
-// helper so tests can reseed the cache after mutating the store.
-func (m *Model) seedSlackSynced(tasks []model.Task) {
-	if m.slackSynced == nil {
-		m.slackSynced = make(map[string]bool)
-	}
-	for _, t := range tasks {
-		if t.Source == "slack" && t.SourceID != "" {
-			m.slackSynced[t.SourceID] = true
-		}
-	}
 }
 
 // initLists creates a fresh slice of vlist widgets, one per tab.
@@ -585,7 +583,25 @@ func (m *Model) reloadAll() error {
 	if err := m.reloadAllTasks(); err != nil {
 		return err
 	}
+	// Re-seed slackSynced from the refreshed task set. Necessary after a
+	// remote-sync pull pulls tasks ingested on another device — those tasks
+	// land on disk via reloadAll but the dedup cache would otherwise still
+	// reflect only the pre-pull state, causing the next poll on this device
+	// to ingest duplicates.
+	m.reseedSlackSynced()
 	return nil
+}
+
+// reseedSlackSynced wipes and repopulates m.slackSynced from m.allTasks. Used
+// by reloadAll so a remote-pull's new Slack-sourced tasks are deduped against
+// future polls even though this device did not produce them.
+func (m *Model) reseedSlackSynced() {
+	m.slackSynced = make(map[string]bool, len(m.allTasks))
+	for _, t := range m.allTasks {
+		if t.Source == "slack" && t.SourceID != "" {
+			m.slackSynced[t.SourceID] = true
+		}
+	}
 }
 
 // refreshTagTabs rescans tasks and rebuilds tagTabs/tabs/lists if the set of
@@ -999,9 +1015,8 @@ func (m *Model) skipSeparator(dir int) {
 // first tick fires immediately (d=0) so saved items land without a 60s wait
 // on TUI launch.
 func (m *Model) Init() tea.Cmd {
-	if m.slackClient == nil {
-		return nil
-	}
+	// slackTickCmd is a no-op when the client is nil; the Init contract
+	// accepts nil cleanly, so no guard needed.
 	return m.slackTickCmd(0)
 }
 
@@ -1082,7 +1097,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.slackClient == nil {
 			return m, nil
 		}
-		return m, m.slackPollCmd()
+		return m, m.slackPollCmd(true)
 
 	case slackFetchedMsg:
 		return m.handleSlackFetched(msg)
@@ -1109,17 +1124,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleSlackFetched processes a slackFetchedMsg on the main goroutine:
 // ingests any new items via the store, updates the status bar (rate-limited
-// on identical consecutive errors), and schedules the next tick. Runs in all
-// modes (matches taskSavedMsg behavior) so background polling cannot stall
-// when the user has a modal open.
+// on identical consecutive errors), and (when the fetch was tick-driven)
+// schedules the next tick. Runs in all modes (matches taskSavedMsg behavior)
+// so background polling cannot stall when the user has a modal open.
+//
+// Only tick-driven fetches re-schedule: manual s-key polls share the existing
+// tick cadence, so re-scheduling on every manual fetch would stack N+1
+// concurrent tick chains after N rapid s-presses.
 func (m *Model) handleSlackFetched(msg slackFetchedMsg) (tea.Model, tea.Cmd) {
+	nextTick := tea.Cmd(nil)
+	if msg.fromTick {
+		nextTick = m.slackTickCmd(m.slackPollInterval)
+	}
+
 	if msg.err != nil {
 		errMsg := msg.err.Error()
 		if errMsg != m.slackLastErr {
 			m.statusMsg = "Slack: " + errMsg
 			m.slackLastErr = errMsg
 		}
-		return m, m.slackTickCmd(m.slackPollInterval)
+		return m, nextTick
 	}
 
 	// Success clears the rate-limit guard so the next error (if any) will
@@ -1133,9 +1157,13 @@ func (m *Model) handleSlackFetched(msg slackFetchedMsg) (tea.Model, tea.Cmd) {
 		focusID = t.ID
 	}
 
+	// Discard ingest stderr explicitly: Bubble Tea runs in alt-screen, so a
+	// "slack: skipping DM bookmark <ts>" notice written to os.Stderr would
+	// corrupt the rendered output until the next full redraw.
 	newCount, err := slack.Ingest(m.store, msg.items, m.slackSynced, slack.Options{
 		ChannelAsTag: config.Slack().ChannelAsTag,
 		DateFormat:   config.DateFormat(),
+		Stderr:       io.Discard,
 	})
 	if err != nil {
 		// Treat ingest failures like poll failures for status reporting —
@@ -1145,7 +1173,7 @@ func (m *Model) handleSlackFetched(msg slackFetchedMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Slack: " + errMsg
 			m.slackLastErr = errMsg
 		}
-		return m, m.slackTickCmd(m.slackPollInterval)
+		return m, nextTick
 	}
 
 	if newCount > 0 {
@@ -1161,7 +1189,7 @@ func (m *Model) handleSlackFetched(msg slackFetchedMsg) (tea.Model, tea.Cmd) {
 			m.skipSeparator(0)
 		}
 	}
-	return m, m.slackTickCmd(m.slackPollInterval)
+	return m, nextTick
 }
 
 // updateNormal handles keys when no modal is open.
@@ -1260,13 +1288,11 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openEdit()
 	case "s":
 		m.statusMsg = "Syncing..."
-		if m.slackClient != nil {
-			// Trigger git sync + Slack poll in parallel. The poll's
-			// slackFetchedMsg handler re-schedules the tick, so this does
-			// not leak the background loop.
-			return m, tea.Batch(m.syncCmd(), m.slackPollCmd())
-		}
-		return m, m.syncCmd()
+		// slackPollCmd returns nil when the client is nil, so tea.Batch
+		// unconditionally is safe. fromTick=false so the poll handler will
+		// NOT re-schedule the background tick — the existing tick loop keeps
+		// owning the cadence and manual s-presses never stack extra ticks.
+		return m, tea.Batch(m.syncCmd(), m.slackPollCmd(false))
 	case "u", "ctrl+z":
 		if len(m.undoStack) == 0 {
 			m.statusMsg = "nothing to undo"
@@ -1447,12 +1473,10 @@ func (m *Model) doneSelected() tea.Cmd {
 	// mutates the task in place (status, timestamps, body) but leaves Source
 	// and SourceID untouched, so reading them after would also work — we
 	// capture here for clarity.
-	slackSource := t.Source == "slack" && t.SourceID != ""
 	slackChannel, slackTS := "", ""
-	if slackSource {
-		if idx := strings.Index(t.SourceID, "/"); idx > 0 && idx < len(t.SourceID)-1 {
-			slackChannel = t.SourceID[:idx]
-			slackTS = t.SourceID[idx+1:]
+	if t.Source == "slack" {
+		if ch, ts, ok := slack.ParseSourceID(t.SourceID); ok {
+			slackChannel, slackTS = ch, ts
 		}
 	}
 	return func() tea.Msg {
@@ -2265,10 +2289,11 @@ func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.pendingAction = func() tea.Cmd {
 			m.statusMsg = "Syncing..."
-			if m.slackClient != nil {
-				return tea.Batch(m.syncCmd(), m.slackPollCmd())
-			}
-			return m.syncCmd()
+			// slackPollCmd is a no-op when the client is nil; batch
+			// unconditionally. fromTick=false so the background tick loop
+			// (if any) retains sole ownership of cadence — see s-key in
+			// updateNormal for the same pattern.
+			return tea.Batch(m.syncCmd(), m.slackPollCmd(false))
 		}
 		return m, m.commitGrab()
 	}
@@ -2686,7 +2711,11 @@ func (m *Model) slackTickCmd(d time.Duration) tea.Cmd {
 // 30s timeout and returns the result as a slackFetchedMsg. Returns nil when
 // Slack is disabled (same guard as slackTickCmd) so callers can safely wrap
 // this in a tea.Batch without checking slackClient themselves.
-func (m *Model) slackPollCmd() tea.Cmd {
+//
+// fromTick=true marks the fetch as owned by the recurring tick loop, which
+// lets handleSlackFetched re-schedule the next tick exactly once per loop
+// even when the user mashes the s-key between ticks.
+func (m *Model) slackPollCmd(fromTick bool) tea.Cmd {
 	if m.slackClient == nil {
 		return nil
 	}
@@ -2695,7 +2724,7 @@ func (m *Model) slackPollCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		items, err := client.ListSaved(ctx)
-		return slackFetchedMsg{items: items, err: err}
+		return slackFetchedMsg{items: items, err: err, fromTick: fromTick}
 	}
 }
 

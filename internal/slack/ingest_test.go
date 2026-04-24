@@ -85,7 +85,10 @@ func TestBuildTask_HappyPath(t *testing.T) {
 	if task.Schedule != "2026-04-23" {
 		t.Errorf("Schedule: got %q want 2026-04-23", task.Schedule)
 	}
-	if !strings.Contains(task.Body, "— @alice in #general, 23-04-2026") {
+	// Attribution date now derives from item.TS ("1712345678.000100" = Apr 5
+	// 2024 UTC), not from ingest time — a bookmark saved months ago reads
+	// with its original message date.
+	if !strings.Contains(task.Body, "— @alice in #general, 05-04-2024") {
 		t.Errorf("Body missing attribution line; got:\n%s", task.Body)
 	}
 	if !strings.Contains(task.Body, sampleItem().Permalink) {
@@ -217,32 +220,89 @@ func TestBuildTask_BodyVerbatimPassthrough(t *testing.T) {
 	}
 }
 
-func TestBuildTask_ThreadedReplyIncludesOnlyReplyText(t *testing.T) {
-	// Technical Details says only the reply text is used; parent isn't fetched.
-	// Verified by the fact that BuildTask only consumes item.Text.
+func TestBuildTask_ThreadedReplyBodyEqualsNonThreaded(t *testing.T) {
+	// ThreadTS is metadata only — BuildTask consumes Text, not ThreadTS, so a
+	// threaded-reply body is identical to the same item without ThreadTS.
+	// Asserts exact body equality (both cases) rather than a weak "contains"
+	// check that would pass even if ThreadTS were accidentally wired in.
 	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(time.Now())}
-	item := sampleItem()
-	item.Text = "follow-up reply"
-	item.ThreadTS = "1712345670.000001" // non-empty: it's a threaded reply
-	task := BuildTask(item, opts)
-	if !strings.Contains(task.Body, "follow-up reply") {
-		t.Errorf("Body missing reply text; got:\n%s", task.Body)
-	}
-	// Parent text was never fetched, so nothing related to it can leak.
-	if strings.Contains(task.Body, "parent") {
-		t.Errorf("Body should not reference parent; got:\n%s", task.Body)
+
+	plain := sampleItem()
+	plain.Text = "follow-up reply"
+	threaded := plain
+	threaded.ThreadTS = "1712345670.000001"
+
+	if got, want := BuildTask(threaded, opts).Body, BuildTask(plain, opts).Body; got != want {
+		t.Errorf("threaded body differed from plain body:\nthreaded=%q\nplain=%q", got, want)
 	}
 }
 
 func TestBuildTask_AttachmentsDroppedFromBody(t *testing.T) {
-	// HasFiles=true but body still reflects only item.Text — attachments are
-	// metadata, not rendered in task bodies in v1.
+	// HasFiles=true must not alter the body — attachments are metadata, not
+	// rendered in v1. Strong assertion: body is exactly Text + attribution +
+	// permalink, with no extra lines introduced by the HasFiles flag.
 	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(time.Now())}
 	item := sampleItem()
+
+	plain := BuildTask(item, opts).Body
 	item.HasFiles = true
-	task := BuildTask(item, opts)
-	if strings.Contains(task.Body, "file") || strings.Contains(task.Body, "attachment") {
-		t.Errorf("Body should not mention attachments; got:\n%s", task.Body)
+	withFiles := BuildTask(item, opts).Body
+
+	if plain != withFiles {
+		t.Errorf("HasFiles changed body rendering:\nplain=%q\nwithFiles=%q", plain, withFiles)
+	}
+
+	// Also verify exact structure: Text + "\n\n— @author in #channel, date\n\n" + permalink.
+	// sampleItem() TS "1712345678.000100" = 2024-04-05 UTC.
+	want := "remember to review the PR\n\n— @alice in #general, 05-04-2024\n\nhttps://myteam.slack.com/archives/C0123/p1712345678000100"
+	if plain != want {
+		t.Errorf("body structure mismatch:\ngot:  %q\nwant: %q", plain, want)
+	}
+}
+
+func TestBuildTask_EmptyAuthorDropsAtSign(t *testing.T) {
+	// Bot or deleted-user messages arrive with AuthorName="". The attribution
+	// line must read "— in #channel, date" rather than a dangling "— @ in …".
+	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(time.Now())}
+	item := sampleItem()
+	item.AuthorName = ""
+	body := BuildTask(item, opts).Body
+
+	if strings.Contains(body, "@") {
+		t.Errorf("body should not contain '@' when author empty; got:\n%s", body)
+	}
+	if !strings.Contains(body, "— in #general, 05-04-2024") {
+		t.Errorf("body missing expected attribution without author; got:\n%s", body)
+	}
+}
+
+func TestBuildTask_AttributionUsesMessageTS(t *testing.T) {
+	// item.TS ("1712345678.000100" = 2024-04-05 UTC) must drive the
+	// attribution date rather than the ingest wall clock. A bookmark saved
+	// months ago should read with its original message date.
+	ingestNow := time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC)
+	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(ingestNow)}
+	body := BuildTask(sampleItem(), opts).Body
+
+	if !strings.Contains(body, "05-04-2024") {
+		t.Errorf("attribution missing message-date 05-04-2024; got:\n%s", body)
+	}
+	if strings.Contains(body, "23-04-2026") {
+		t.Errorf("attribution must not echo ingest date 23-04-2026; got:\n%s", body)
+	}
+}
+
+func TestBuildTask_AttributionFallsBackToNowOnBadTS(t *testing.T) {
+	// Malformed or zero ts must fall back to opts.Now so the attribution line
+	// still renders a date.
+	ingestNow := time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC)
+	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(ingestNow)}
+	item := sampleItem()
+	item.TS = "not-a-number"
+	body := BuildTask(item, opts).Body
+
+	if !strings.Contains(body, "23-04-2026") {
+		t.Errorf("fallback to now missing; got:\n%s", body)
 	}
 }
 
@@ -516,6 +576,30 @@ func TestIngest_PositionBaseRespectsExistingTasks(t *testing.T) {
 	}
 	if all[2].Position != 7000 {
 		t.Errorf("third task Position: got %v want 7000", all[2].Position)
+	}
+}
+
+func TestParseSourceID(t *testing.T) {
+	cases := []struct {
+		in        string
+		channel   string
+		ts        string
+		ok        bool
+		rationale string
+	}{
+		{"C0123/1712345678.000100", "C0123", "1712345678.000100", true, "happy path"},
+		{"", "", "", false, "empty input"},
+		{"C0123", "", "", false, "no slash"},
+		{"/1712345678.000100", "", "", false, "empty channel"},
+		{"C0123/", "", "", false, "empty ts"},
+		{"C0123/ts/extra", "C0123", "ts/extra", true, "slashes past the first stay in ts"},
+	}
+	for _, tc := range cases {
+		ch, ts, ok := ParseSourceID(tc.in)
+		if ch != tc.channel || ts != tc.ts || ok != tc.ok {
+			t.Errorf("ParseSourceID(%q) [%s]: got (%q, %q, %v) want (%q, %q, %v)",
+				tc.in, tc.rationale, ch, ts, ok, tc.channel, tc.ts, tc.ok)
+		}
 	}
 }
 

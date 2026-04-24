@@ -31,10 +31,13 @@ var openBrowserFn = defaultOpenBrowser
 // needing to touch stdin.
 var readTokenFn = defaultReadToken
 
-// newSlackClientFn constructs a Slack client for the login wizard. Tests
-// replace this to point at an httptest server.
-var newSlackClientFn = func(token string) *slack.Client {
-	return &slack.Client{Token: token}
+// newSlackClientFn constructs a Slack client for any CLI Slack path
+// (slack-login, slack-sync, done-triggered unsave). Consolidates what used to
+// be three near-identical factory vars. Tests replace this to point at an
+// httptest server. workspace is used for permalink reconstruction and is
+// unused by login (which hasn't discovered the workspace yet).
+var newSlackClientFn = func(token, workspace string) *slack.Client {
+	return &slack.Client{Token: token, Workspace: workspace}
 }
 
 // defaultOpenBrowser dispatches to the platform-appropriate URL opener. Any
@@ -128,7 +131,7 @@ func runSlackLogin(cmd *cobra.Command, args []string) error {
 	// Validate the token against Slack before we write anything to disk.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client := newSlackClientFn(token)
+	client := newSlackClientFn(token, "")
 	workspace, err := client.AuthTest(ctx)
 	if err != nil {
 		return fmt.Errorf("verify token: %w", err)
@@ -153,11 +156,10 @@ func runSlackLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("update .gitignore: %w", err)
 	}
 
-	if err := config.SetSlackWorkspace(repoPath, workspace); err != nil {
-		return fmt.Errorf("save slack.workspace: %w", err)
-	}
-	if err := config.SetSlackEnabled(repoPath, true); err != nil {
-		return fmt.Errorf("enable slack integration: %w", err)
+	// Persist workspace + enabled=true in a single write rather than two
+	// separate SetSlack* calls (each doing its own read-modify-write).
+	if err := config.SetSlackConnection(repoPath, workspace, true); err != nil {
+		return fmt.Errorf("save slack connection: %w", err)
 	}
 
 	fmt.Fprintf(out, "Connected to %s.slack.com. Polling will start next time you open the TUI.\n", workspace)

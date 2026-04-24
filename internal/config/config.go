@@ -268,6 +268,21 @@ func SetSlackWorkspace(monologDir, workspace string) error {
 	return nil
 }
 
+// SetSlackConnection writes both slack.workspace and slack.enabled in a
+// single read-modify-write. Used by slack-login so we do not pay two file
+// writes (one per field) to persist a single connection event.
+func SetSlackConnection(monologDir, workspace string, enabled bool) error {
+	if err := mutateSlackConfig(monologDir, func(s map[string]any) {
+		s["workspace"] = workspace
+		s["enabled"] = enabled
+	}); err != nil {
+		return err
+	}
+	slackCfg.Workspace = workspace
+	slackCfg.Enabled = enabled
+	return nil
+}
+
 // SetSlackEnabled toggles slack.enabled in config.json using the same
 // read-modify-write approach as SetSlackWorkspace. Updates slackCfg in
 // memory as well.

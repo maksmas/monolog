@@ -89,6 +89,18 @@ type responseMetadata struct {
 // and a descriptive error for all other ok=false responses. out must be a
 // pointer to a struct that embeds or mirrors apiResponse.
 func (c *Client) postForm(ctx context.Context, method string, form url.Values, out any) error {
+	return c.postFormRaw(ctx, method, form, out, nil)
+}
+
+// postFormRaw is the shared transport: POST form-encoded, parse the response
+// envelope once into out, then classify ok=false by looking at the embedded
+// envelope's Error field. idempotentOK lets callers treat specific Slack
+// error codes as success (e.g. Unsave maps not_starred to nil).
+//
+// out must be either *apiResponse or a pointer to a struct that embeds
+// apiResponse as its first (unnamed) field so we can read the envelope back
+// via type-assertion / reflection-lite.
+func (c *Client) postFormRaw(ctx context.Context, method string, form url.Values, out any, idempotentOK map[string]bool) error {
 	if c.Token == "" {
 		return errors.New("slack: empty token")
 	}
@@ -132,18 +144,49 @@ func (c *Client) postForm(ctx context.Context, method string, form url.Values, o
 		return fmt.Errorf("slack %s: decode response: %w", method, err)
 	}
 
-	// Pull the common envelope back out so we can classify errors uniformly.
-	var env apiResponse
-	if err := json.Unmarshal(payload, &env); err != nil {
-		return fmt.Errorf("slack %s: decode envelope: %w", method, err)
+	// Extract the embedded apiResponse from out — callers all use structs
+	// that either are *apiResponse or embed it as a (first) field.
+	env := extractEnvelope(out)
+	if env == nil {
+		// Should be unreachable given our types; fall back to a second
+		// unmarshal so the classifier never silently accepts a bad response.
+		var envCopy apiResponse
+		if err := json.Unmarshal(payload, &envCopy); err != nil {
+			return fmt.Errorf("slack %s: decode envelope: %w", method, err)
+		}
+		env = &envCopy
 	}
 	if !env.OK {
+		if idempotentOK != nil && idempotentOK[env.Error] {
+			return nil
+		}
 		switch env.Error {
 		case "missing_scope", "invalid_auth", "not_authed", "token_revoked", "account_inactive":
 			return fmt.Errorf("%w (%s)", ErrMissingScope, env.Error)
 		default:
 			return fmt.Errorf("slack %s: %s", method, env.Error)
 		}
+	}
+	return nil
+}
+
+// extractEnvelope returns a pointer to the apiResponse embedded in out. Works
+// for *apiResponse directly (Unsave) and for structs that embed apiResponse
+// as an unnamed field (authTestResponse, starsListResponse, etc.). Returns
+// nil when out does not match either shape, in which case postFormRaw falls
+// back to a fresh unmarshal of the payload.
+func extractEnvelope(out any) *apiResponse {
+	switch v := out.(type) {
+	case *apiResponse:
+		return v
+	case *authTestResponse:
+		return &v.apiResponse
+	case *starsListResponse:
+		return &v.apiResponse
+	case *conversationsInfoResponse:
+		return &v.apiResponse
+	case *usersInfoResponse:
+		return &v.apiResponse
 	}
 	return nil
 }
@@ -357,6 +400,17 @@ func (c *Client) ListSaved(ctx context.Context) ([]SavedItem, error) {
 	}
 }
 
+// unsaveIdempotentErrors are Slack error codes that indicate the target
+// message is already not starred — these are mapped to success so stars.remove
+// is safe to retry. Classified at the raw-envelope level in Unsave so we don't
+// string-match on a wrapped error message (which could shift shape under
+// future error-wrapping changes).
+var unsaveIdempotentErrors = map[string]bool{
+	"not_starred":       true,
+	"already_unstarred": true,
+	"message_not_found": true,
+}
+
 // Unsave calls stars.remove against the (channel, ts) pair of a saved
 // message. Idempotent errors (not_starred, already_unstarred, message_not_found)
 // are treated as success and return nil.
@@ -366,17 +420,6 @@ func (c *Client) Unsave(ctx context.Context, channel, ts string) error {
 	form.Set("channel_timestamp", ts)
 
 	var resp apiResponse
-	err := c.postForm(ctx, "stars.remove", form, &resp)
-	if err == nil {
-		return nil
-	}
-	// Classify: idempotent-success errors become nil.
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "not_starred"),
-		strings.Contains(msg, "already_unstarred"),
-		strings.Contains(msg, "message_not_found"):
-		return nil
-	}
+	err := c.postFormRaw(ctx, "stars.remove", form, &resp, unsaveIdempotentErrors)
 	return err
 }

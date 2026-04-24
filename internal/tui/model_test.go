@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10462,7 +10463,10 @@ func TestSlack_SKeyWithClientBatchesSyncAndPoll(t *testing.T) {
 }
 
 // TestSlack_SKeyWithoutClientReturnsSyncOnly confirms that pressing 's' when
-// Slack is disabled behaves as before — a plain sync command, not a batch.
+// Slack is disabled still produces the sync command. tea.Batch collapses a
+// single-valid-command batch to the direct command, so we assert the message
+// shape is NOT a BatchMsg (if nil-collapse were broken the test would see a
+// 1-element batch, which is different behavior).
 func TestSlack_SKeyWithoutClientReturnsSyncOnly(t *testing.T) {
 	m := newTestModel(t)
 	if m.slackClient != nil {
@@ -10473,8 +10477,10 @@ func TestSlack_SKeyWithoutClientReturnsSyncOnly(t *testing.T) {
 		t.Fatal("s key returned nil cmd")
 	}
 	msg := cmd()
+	// tea.Batch(syncCmd, nil) collapses to just syncCmd, which produces a
+	// non-BatchMsg value when invoked.
 	if _, ok := msg.(tea.BatchMsg); ok {
-		t.Errorf("s key without client should NOT return BatchMsg; got %T", msg)
+		t.Errorf("s key without client should NOT produce BatchMsg; got %T", msg)
 	}
 }
 
@@ -10693,6 +10699,152 @@ func TestSlack_UnsaveErrDoesNotCrossSilencePollErr(t *testing.T) {
 	m = next.(*Model)
 	if m.statusMsg == "" {
 		t.Error("unsave error was silenced by prior poll error (cross-silencing bug)")
+	}
+}
+
+// --- Review phase 1 fixes --------------------------------------------------
+
+// TestSlack_FetchedMsgDoesNotLeakToStderr verifies that handling a
+// slackFetchedMsg carrying a DM bookmark does not write to os.Stderr — Bubble
+// Tea's alt-screen treats stray stderr bytes as rendered content and would
+// corrupt the UI. The handler passes Stderr: io.Discard into slack.Ingest
+// specifically to prevent that.
+func TestSlack_FetchedMsgDoesNotLeakToStderr(t *testing.T) {
+	// Redirect os.Stderr to a pipe; the test fails if any bytes are written.
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	// DM bookmark — ingest would write "slack: skipping DM bookmark <ts>\n"
+	// to os.Stderr if Options.Stderr fell through to the default.
+	items := []slack.SavedItem{
+		{Channel: "D999", ChannelName: "", TS: "1700000099.000001",
+			Text: "dm", AuthorName: "a",
+			Permalink: "https://x.slack.com/archives/D999/p1700000099000001"},
+	}
+	next, _ := m.Update(slackFetchedMsg{items: items, fromTick: true})
+	m = next.(*Model)
+	if m.err != nil {
+		t.Fatalf("ingest err: %v", m.err)
+	}
+
+	// Close and drain the pipe in a goroutine before we check content to avoid
+	// blocking on a full pipe buffer.
+	_ = w.Close()
+	buf := make([]byte, 1024)
+	n, _ := r.Read(buf)
+	_ = r.Close()
+	if n > 0 {
+		t.Errorf("os.Stderr received %d bytes from slack.Ingest via TUI handler: %q",
+			n, string(buf[:n]))
+	}
+}
+
+// TestSlack_FetchedMsgTickReschedulesTick verifies that a fromTick=true fetch
+// returns a non-nil command (the next slackTickCmd) so the poll loop keeps
+// running.
+func TestSlack_FetchedMsgTickReschedulesTick(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	_, cmd := m.Update(slackFetchedMsg{fromTick: true})
+	if cmd == nil {
+		t.Error("tick-driven fetch should re-schedule the next tick (non-nil cmd)")
+	}
+}
+
+// TestSlack_FetchedMsgManualDoesNotReschedule verifies that a manually-
+// triggered fetch (fromTick=false, i.e. s-key path) does NOT re-schedule a
+// tick. Otherwise rapid s-presses would stack concurrent tick chains on top
+// of the existing tick loop.
+func TestSlack_FetchedMsgManualDoesNotReschedule(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	_, cmd := m.Update(slackFetchedMsg{fromTick: false})
+	if cmd != nil {
+		t.Error("manual fetch must not re-schedule tick; got non-nil cmd")
+	}
+}
+
+// TestSlack_FetchedMsgIngestErrorSetsStatusAndReschedules covers the ingest-
+// error branch: when slack.Ingest fails (e.g. the store commit cannot land),
+// the status bar reports the failure AND the tick is re-scheduled when the
+// fetch originated from a tick.
+func TestSlack_FetchedMsgIngestErrorSetsStatusAndReschedules(t *testing.T) {
+	// Build a model whose store points at a non-git temp dir so CreateBatch
+	// fails at git.AutoCommit time — that surfaces as an ingest error through
+	// handleSlackFetched.
+	tmp := t.TempDir()
+	s, err := store.New(filepath.Join(tmp, ".monolog", "tasks"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	m, err := newModel(s, tmp, Options{})
+	if err != nil {
+		t.Fatalf("newModel: %v", err)
+	}
+	m.width, m.height = 80, 24
+	m.recomputeLayout()
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	items := []slack.SavedItem{
+		{Channel: "C1", ChannelName: "general", TS: "1700000001.000001",
+			Text: "hi", AuthorName: "alice",
+			Permalink: "https://x.slack.com/archives/C1/p1700000001000001"},
+	}
+	next, cmd := m.Update(slackFetchedMsg{items: items, fromTick: true})
+	m = next.(*Model)
+
+	if !strings.HasPrefix(m.statusMsg, "Slack:") {
+		t.Errorf("expected Slack: prefixed ingest error in statusMsg; got %q", m.statusMsg)
+	}
+	if m.slackLastErr == "" {
+		t.Error("slackLastErr should be set on ingest failure")
+	}
+	if cmd == nil {
+		t.Error("tick-driven ingest error should still re-schedule the next tick")
+	}
+}
+
+// TestSlack_ReloadAllReseedsSlackSynced verifies that after reloadAll (e.g.
+// following a remote git pull), slackSynced reflects whatever tasks are
+// currently on disk. Without this, a task ingested on another device and
+// pulled in would not be in the local dedup cache, so the next poll would
+// re-ingest a duplicate.
+func TestSlack_ReloadAllReseedsSlackSynced(t *testing.T) {
+	m := newTestModel(t)
+	// Drop a Slack task into the store out-of-band to simulate a remote pull.
+	newTask := model.Task{
+		ID: "01RMT", Title: "pulled from remote", Status: "open",
+		Schedule: expectSchedule(t, schedule.Today),
+		Source:   "slack", SourceID: "C9/1700000099.000099",
+		Position: 500, UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	if err := m.store.Create(newTask); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	if m.slackSynced["C9/1700000099.000099"] {
+		t.Fatal("precondition: slackSynced must not yet contain the pulled SourceID")
+	}
+
+	if err := m.reloadAll(); err != nil {
+		t.Fatalf("reloadAll: %v", err)
+	}
+	if !m.slackSynced["C9/1700000099.000099"] {
+		t.Errorf("reloadAll did not re-seed slackSynced; got %v", m.slackSynced)
 	}
 }
 

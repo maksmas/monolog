@@ -1177,15 +1177,16 @@ func (m *doneSlackMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprint(w, `{"ok":true}`)
 }
 
-// installDoneSlackClient substitutes newDoneSlackClientFn to point at the
-// httptest server. Returns a restore closure for defer.
+// installDoneSlackClient substitutes the shared CLI factory (newSlackClientFn)
+// to point at the httptest server so CLI done's unsave hits the mock. Returns
+// a restore closure for defer.
 func installDoneSlackClient(t *testing.T, server *httptest.Server) func() {
 	t.Helper()
-	orig := newDoneSlackClientFn
-	newDoneSlackClientFn = func(token, workspace string) *slack.Client {
+	orig := newSlackClientFn
+	newSlackClientFn = func(token, workspace string) *slack.Client {
 		return &slack.Client{Token: token, Workspace: workspace, BaseURL: server.URL}
 	}
-	return func() { newDoneSlackClientFn = orig }
+	return func() { newSlackClientFn = orig }
 }
 
 // writeSlackSourcedTaskFile plants a Source="slack" task on disk. Tests use

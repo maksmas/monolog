@@ -89,6 +89,31 @@ func TestSlackLogout_RemovesTokenAndDisables(t *testing.T) {
 	}
 }
 
+func TestSlackLogout_WarnsWhenEnvTokenStillSet(t *testing.T) {
+	// slack-logout removes the on-disk token and sets enabled=false, but if
+	// MONOLOG_SLACK_TOKEN remains set in the environment it would still be
+	// picked up by SlackToken() — the user gets a full disconnect only after
+	// unsetting the env var. Warn on stderr so the behavior is obvious.
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	writeSlackTokenFile(t, dir, "xoxp-prior")
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-env")
+
+	rootCmd := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(outBuf)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"slack-logout"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("slack-logout error: %v", err)
+	}
+
+	if !strings.Contains(errBuf.String(), "MONOLOG_SLACK_TOKEN") {
+		t.Errorf("expected MONOLOG_SLACK_TOKEN warning on stderr; got:\n%s", errBuf.String())
+	}
+}
+
 func TestSlackLogout_NoTokenAlreadyDisconnected(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

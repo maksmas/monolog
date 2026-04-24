@@ -634,6 +634,60 @@ func TestSetSlackEnabledPersists(t *testing.T) {
 	}
 }
 
+func TestSetSlackConnectionWritesBothFieldsAndPreservesUnknownKeys(t *testing.T) {
+	// slack-login used to call SetSlackWorkspace followed by SetSlackEnabled —
+	// two read-modify-write cycles for a single connection event. The new
+	// single-write SetSlackConnection setter must update both workspace AND
+	// enabled while leaving other top-level keys (e.g. "default_schedule")
+	// and other slack fields (e.g. channel_as_tag) untouched.
+	resetSlackCfg(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := []byte(`{
+		"default_schedule": "week",
+		"slack": {"channel_as_tag": false}
+	}`)
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := SetSlackConnection(tmpDir, "myteam", true); err != nil {
+		t.Fatalf("SetSlackConnection: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(monologDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg["default_schedule"] != "week" {
+		t.Errorf("default_schedule preserved? got %v", cfg["default_schedule"])
+	}
+	slackBlock, ok := cfg["slack"].(map[string]any)
+	if !ok {
+		t.Fatalf("slack block missing/not-object: %T", cfg["slack"])
+	}
+	if slackBlock["workspace"] != "myteam" {
+		t.Errorf("workspace = %v, want myteam", slackBlock["workspace"])
+	}
+	if slackBlock["enabled"] != true {
+		t.Errorf("enabled = %v, want true", slackBlock["enabled"])
+	}
+	if slackBlock["channel_as_tag"] != false {
+		t.Errorf("channel_as_tag preserved? got %v", slackBlock["channel_as_tag"])
+	}
+
+	// In-memory slackCfg must reflect both new values.
+	if s := Slack(); s.Workspace != "myteam" || !s.Enabled {
+		t.Errorf("in-memory Slack() = %+v, want Workspace=myteam Enabled=true", s)
+	}
+}
+
 func TestSetSlackEnabledPreservesExistingSlackFields(t *testing.T) {
 	// Ensure SetSlackEnabled doesn't clobber a previously-set workspace.
 	resetSlackCfg(t)

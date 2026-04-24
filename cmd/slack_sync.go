@@ -16,14 +16,6 @@ import (
 // under Tier 3 rate limits.
 const slackSyncTimeout = 30 * time.Second
 
-// newSlackSyncClientFn constructs a Slack client for the headless sync command.
-// Tests substitute this to point at an httptest server. The workspace argument
-// comes from config.Slack().Workspace so permalink reconstruction works when
-// stars.list omits a per-message permalink.
-var newSlackSyncClientFn = func(token, workspace string) *slack.Client {
-	return &slack.Client{Token: token, Workspace: workspace}
-}
-
 func newSlackSyncCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "slack-sync",
@@ -42,11 +34,10 @@ MONOLOG_SLACK_TOKEN env var.`,
 // runSlackSync executes one poll-and-ingest cycle. Split out so tests can call
 // it directly without cobra plumbing.
 func runSlackSync(cmd *cobra.Command, args []string) error {
-	s, repoPath, err := openStore()
+	s, _, err := openStore()
 	if err != nil {
 		return err
 	}
-	_ = repoPath
 
 	out := cmd.OutOrStdout()
 
@@ -59,7 +50,14 @@ func runSlackSync(cmd *cobra.Command, args []string) error {
 	}
 
 	slackCfg := config.Slack()
-	client := newSlackSyncClientFn(token, slackCfg.Workspace)
+	// Refuse to sync when the integration has been disabled via
+	// `slack-logout` even if a token env var is still set. Otherwise a
+	// logged-out user with MONOLOG_SLACK_TOKEN still in their shell would
+	// see ingests resume silently next time they ran slack-sync from cron.
+	if !slackCfg.Enabled {
+		return fmt.Errorf("Slack disabled — run monolog slack-login to re-enable.")
+	}
+	client := newSlackClientFn(token, slackCfg.Workspace)
 
 	// Build the dedup cache by scanning on-disk tasks. Same pattern as
 	// slack-status: walk every task, key by SourceID for anything with

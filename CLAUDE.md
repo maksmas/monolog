@@ -29,6 +29,7 @@ internal/schedule/      → Bucket names ↔ ISO dates, bucket classification, l
 internal/recurrence/    → Recurrence-rule parsing, next-occurrence math, shared done+spawn flow
 internal/display/       → Terminal table formatting and compact date helpers (layout-aware)
 internal/git/           → Git operations (init, auto-commit, sync with conflict resolution); also AutoCommitSHA (stage+commit+return HEAD SHA), headSHA, CommitSubject, Revert, RevertSHA helpers used by TUI undo/redo
+internal/slack/         → Slack HTTP client (stars.list/remove, auth.test), SavedItem, Ingest batcher; ParseSourceID helper shared by TUI and CLI done paths
 internal/tui/           → Bubble Tea interactive TUI (default when run with no subcommand)
 ```
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/config"
@@ -18,13 +17,6 @@ import (
 // doneSlackUnsaveTimeout bounds the CLI unsave call so the `done` command
 // cannot hang on a wedged Slack API. Matches the TUI's 5s timeout.
 const doneSlackUnsaveTimeout = 5 * time.Second
-
-// newDoneSlackClientFn constructs a Slack client for the CLI unsave path.
-// Tests substitute this to point at an httptest server. Mirrors the
-// newSlackSyncClientFn pattern used by slack-sync.
-var newDoneSlackClientFn = func(token, workspace string) *slack.Client {
-	return &slack.Client{Token: token, Workspace: workspace}
-}
 
 func newDoneCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -87,16 +79,14 @@ func maybeSlackUnsave(cmd *cobra.Command, source, sourceID string) {
 		// noisy warning here would be confusing.
 		return
 	}
-	idx := strings.Index(sourceID, "/")
-	if idx <= 0 || idx >= len(sourceID)-1 {
+	channel, ts, ok := slack.ParseSourceID(sourceID)
+	if !ok {
 		fmt.Fprintf(cmd.ErrOrStderr(), "monolog: slack unsave skipped: malformed SourceID %q\n", sourceID)
 		return
 	}
-	channel := sourceID[:idx]
-	ts := sourceID[idx+1:]
 
 	slackCfg := config.Slack()
-	client := newDoneSlackClientFn(token, slackCfg.Workspace)
+	client := newSlackClientFn(token, slackCfg.Workspace)
 
 	ctx, cancel := context.WithTimeout(context.Background(), doneSlackUnsaveTimeout)
 	defer cancel()

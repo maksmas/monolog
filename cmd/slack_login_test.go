@@ -26,11 +26,11 @@ func slackLoginStubs(t *testing.T, token string, server *httptest.Server) func()
 
 	openBrowserFn = func(string) error { return nil }
 	readTokenFn = func(_ io.Reader) (string, error) { return token, nil }
-	newSlackClientFn = func(tok string) *slack.Client {
+	newSlackClientFn = func(tok, ws string) *slack.Client {
 		if server == nil {
-			return &slack.Client{Token: tok}
+			return &slack.Client{Token: tok, Workspace: ws}
 		}
-		return &slack.Client{Token: tok, BaseURL: server.URL}
+		return &slack.Client{Token: tok, Workspace: ws, BaseURL: server.URL}
 	}
 
 	return func() {
