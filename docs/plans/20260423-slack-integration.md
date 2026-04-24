@@ -340,16 +340,16 @@ Unknown top-level keys preserved on rewrite.
 - Create: `cmd/slack_sync_test.go`
 - Modify: `cmd/root.go` (register)
 
-- [ ] `slack-sync`: construct `slack.Client` from `config.SlackToken` (error out with clear message if none); construct dedup cache by scanning existing tasks with `Source=="slack"`; call `Client.ListSaved`; call `slack.Ingest`; print `Ingested N new task(s).` or `No new items.`.
-- [ ] Exit 0 even when 0 items (so cron jobs don't log errors). Exit non-zero only on API errors or ingest errors.
-- [ ] Inject `slack.Client` / base URL via the cobra command's context to allow tests to point at `httptest`.
-- [ ] Tests:
+- [x] `slack-sync`: construct `slack.Client` from `config.SlackToken` (error out with clear message if none); construct dedup cache by scanning existing tasks with `Source=="slack"`; call `Client.ListSaved`; call `slack.Ingest`; print `Ingested N new task(s).` or `No new items.`.
+- [x] Exit 0 even when 0 items (so cron jobs don't log errors). Exit non-zero only on API errors or ingest errors.
+- [x] Inject `slack.Client` / base URL via the cobra command's context to allow tests to point at `httptest`.
+- [x] Tests:
   - End-to-end against httptest: 3 items in `stars.list`, empty store → 3 tasks created with correct fields, 1 batched commit.
   - Second run with no new items → exit 0 with `No new items.` and no commit.
   - Second run with 1 of 3 items removed from Slack but 1 new added → only the new one is ingested (existing 2 still in store are dedup'd via scan; the removed one isn't forgotten; the new one creates a 4th task).
   - No token configured → exit non-zero with clear error `Slack not configured. Run monolog slack-login.`
   - `MONOLOG_DIR` points at a non-git directory → exit non-zero with error `monolog: not a git repo — run monolog init first` (propagated from `store.CreateBatch` → `git.AutoCommit` failure).
-- [ ] Run `go test ./cmd/...` — must pass before Task 11.
+- [x] Run `go test ./cmd/...` — must pass before Task 11.
 
 ### Task 11: TUI — background polling (tick + startup + `s` key)
 

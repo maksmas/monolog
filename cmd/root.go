@@ -50,6 +50,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newSlackLoginCmd())
 	rootCmd.AddCommand(newSlackLogoutCmd())
 	rootCmd.AddCommand(newSlackStatusCmd())
+	rootCmd.AddCommand(newSlackSyncCmd())
 
 	return rootCmd
 }
