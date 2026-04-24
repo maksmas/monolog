@@ -300,8 +300,8 @@ Unknown top-level keys preserved on rewrite.
 - Create: `cmd/slack_login_test.go`
 - Modify: `cmd/root.go` (register command)
 
-- [ ] Implement `cmd/slack-login` using cobra. No positional args, no flags (minimal first cut).
-- [ ] Wizard flow (in `RunE`):
+- [x] Implement `cmd/slack-login` using cobra. No positional args, no flags (minimal first cut).
+- [x] Wizard flow (in `RunE`):
   1. Print multi-line instructions: create a Slack app, add user scopes `stars:read`, `stars:write`, install to workspace, copy User OAuth Token.
   2. Attempt to open `https://api.slack.com/apps?new_app=1` via `exec.Command` with `open` (darwin), `xdg-open` (linux), or `cmd /c start` (windows); on failure, just print the URL.
   3. Prompt `Paste User OAuth Token (xoxp-...): ` reading from stdin with `bufio.Scanner` (trimmed). **Token is echoed to the terminal** — we do not add `golang.org/x/term` to keep dep count minimal. Print a one-line hint before the prompt: `(token will be visible in this terminal — close scrollback afterward if that's a concern)`.
@@ -312,12 +312,12 @@ Unknown top-level keys preserved on rewrite.
   8. Call `config.SetSlackWorkspace(monologDir, workspace)` to persist subdomain.
   9. Call `config.SetSlackEnabled(monologDir, true)`.
   10. Print success message: `Connected to <workspace>.slack.com. Polling will start next time you open the TUI.`
-- [ ] Make the browser opener and the token reader injectable via package-level vars (like a `var openBrowser = defaultOpenBrowser` and `var readToken = defaultReadToken`) so tests can substitute them.
-- [ ] Tests:
+- [x] Make the browser opener and the token reader injectable via package-level vars (like a `var openBrowser = defaultOpenBrowser` and `var readToken = defaultReadToken`) so tests can substitute them.
+- [x] Tests:
   - Happy path: injected reader returns a dummy token; `httptest` Slack server returns `ok:true` with `url:"https://myteam.slack.com/"`; after run, token file written (0600), config has `slack.workspace="myteam"`, `slack.enabled=true`, `.gitignore` contains `slack_token`.
   - Empty token input → error, no file written, config unchanged.
   - `auth.test` returns `invalid_auth` → error, no file written, config unchanged.
-- [ ] Run `go test ./cmd/...` — must pass before Task 9.
+- [x] Run `go test ./cmd/...` — must pass before Task 9.
 
 ### Task 9: `monolog slack-logout` and `monolog slack-status` commands
 
