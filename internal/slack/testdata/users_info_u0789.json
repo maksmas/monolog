@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "user": {
+    "id": "U0789",
+    "name": "bob",
+    "real_name": "Bob Bauer",
+    "profile": {
+      "display_name": "",
+      "real_name": "Bob Bauer"
+    }
+  }
+}

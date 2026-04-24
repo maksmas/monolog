@@ -241,15 +241,15 @@ Unknown top-level keys preserved on rewrite.
 - Create: `internal/slack/client.go`
 - Create: `internal/slack/client_test.go`
 
-- [ ] Define `type Client struct { Token string; BaseURL string; HTTP *http.Client }` where `BaseURL` defaults to `https://slack.com/api` (injectable for tests) and `HTTP` defaults to `&http.Client{Timeout: 10*time.Second}`.
-- [ ] Define `type SavedItem struct { Channel, ChannelName, TS, Text, AuthorID, AuthorName, Permalink string; ThreadTS string; HasFiles bool }`.
-- [ ] Implement `Client.AuthTest(ctx) (workspace string, err error)` — `POST /auth.test`, parse `ok` + `team` (subdomain via URL parsing on `url` field, falling back to `team`).
-- [ ] Implement `Client.ListSaved(ctx) ([]SavedItem, error)` — `POST /stars.list?limit=100`, follow `response_metadata.next_cursor` until empty, filter `type=="message"`, resolve channel names via in-cycle cache calling `conversations.info`, resolve author names via `users.info` (both cached across paginated calls in the same `ListSaved` invocation). Treat `has_more=false` / empty cursor as end of pages. Set `Permalink` from `message.permalink` when present, else construct from workspace (passed via client config or stored on client — use a `Client.Workspace` field).
-- [ ] Implement `Client.Unsave(ctx, channel, ts string) error` — `POST /stars.remove` form-encoded with `channel`, `channel_timestamp`. Treat errors `not_starred`, `already_unstarred`, `message_not_found` as success (return nil). Return a typed error `ErrMissingScope` when the API returns `missing_scope` / `invalid_auth` so callers can show a distinct status message.
-- [ ] Define a single typed sentinel `var ErrMissingScope = errors.New("slack: missing scope")` — callers match via `errors.Is` and show the distinct "run monolog slack-login" remedy. All other API errors are returned as `fmt.Errorf("slack %s: %s", method, rawError)` — one remedy ("try again"), no taxonomy needed. (Collapse from the previously-proposed 4-error set; YAGNI.)
-- [ ] Honor `429` rate-limit with the `Retry-After` header: return the raw error wrapped (no retry, no sentinel; polling cadence is already slow enough for Tier 3).
-- [ ] **Capture golden fixtures first**: before writing the parser, run `curl` (with the author's real dev token against a test Slack) to save real response bodies for `stars.list` (with and without cursor), `stars.remove` (success + `not_starred` + `missing_scope`), `auth.test` (success + `invalid_auth`), `conversations.info`, `users.info`. Check them into `internal/slack/testdata/`. Tests load from fixtures, not hand-rolled JSON, so the parser talks Slack's real dialect.
-- [ ] Tests (`httptest.Server` serving testdata fixtures):
+- [x] Define `type Client struct { Token string; BaseURL string; HTTP *http.Client }` where `BaseURL` defaults to `https://slack.com/api` (injectable for tests) and `HTTP` defaults to `&http.Client{Timeout: 10*time.Second}`.
+- [x] Define `type SavedItem struct { Channel, ChannelName, TS, Text, AuthorID, AuthorName, Permalink string; ThreadTS string; HasFiles bool }`.
+- [x] Implement `Client.AuthTest(ctx) (workspace string, err error)` — `POST /auth.test`, parse `ok` + `team` (subdomain via URL parsing on `url` field, falling back to `team`).
+- [x] Implement `Client.ListSaved(ctx) ([]SavedItem, error)` — `POST /stars.list?limit=100`, follow `response_metadata.next_cursor` until empty, filter `type=="message"`, resolve channel names via in-cycle cache calling `conversations.info`, resolve author names via `users.info` (both cached across paginated calls in the same `ListSaved` invocation). Treat `has_more=false` / empty cursor as end of pages. Set `Permalink` from `message.permalink` when present, else construct from workspace (passed via client config or stored on client — use a `Client.Workspace` field).
+- [x] Implement `Client.Unsave(ctx, channel, ts string) error` — `POST /stars.remove` form-encoded with `channel`, `channel_timestamp`. Treat errors `not_starred`, `already_unstarred`, `message_not_found` as success (return nil). Return a typed error `ErrMissingScope` when the API returns `missing_scope` / `invalid_auth` so callers can show a distinct status message.
+- [x] Define a single typed sentinel `var ErrMissingScope = errors.New("slack: missing scope")` — callers match via `errors.Is` and show the distinct "run monolog slack-login" remedy. All other API errors are returned as `fmt.Errorf("slack %s: %s", method, rawError)` — one remedy ("try again"), no taxonomy needed. (Collapse from the previously-proposed 4-error set; YAGNI.)
+- [x] Honor `429` rate-limit with the `Retry-After` header: return the raw error wrapped (no retry, no sentinel; polling cadence is already slow enough for Tier 3).
+- [x] fixtures hand-crafted from documented API shapes (no real token available in execution environment)
+- [x] Tests (`httptest.Server` serving testdata fixtures):
   - `AuthTest` extracts workspace subdomain from a real `url` like `https://myteam.slack.com/`.
   - `ListSaved` paginates across 2 pages and returns the concatenated items.
   - `ListSaved` filters out `type != "message"`.
@@ -260,7 +260,7 @@ Unknown top-level keys preserved on rewrite.
   - `Unsave` returns nil for `not_starred`, `already_unstarred`, `message_not_found`.
   - `Unsave` returns `ErrMissingScope` (matchable via `errors.Is`) for Slack error `missing_scope` and `invalid_auth`.
   - All methods return a descriptive error when `ok=false` with an unrecognized Slack error.
-- [ ] Run `go test ./internal/slack/...` — must pass before Task 7.
+- [x] Run `go test ./internal/slack/...` — must pass before Task 7.
 
 ### Task 7: Ingest function (`internal/slack/ingest.go`)
 

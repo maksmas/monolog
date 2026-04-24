@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "channel": {
+    "id": "C0123ABC",
+    "name": "general",
+    "is_channel": true,
+    "is_archived": false
+  }
+}

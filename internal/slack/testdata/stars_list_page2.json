@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "items": [
+    {
+      "type": "message",
+      "channel": "C0999XYZ",
+      "message": {
+        "type": "message",
+        "ts": "1712346000.000300",
+        "text": "design doc shipped",
+        "user": "U0456"
+      },
+      "date_create": 1712346001
+    }
+  ],
+  "response_metadata": {
+    "next_cursor": ""
+  }
+}

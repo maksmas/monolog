@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "items": [
+    {
+      "type": "message",
+      "channel": "C0123ABC",
+      "message": {
+        "type": "message",
+        "ts": "1712400000.000500",
+        "text": "message with no permalink",
+        "user": "U0456"
+      },
+      "date_create": 1712400001
+    }
+  ],
+  "response_metadata": {
+    "next_cursor": ""
+  }
+}

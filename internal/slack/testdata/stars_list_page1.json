@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "items": [
+    {
+      "type": "message",
+      "channel": "C0123ABC",
+      "message": {
+        "type": "message",
+        "ts": "1712345678.000100",
+        "text": "remember to review the PR\nit has three open threads",
+        "user": "U0456",
+        "permalink": "https://myteam.slack.com/archives/C0123ABC/p1712345678000100"
+      },
+      "date_create": 1712345679
+    },
+    {
+      "type": "file",
+      "file": {
+        "id": "F0S43PZDF",
+        "name": "tedair.gif"
+      },
+      "date_create": 1712345680
+    },
+    {
+      "type": "message",
+      "channel": "C0123ABC",
+      "message": {
+        "type": "message",
+        "ts": "1712345699.000200",
+        "text": "follow-up from earlier",
+        "user": "U0789",
+        "thread_ts": "1712345670.000001",
+        "permalink": "https://myteam.slack.com/archives/C0123ABC/p1712345699000200?thread_ts=1712345670.000001"
+      },
+      "date_create": 1712345700
+    }
+  ],
+  "response_metadata": {
+    "next_cursor": "dXNlcjpVMEc5V0ZYTlo="
+  }
+}
