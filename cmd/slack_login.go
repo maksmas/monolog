@@ -140,6 +140,33 @@ func runSlackLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("Slack did not return a workspace subdomain — cannot connect")
 	}
 
+	// Ensure .gitignore contains the slack_token entry BEFORE writing the
+	// token to disk. If this fails or the entry cannot be confirmed in the
+	// file, we must not write the token — otherwise a subsequent `monolog
+	// sync` could commit and push the secret. Upgrades older repos that
+	// pre-date the Slack integration's gitignore addition; a repo initialized
+	// by the current `init` already has the entry and the call is a no-op.
+	if err := git.EnsureGitignoreEntry(repoPath, "slack_token"); err != nil {
+		return fmt.Errorf("update .gitignore: %w", err)
+	}
+	// Belt-and-suspenders: read the file back and verify `slack_token` is
+	// present as a whole line before we write any secret to disk.
+	gitignorePath := filepath.Join(repoPath, ".gitignore")
+	gitignoreData, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		return fmt.Errorf("verify .gitignore: %w", err)
+	}
+	found := false
+	for _, line := range strings.Split(string(gitignoreData), "\n") {
+		if line == "slack_token" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("verify .gitignore: slack_token entry not present after update")
+	}
+
 	// Persist the token under $MONOLOG_DIR/.monolog/slack_token (0600).
 	tokenPath := filepath.Join(repoPath, ".monolog", "slack_token")
 	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o755); err != nil {
@@ -147,13 +174,6 @@ func runSlackLogin(cmd *cobra.Command, args []string) error {
 	}
 	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write token file: %w", err)
-	}
-
-	// Upgrade older repos that pre-date the Slack integration's gitignore
-	// addition. A repo initialized by the current `init` already has the
-	// entry; EnsureGitignoreEntry is a no-op in that case.
-	if err := git.EnsureGitignoreEntry(repoPath, "slack_token"); err != nil {
-		return fmt.Errorf("update .gitignore: %w", err)
 	}
 
 	// Persist workspace + enabled=true in a single write rather than two

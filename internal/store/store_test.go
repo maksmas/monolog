@@ -879,6 +879,61 @@ func TestCreateBatch_RollsBackOnCommitFailure(t *testing.T) {
 	}
 }
 
+// TestCreateBatch_RollbackUnstagesOnCommitFailure verifies that when
+// AutoCommit's `git add` succeeds but the subsequent `git commit` fails
+// (simulated via a failing pre-commit hook), the rollback path unstages the
+// files from the index before removing them from disk. Without the unstage
+// step, a subsequent `monolog sync` would run `git add -A` + commit and
+// sweep the stale staged entries into an unrelated sync commit.
+func TestCreateBatch_RollbackUnstagesOnCommitFailure(t *testing.T) {
+	s, repoPath := newGitStore(t)
+
+	// Install a pre-commit hook that always fails. `git add` still succeeds,
+	// so files end up staged, but `git commit` aborts.
+	hooksDir := filepath.Join(repoPath, ".git", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	hookPath := filepath.Join(hooksDir, "pre-commit")
+	hookBody := "#!/bin/sh\necho 'reject' >&2\nexit 1\n"
+	if err := os.WriteFile(hookPath, []byte(hookBody), 0o755); err != nil {
+		t.Fatalf("write pre-commit hook: %v", err)
+	}
+
+	tasks := []model.Task{
+		sampleTask("01HOOK1", "first hooked"),
+		sampleTask("01HOOK2", "second hooked"),
+	}
+	err := s.CreateBatch(tasks, "slack: ingest 2 items")
+	if err == nil {
+		t.Fatal("expected error when pre-commit hook rejects, got nil")
+	}
+
+	// Files must be removed from disk (existing rollback behavior).
+	for _, id := range []string{"01HOOK1", "01HOOK2"} {
+		if _, statErr := os.Stat(s.taskPath(id)); statErr == nil {
+			t.Errorf("%s.json should be removed after failed commit", id)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("unexpected stat error for %s: %v", id, statErr)
+		}
+	}
+
+	// The key assertion: the index must not have stale entries for the
+	// rolled-back files. `git status --porcelain` should not mention them.
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git status --porcelain: %v", err)
+	}
+	status := string(out)
+	for _, id := range []string{"01HOOK1", "01HOOK2"} {
+		if strings.Contains(status, id+".json") {
+			t.Errorf("git status still references %s.json after rollback:\n%s", id, status)
+		}
+	}
+}
+
 // createTestTasks populates the store with a known set of tasks for filter tests.
 // Tasks:
 //   - "Today work"     schedule=today, status=open, tags=[work], position=1000

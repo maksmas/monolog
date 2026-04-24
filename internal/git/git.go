@@ -143,6 +143,22 @@ func EnsureGitignoreEntry(repoPath, entry string) error {
 	return nil
 }
 
+// UnstagePaths resets the given repo-relative paths out of the index via
+// `git reset HEAD -- <paths>`. Idempotent: if the paths are not staged the
+// command is a no-op and returns nil. Used by CreateBatch's rollback path
+// so a failed post-write commit does not leave stale entries in the index
+// pointing at files that are about to be deleted from disk.
+func UnstagePaths(repoPath string, paths ...string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"reset", "HEAD", "--"}, paths...)
+	if err := run(repoPath, "git", args...); err != nil {
+		return fmt.Errorf("git reset HEAD -- %v: %w", paths, err)
+	}
+	return nil
+}
+
 // AutoCommit stages the specified files (relative paths within the repo) and
 // commits them with the given message. This is used by mutation commands
 // (add, done, edit, rm, mv) for automatic git commits.

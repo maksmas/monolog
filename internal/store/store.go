@@ -100,6 +100,13 @@ func (s *Store) CreateBatch(tasks []model.Task, commitMessage string) error {
 
 	repoPath := filepath.Dir(filepath.Dir(s.dir))
 	if err := git.AutoCommit(repoPath, commitMessage, relFiles...); err != nil {
+		// AutoCommit stages each file with `git add` before committing. If
+		// the commit itself failed (pre-commit hook, gpg, etc.) the entries
+		// remain in the index pointing at files we're about to delete.
+		// Unstage them first (best-effort — if unstaging fails, e.g. because
+		// the repo is not a git repo at all, fall through to cleanup so disk
+		// state is still rolled back).
+		_ = git.UnstagePaths(repoPath, relFiles...)
 		cleanupFiles(written)
 		return err
 	}

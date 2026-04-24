@@ -207,6 +207,62 @@ func TestSlackLogin_InvalidAuth(t *testing.T) {
 	}
 }
 
+// TestSlackLogin_GitignoreFailureAbortsBeforeTokenWrite verifies that if
+// EnsureGitignoreEntry fails (here: the .gitignore path is a directory, so
+// WriteFile returns EISDIR when the entry is missing and the helper tries
+// to create the file), slack-login returns the error WITHOUT writing the
+// token file to disk. This closes the window where a token could end up on
+// disk while .gitignore is missing the entry.
+func TestSlackLogin_GitignoreFailureAbortsBeforeTokenWrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Replace .gitignore with a directory that shadows the path. Any attempt
+	// to read it fails ("is a directory"), which propagates out of
+	// EnsureGitignoreEntry as a non-IsNotExist error.
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if err := os.Remove(gitignorePath); err != nil {
+		t.Fatalf("remove .gitignore: %v", err)
+	}
+	if err := os.Mkdir(gitignorePath, 0o755); err != nil {
+		t.Fatalf("mkdir .gitignore: %v", err)
+	}
+
+	server := slackAuthTestHandler(t, true, "https://acme.slack.com/")
+	defer server.Close()
+
+	restore := slackLoginStubs(t, "xoxp-secret", server)
+	defer restore()
+
+	rootCmd := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(outBuf)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"slack-login"})
+
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected error when .gitignore is unwritable, got nil\nout: %s", outBuf.String())
+	}
+
+	// Token file MUST NOT have been written. This is the key assertion: the
+	// ordering fix ensures no secret lands on disk if .gitignore is not
+	// confirmed to contain slack_token.
+	tokenPath := filepath.Join(dir, ".monolog", "slack_token")
+	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
+		t.Errorf("token file should not exist after .gitignore failure; stat err = %v", err)
+	}
+
+	// Config should not contain a slack block (SetSlackConnection not reached).
+	raw, err := os.ReadFile(filepath.Join(dir, ".monolog", "config.json"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(raw), `"slack"`) {
+		t.Errorf("config should not contain slack block after failure, got:\n%s", raw)
+	}
+}
+
 func TestSlackLogin_UpgradesMissingGitignoreEntry(t *testing.T) {
 	// Simulate an older repo: one whose .gitignore does NOT contain
 	// slack_token. Verify slack-login appends it.
