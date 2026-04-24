@@ -1140,7 +1140,7 @@ func TestEdit_TagsPreservesActive(t *testing.T) {
 // doneSlackMock is a minimal httptest handler for the two Slack endpoints the
 // done command might hit: stars.remove (the unsave call). Auth.test is not
 // hit by `done`, so we skip it. Tracks the form body of the last stars.remove
-// request so tests can assert channel + channel_timestamp were sent correctly.
+// request so tests can assert channel + timestamp were sent correctly.
 type doneSlackMock struct {
 	mu            sync.Mutex
 	starsRemoveN  int
@@ -1165,7 +1165,7 @@ func (m *doneSlackMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.starsRemoveN++
 	m.lastChannel = r.Form.Get("channel")
-	m.lastTimestamp = r.Form.Get("channel_timestamp")
+	m.lastTimestamp = r.Form.Get("timestamp")
 	errResp := m.errorResp
 	m.mu.Unlock()
 
@@ -1258,7 +1258,7 @@ func TestDoneCommand_SlackTaskTriggersUnsave(t *testing.T) {
 		t.Errorf("channel = %q, want C0123", mock.lastChannel)
 	}
 	if mock.lastTimestamp != "1712345678.000100" {
-		t.Errorf("channel_timestamp = %q, want 1712345678.000100", mock.lastTimestamp)
+		t.Errorf("timestamp = %q, want 1712345678.000100", mock.lastTimestamp)
 	}
 	// The task should still have landed done.
 	task, ok := getTaskByID(t, dir, id)

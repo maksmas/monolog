@@ -172,20 +172,26 @@ func ParseSourceID(s string) (channel, ts string, ok bool) {
 	return s[:idx], s[idx+1:], true
 }
 
-// isDMChannel reports whether a Slack channel ID represents a DM, group DM,
-// or multi-party DM. These channel types have confusing tag semantics (no
+// isDMChannel reports whether a Slack channel ID represents a DM or
+// multi-party DM. These channel types have confusing tag semantics (no
 // channel name; author-as-channel-name is misleading) so v1 skips them.
+//
+// Note: we intentionally do NOT check for the "G" prefix. Although legacy
+// group DMs used a "G" id, Slack also uses "G" as the prefix for PRIVATE
+// channels, which are a legitimate ingest target. Modern multi-party DMs use
+// the "mpdm-" prefix — that is the reliable way to detect them by ID.
+// Legacy G-prefixed group DMs (rare in modern workspaces) are accepted
+// through ingest; the worst-case outcome is a bookmark whose channel name
+// renders oddly, which the user can clean up via edit/rm.
 func isDMChannel(channelID string) bool {
 	if channelID == "" {
 		return false
 	}
 	// D-prefixed: direct message between two users.
-	// G-prefixed: legacy group DM.
-	// Multi-party DMs use an "mpdm-" prefix in older payloads; newer ones
-	// use a "G" id. The "mpdm-" check catches both shapes.
-	if strings.HasPrefix(channelID, "D") || strings.HasPrefix(channelID, "G") {
+	if strings.HasPrefix(channelID, "D") {
 		return true
 	}
+	// "mpdm-" prefix covers multi-party DMs in the modern id shape.
 	if strings.HasPrefix(channelID, "mpdm-") {
 		return true
 	}

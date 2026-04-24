@@ -240,6 +240,18 @@ type Model struct {
 	// same way slackLastErr does for polls. Kept separate so a poll error and
 	// an unsave error do not silence each other.
 	slackUnsaveLastErr string
+	// gitOpInFlight is true between the dispatch of syncCmd (or any git-shelling
+	// async command that wants to serialize with Slack ingest) and the arrival
+	// of its taskSavedMsg. Tick-driven slack polls skip firing while set, and
+	// the s-key chains its slack poll AFTER the sync result instead of running
+	// it in parallel — otherwise two concurrent git invocations in the same
+	// working tree could race on .git/index.lock or on `git add -A` picking up
+	// ingest-created files mid-flight.
+	gitOpInFlight bool
+	// pendingSlackPollAfterSync, when true at taskSavedMsg time, queues a
+	// manual (fromTick=false) slack poll after the sync completes. Cleared by
+	// the same handler after dispatch.
+	pendingSlackPollAfterSync bool
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -419,6 +431,10 @@ type taskSavedMsg struct {
 	// slackUnsaveCmd as the next tea.Cmd once the git commit has landed.
 	slackUnsaveChannel string
 	slackUnsaveTS      string
+	// fromSync marks this message as the result of syncCmd. Update clears
+	// gitOpInFlight when set; without this, a sync-triggered tick-driven
+	// Slack poll would continue to be suppressed after sync finished.
+	fromSync bool
 }
 
 // slackUnsaveDoneMsg carries the result of a Slack stars.remove HTTP call back
@@ -527,9 +543,13 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		}
 	}
 
-	// Build the slack client only when both the feature is enabled AND a
-	// token is available. Any other combination (no token, not enabled) is
-	// treated as "disabled" and leaves slackClient nil so polling is a no-op.
+	// Build the slack client whenever a token is available from any source
+	// (env var OR logged-in file). The slack.enabled flag is purely a
+	// toggle for the file-based token maintained by slack-login /
+	// slack-logout; a user who sets MONOLOG_SLACK_TOKEN directly (the
+	// preferred headless-friendly source per the plan) should get working
+	// Slack polling without also running slack-login. Leaves slackClient
+	// nil when no token exists anywhere, so polling is a no-op.
 	slackCfg := config.Slack()
 	token, _, tokErr := config.SlackToken()
 	if tokErr != nil {
@@ -539,7 +559,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		// silently running with Slack disabled.
 		m.statusMsg = "Slack token unreadable: " + tokErr.Error()
 	}
-	if slackCfg.Enabled && token != "" {
+	if token != "" {
 		m.slackClient = &slack.Client{
 			Token:     token,
 			Workspace: slackCfg.Workspace,
@@ -1030,6 +1050,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case taskSavedMsg:
+		// Clear the git-op lock as soon as the sync result lands, whether it
+		// succeeded or failed. Without this, tick-driven Slack polls would
+		// stay suppressed after a failed sync.
+		if msg.fromSync {
+			m.gitOpInFlight = false
+		}
 		if msg.clearHistory {
 			m.undoStack = nil
 			m.redoStack = nil
@@ -1044,6 +1070,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			m.statusMsg = ""
 			m.pendingAction = nil
+			// On sync failure we drop the queued poll — no point polling when
+			// the git tree is already in an error state.
+			if msg.fromSync {
+				m.pendingSlackPollAfterSync = false
+			}
 			return m, nil
 		}
 		m.err = nil
@@ -1078,6 +1109,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingAction = nil
 			return m, action()
 		}
+		// Chain a Slack poll AFTER a successful sync — serializes the two git
+		// invocations so ingest's commit never races with sync's pull/push.
+		// Guarded by pendingSlackPollAfterSync so only the s-key path triggers
+		// the chained poll (background tick cadence still runs on its own).
+		if msg.fromSync && m.pendingSlackPollAfterSync {
+			m.pendingSlackPollAfterSync = false
+			if cmd := m.slackPollCmd(false); cmd != nil {
+				return m, cmd
+			}
+		}
 		// Chain Slack unsave after a successful done-commit. We run this
 		// AFTER the commit has landed so a user pressing `u` between the
 		// commit and the HTTP response cannot race with in-flight network
@@ -1096,6 +1137,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// firing (shouldn't happen today), just stop the loop.
 		if m.slackClient == nil {
 			return m, nil
+		}
+		// Suppress polls while a git op (syncCmd) is in flight. Two
+		// concurrent git invocations in the same working tree can race on
+		// .git/index.lock or on sync's `git add -A` picking up
+		// ingest-created files before ingest commits. Re-schedule the next
+		// tick so the cadence doesn't go dark — the tick after sync
+		// completes will catch up.
+		if m.gitOpInFlight {
+			return m, m.slackTickCmd(m.slackPollInterval)
 		}
 		return m, m.slackPollCmd(true)
 
@@ -1288,11 +1338,18 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openEdit()
 	case "s":
 		m.statusMsg = "Syncing..."
-		// slackPollCmd returns nil when the client is nil, so tea.Batch
-		// unconditionally is safe. fromTick=false so the poll handler will
-		// NOT re-schedule the background tick — the existing tick loop keeps
-		// owning the cadence and manual s-presses never stack extra ticks.
-		return m, tea.Batch(m.syncCmd(), m.slackPollCmd(false))
+		// Serialize sync + slack poll: two concurrent git invocations in the
+		// same working tree can race on .git/index.lock or on sync's
+		// `git add -A` picking up ingest-created files before ingest
+		// commits. We set gitOpInFlight to suppress tick-driven polls and
+		// queue a manual poll in pendingSlackPollAfterSync which the
+		// taskSavedMsg handler dispatches AFTER sync lands. The "poll only
+		// when slack is configured" check lives in the dispatch site.
+		m.gitOpInFlight = true
+		if m.slackClient != nil {
+			m.pendingSlackPollAfterSync = true
+		}
+		return m, m.syncCmd()
 	case "u", "ctrl+z":
 		if len(m.undoStack) == 0 {
 			m.statusMsg = "nothing to undo"
@@ -2289,11 +2346,15 @@ func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.pendingAction = func() tea.Cmd {
 			m.statusMsg = "Syncing..."
-			// slackPollCmd is a no-op when the client is nil; batch
-			// unconditionally. fromTick=false so the background tick loop
-			// (if any) retains sole ownership of cadence — see s-key in
-			// updateNormal for the same pattern.
-			return tea.Batch(m.syncCmd(), m.slackPollCmd(false))
+			// Serialize sync + slack poll — see s-key in updateNormal for
+			// the full rationale. Two concurrent git invocations in the
+			// same working tree race; the taskSavedMsg handler chains the
+			// Slack poll after sync completes.
+			m.gitOpInFlight = true
+			if m.slackClient != nil {
+				m.pendingSlackPollAfterSync = true
+			}
+			return m.syncCmd()
 		}
 		return m, m.commitGrab()
 	}
@@ -2772,6 +2833,13 @@ func (m *Model) handleSlackUnsaveDone(msg slackUnsaveDoneMsg) (tea.Model, tea.Cm
 
 // syncCmd runs a full sync (commit + pull + auto-resolve + push) in the
 // background and surfaces the result in the status bar.
+//
+// Callers set m.gitOpInFlight=true before invoking this command so tick-driven
+// Slack polls won't race on git (.git/index.lock contention, `git add -A`
+// picking up ingest files between ingest and its own commit). The fromSync
+// flag on the returned taskSavedMsg tells the Update handler to clear
+// gitOpInFlight and, if pendingSlackPollAfterSync was set (s-key path),
+// dispatch a slack poll as the chained next command.
 func (m *Model) syncCmd() tea.Cmd {
 	repoPath := m.repoPath
 	return func() tea.Msg {
@@ -2780,17 +2848,17 @@ func (m *Model) syncCmd() tea.Cmd {
 			// If we attempted a remote sync the SHAs may have changed;
 			// clear both stacks even on error to avoid stale references.
 			if res.HasRemote {
-				return taskSavedMsg{err: err, clearHistory: true}
+				return taskSavedMsg{err: err, clearHistory: true, fromSync: true}
 			}
-			return taskSavedMsg{err: err}
+			return taskSavedMsg{err: err, fromSync: true}
 		}
 		if !res.HasRemote {
-			return taskSavedMsg{status: "No remote configured; committed locally"}
+			return taskSavedMsg{status: "No remote configured; committed locally", fromSync: true}
 		}
 		if res.Resolved > 0 {
-			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved), clearHistory: true}
+			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved), clearHistory: true, fromSync: true}
 		}
-		return taskSavedMsg{status: "Synced", clearHistory: true}
+		return taskSavedMsg{status: "Synced", clearHistory: true, fromSync: true}
 	}
 }
 

@@ -444,9 +444,13 @@ func TestIngest_DMChannelsSkippedSilentlyToStderr(t *testing.T) {
 		Stderr:     stderr,
 	}
 
+	// Note: "G" prefix is NOT a DM marker — Slack uses it for private
+	// channels (the common case) AND legacy group DMs (rare). Ingesting
+	// the occasional legacy group DM with an ugly channel name is a
+	// cheaper mistake than silently dropping private-channel bookmarks.
 	items := []SavedItem{
 		{Channel: "D123", ChannelName: "", TS: "1.000", Text: "dm", AuthorName: "a", Permalink: "p"},
-		{Channel: "G123", ChannelName: "", TS: "2.000", Text: "groupdm", AuthorName: "a", Permalink: "p"},
+		{Channel: "G123", ChannelName: "priv", TS: "2.000", Text: "private channel", AuthorName: "a", Permalink: "p"},
 		{Channel: "mpdm-alice--bob--carol-1", ChannelName: "", TS: "3.000", Text: "mpdm", AuthorName: "a", Permalink: "p"},
 		{Channel: "C0123", ChannelName: "g", TS: "4.000", Text: "public", AuthorName: "a", Permalink: "p"},
 	}
@@ -456,15 +460,20 @@ func TestIngest_DMChannelsSkippedSilentlyToStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("newCount: got %d want 1", n)
+	// D + mpdm- skipped; G (private channel) + C (public) ingested.
+	if n != 2 {
+		t.Errorf("newCount: got %d want 2", n)
 	}
 
 	msg := stderr.String()
-	for _, ts := range []string{"1.000", "2.000", "3.000"} {
+	for _, ts := range []string{"1.000", "3.000"} {
 		if !strings.Contains(msg, ts) {
 			t.Errorf("stderr missing DM-skip for %s; got:\n%s", ts, msg)
 		}
+	}
+	// Private channel (G-prefix) should NOT appear as a DM skip.
+	if strings.Contains(msg, "2.000") {
+		t.Errorf("G-prefixed private channel should not be skipped as DM; got:\n%s", msg)
 	}
 	// Public channel should not appear in stderr.
 	if strings.Contains(msg, "4.000") {
@@ -498,6 +507,40 @@ func TestIngest_CommitFailurePreservesSyncedMap(t *testing.T) {
 	}
 	if len(synced) != 0 {
 		t.Errorf("synced map should be untouched on commit failure: %v", synced)
+	}
+}
+
+// TestIngest_PrivateChannelGPrefixIngested asserts that a G-prefixed channel
+// (Slack's namespace for private channels, shared with legacy group DMs)
+// flows through to task creation. Regression guard: the previous version of
+// isDMChannel silently dropped these, which broke private-channel bookmark
+// ingest entirely.
+func TestIngest_PrivateChannelGPrefixIngested(t *testing.T) {
+	s, _ := newGitStore(t)
+	opts := Options{DateFormat: "02-01-2006", Now: fixedNow(time.Now())}
+
+	items := []SavedItem{
+		{Channel: "GPRIV123", ChannelName: "private-room", TS: "1.000", Text: "from a private channel", AuthorName: "alice", Permalink: "https://example.slack.com/archives/GPRIV123/p1"},
+	}
+	synced := map[string]bool{}
+
+	n, err := Ingest(s, items, synced, opts)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("newCount: got %d want 1", n)
+	}
+
+	all, err := s.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("task count: got %d want 1", len(all))
+	}
+	if all[0].SourceID != "GPRIV123/1.000" {
+		t.Errorf("SourceID: got %q want %q", all[0].SourceID, "GPRIV123/1.000")
 	}
 }
 
@@ -605,10 +648,14 @@ func TestParseSourceID(t *testing.T) {
 
 func TestIsDMChannel(t *testing.T) {
 	cases := map[string]bool{
-		"":                       false,
-		"C0123":                  false,
-		"D0123":                  true,
-		"G0123":                  true,
+		"":                false,
+		"C0123":           false,
+		"D0123":           true,
+		// G-prefix is NOT treated as a DM — Slack uses it for private
+		// channels (primary use) AND legacy group DMs (rare). Private
+		// channel bookmarks must ingest; the occasional legacy group DM
+		// passes through as well and is accepted as a cost of that choice.
+		"G0123":                  false,
 		"mpdm-alice--bob-1":      true,
 		"c_lowercase_shouldpass": false,
 	}

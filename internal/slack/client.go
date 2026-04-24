@@ -417,7 +417,10 @@ var unsaveIdempotentErrors = map[string]bool{
 func (c *Client) Unsave(ctx context.Context, channel, ts string) error {
 	form := url.Values{}
 	form.Set("channel", channel)
-	form.Set("channel_timestamp", ts)
+	// Slack's stars.remove API uses the parameter name "timestamp". The
+	// (undocumented) "channel_timestamp" alias does NOT work — sending only
+	// channel + channel_timestamp returns no_item_specified. Keep "timestamp".
+	form.Set("timestamp", ts)
 
 	var resp apiResponse
 	err := c.postFormRaw(ctx, "stars.remove", form, &resp, unsaveIdempotentErrors)

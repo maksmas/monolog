@@ -50,13 +50,13 @@ func runSlackSync(cmd *cobra.Command, args []string) error {
 	}
 
 	slackCfg := config.Slack()
-	// Refuse to sync when the integration has been disabled via
-	// `slack-logout` even if a token env var is still set. Otherwise a
-	// logged-out user with MONOLOG_SLACK_TOKEN still in their shell would
-	// see ingests resume silently next time they ran slack-sync from cron.
-	if !slackCfg.Enabled {
-		return fmt.Errorf("Slack disabled — run monolog slack-login to re-enable.")
-	}
+	// Presence of a token (env var or logged-in file) is sufficient to
+	// proceed. The slack.enabled flag is only a toggle for the file-based
+	// token maintained by slack-login / slack-logout; an env-var user who
+	// never ran slack-login should still be able to sync. Note that
+	// slack-logout clears the file token but does NOT unset env vars — a
+	// user who wants a complete disconnect must unset MONOLOG_SLACK_TOKEN
+	// in their shell as well.
 	client := newSlackClientFn(token, slackCfg.Workspace)
 
 	// Build the dedup cache by scanning on-disk tasks. Same pattern as

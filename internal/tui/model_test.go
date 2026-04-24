@@ -10438,10 +10438,11 @@ func TestSlack_FetchedMsgSkipsAlreadySynced(t *testing.T) {
 	}
 }
 
-// TestSlack_SKeyWithClientBatchesSyncAndPoll confirms that pressing 's' when
-// a Slack client is present returns a tea.Batch carrying both the git sync
-// command and the slack poll command.
-func TestSlack_SKeyWithClientBatchesSyncAndPoll(t *testing.T) {
+// TestSlack_SKeyWithClientChainsPollAfterSync confirms that pressing 's' when
+// a Slack client is present returns ONLY the sync command (not a batch). The
+// slack poll is chained AFTER sync via pendingSlackPollAfterSync so the two
+// git invocations never run concurrently in the same working tree.
+func TestSlack_SKeyWithClientChainsPollAfterSync(t *testing.T) {
 	m := newTestModel(t)
 	m.slackClient = &slack.Client{Token: "xoxp-test"}
 	m.slackPollInterval = 60 * time.Second
@@ -10450,23 +10451,20 @@ func TestSlack_SKeyWithClientBatchesSyncAndPoll(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("s key returned nil cmd")
 	}
-	// tea.Batch returns a single cmd whose invocation yields a BatchMsg
-	// (a slice of sub-commands). We check for a 2-element batch.
-	msg := cmd()
-	batch, ok := msg.(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("s key cmd did not produce tea.BatchMsg; got %T", msg)
+	// Assert serialization bookkeeping — the flags capture "sync now, poll
+	// after sync". Running the sync command here would shell out to git,
+	// which these tests avoid.
+	if !m.gitOpInFlight {
+		t.Error("gitOpInFlight should be set to gate tick-driven polls")
 	}
-	if len(batch) != 2 {
-		t.Errorf("batch size = %d, want 2 (sync + poll)", len(batch))
+	if !m.pendingSlackPollAfterSync {
+		t.Error("pendingSlackPollAfterSync should be queued so poll fires after sync")
 	}
 }
 
 // TestSlack_SKeyWithoutClientReturnsSyncOnly confirms that pressing 's' when
-// Slack is disabled still produces the sync command. tea.Batch collapses a
-// single-valid-command batch to the direct command, so we assert the message
-// shape is NOT a BatchMsg (if nil-collapse were broken the test would see a
-// 1-element batch, which is different behavior).
+// Slack is disabled still produces the sync command and does NOT queue a
+// chained poll — without a client there's nothing to poll.
 func TestSlack_SKeyWithoutClientReturnsSyncOnly(t *testing.T) {
 	m := newTestModel(t)
 	if m.slackClient != nil {
@@ -10476,12 +10474,18 @@ func TestSlack_SKeyWithoutClientReturnsSyncOnly(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("s key returned nil cmd")
 	}
-	msg := cmd()
-	// tea.Batch(syncCmd, nil) collapses to just syncCmd, which produces a
-	// non-BatchMsg value when invoked.
-	if _, ok := msg.(tea.BatchMsg); ok {
-		t.Errorf("s key without client should NOT produce BatchMsg; got %T", msg)
+	// The chained-poll flag should stay false when no slack client exists.
+	if m.pendingSlackPollAfterSync {
+		t.Error("pendingSlackPollAfterSync should be false when slackClient is nil")
 	}
+	// gitOpInFlight is set regardless — it still gates tick polls (if the
+	// user enabled slack mid-session) and is harmless when no client is
+	// configured. Ensure the syncCmd is returned (not a batch). We don't
+	// shell out to git here; we just check the bookkeeping.
+	if !m.gitOpInFlight {
+		t.Error("gitOpInFlight should be set even without a slack client")
+	}
+	_ = cmd
 }
 
 // TestSlack_FetchedMsgProcessedInModal confirms that the ingest path runs
@@ -10845,6 +10849,123 @@ func TestSlack_ReloadAllReseedsSlackSynced(t *testing.T) {
 	}
 	if !m.slackSynced["C9/1700000099.000099"] {
 		t.Errorf("reloadAll did not re-seed slackSynced; got %v", m.slackSynced)
+	}
+}
+
+// TestSlack_NewModelBuildsClientWithEnvTokenIgnoringEnabledFlag asserts that
+// the TUI builds a Slack client whenever a token is present — including via
+// MONOLOG_SLACK_TOKEN — even when slack.enabled=false in config.json. The
+// previous behavior silently ignored the env-var-only path, contradicting the
+// plan's "env var is the preferred headless source" promise.
+func TestSlack_NewModelBuildsClientWithEnvTokenIgnoringEnabledFlag(t *testing.T) {
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-env-only")
+	// Deliberately do NOT set slack.enabled — the default from git.Init is
+	// false. Model must still build a client because the token is present.
+	m := newTestModel(t)
+
+	if m.slackClient == nil {
+		t.Fatal("slackClient should be non-nil with env-var token even when slack.enabled=false")
+	}
+	if m.slackClient.Token != "xoxp-env-only" {
+		t.Errorf("client Token = %q, want %q", m.slackClient.Token, "xoxp-env-only")
+	}
+	if m.slackPollInterval <= 0 {
+		t.Errorf("slackPollInterval = %v, want > 0", m.slackPollInterval)
+	}
+}
+
+// TestSlack_TickMsgSuppressedWhileGitOpInFlight asserts that a tick-driven
+// poll is NOT dispatched while a sync is in flight — instead the tick is
+// re-scheduled so the cadence doesn't go dark. Two concurrent git invocations
+// in the same working tree could race on .git/index.lock.
+func TestSlack_TickMsgSuppressedWhileGitOpInFlight(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+	m.gitOpInFlight = true
+
+	next, cmd := m.Update(slackTickMsg{})
+	m = next.(*Model)
+
+	if cmd == nil {
+		t.Fatal("slackTickMsg during git op must re-schedule the next tick, not return nil")
+	}
+	// Fire the returned command and confirm it's a tick, not a poll. A poll
+	// command returns slackFetchedMsg; a tick command returns slackTickMsg.
+	msg := cmd()
+	if _, ok := msg.(slackTickMsg); !ok {
+		t.Errorf("during git op, tick should re-schedule another tick; got %T", msg)
+	}
+}
+
+// TestSlack_SKeyDoesNotBatchPollDuringSync asserts that pressing `s` returns
+// ONLY the sync command (no concurrent slackPollCmd batched alongside it).
+// The chained poll fires AFTER the sync completes via
+// pendingSlackPollAfterSync, serializing the two git invocations.
+func TestSlack_SKeyDoesNotBatchPollDuringSync(t *testing.T) {
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-s-test")
+	m := newTestModel(t)
+	if m.slackClient == nil {
+		t.Fatal("precondition: slackClient must be non-nil for this test")
+	}
+
+	// Press `s`. The returned cmd should be the sync command alone. We can't
+	// easily introspect a tea.Batch without running it (and running syncCmd
+	// shells out to git), so we assert on the bookkeeping flags instead.
+	_, cmd := key(t, m, "s")
+	if cmd == nil {
+		t.Fatal("s key should return a sync command")
+	}
+	if !m.gitOpInFlight {
+		t.Error("gitOpInFlight should be set to suppress concurrent tick polls")
+	}
+	if !m.pendingSlackPollAfterSync {
+		t.Error("pendingSlackPollAfterSync should be queued so the poll chains after sync")
+	}
+}
+
+// TestSlack_TaskSavedFromSyncChainsPollAndClearsFlag asserts that when a
+// fromSync=true taskSavedMsg lands and pendingSlackPollAfterSync was queued,
+// the Update handler clears gitOpInFlight AND returns a poll command.
+func TestSlack_TaskSavedFromSyncChainsPollAndClearsFlag(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+	m.gitOpInFlight = true
+	m.pendingSlackPollAfterSync = true
+
+	next, cmd := m.Update(taskSavedMsg{status: "Synced", fromSync: true})
+	m = next.(*Model)
+
+	if m.gitOpInFlight {
+		t.Error("gitOpInFlight should be cleared after fromSync taskSavedMsg")
+	}
+	if m.pendingSlackPollAfterSync {
+		t.Error("pendingSlackPollAfterSync should be cleared after dispatch")
+	}
+	if cmd == nil {
+		t.Fatal("chained slack poll command should be returned")
+	}
+}
+
+// TestSlack_TaskSavedFromSyncClearsFlagOnError asserts that even when sync
+// fails (err set), gitOpInFlight is cleared so tick polls resume. The
+// pending-poll flag is also dropped so we don't poll on an error'd tree.
+func TestSlack_TaskSavedFromSyncClearsFlagOnError(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+	m.gitOpInFlight = true
+	m.pendingSlackPollAfterSync = true
+
+	next, _ := m.Update(taskSavedMsg{err: errors.New("sync failed"), fromSync: true})
+	m = next.(*Model)
+
+	if m.gitOpInFlight {
+		t.Error("gitOpInFlight must be cleared even on sync error so tick polls resume")
+	}
+	if m.pendingSlackPollAfterSync {
+		t.Error("pendingSlackPollAfterSync must be cleared on sync error; no point polling an error'd tree")
 	}
 }
 

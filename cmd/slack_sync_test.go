@@ -17,9 +17,11 @@ import (
 	"github.com/mmaksmas/monolog/internal/slack"
 )
 
-// enableSlack flips slack.enabled=true in config.json at dir. slack-sync now
-// refuses to run when disabled, so every happy-path test flips it on after
-// initTestRepo (which initializes with enabled=false).
+// enableSlack flips slack.enabled=true in config.json at dir. slack-sync no
+// longer refuses to run when disabled (token presence alone is sufficient),
+// but most happy-path tests keep this call to exercise the legacy code path
+// where a user ran slack-login. See TestSlackSync_EnvTokenProceedsEvenWhenDisabled
+// for the env-var-only route.
 func enableSlack(t *testing.T, dir string) {
 	t.Helper()
 	if err := config.SetSlackEnabled(dir, true); err != nil {
@@ -309,9 +311,8 @@ func TestSlackSync_NotAGitRepo(t *testing.T) {
 	}
 	t.Setenv("MONOLOG_DIR", dir)
 	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
-	// Write a minimal config.json with slack.enabled=true so slack-sync's
-	// enabled-guard passes (we want the test to fail on the git.AutoCommit
-	// step, not on the config gate).
+	// slack.enabled is no longer an ingest gate; token presence alone
+	// suffices. Left enabled here for clarity — nothing requires it.
 	if err := config.SetSlackEnabled(dir, true); err != nil {
 		t.Fatalf("enable slack: %v", err)
 	}
@@ -342,15 +343,25 @@ func TestSlackSync_NotAGitRepo(t *testing.T) {
 	}
 }
 
-func TestSlackSync_RefusesWhenDisabled(t *testing.T) {
-	// slack-sync now refuses to run when slack.enabled=false, even if a token
-	// env var is set. Otherwise a logged-out user with lingering
-	// MONOLOG_SLACK_TOKEN would see ingests resume on their next cron fire.
+func TestSlackSync_EnvTokenProceedsEvenWhenDisabled(t *testing.T) {
+	// Regression guard: slack-sync previously refused to run when
+	// slack.enabled=false even if MONOLOG_SLACK_TOKEN was set. That
+	// contradicted the plan's "env var is the preferred headless source."
+	// Env-var users should be able to sync without first running
+	// slack-login. slack-logout is still the way to clear a file token;
+	// users who want a complete disconnect must unset the env var too.
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 	// Deliberately do NOT call enableSlack(). initTestRepo leaves
 	// slack.enabled=false.
 	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+
+	mock := newSlackSyncMock()
+	mock.pushStars(`{"ok":true,"items":[]}`)
+	server := httptest.NewServer(mock)
+	defer server.Close()
+	restore := installSlackSyncClient(t, server)
+	defer restore()
 
 	rootCmd := NewRootCmd()
 	outBuf := new(bytes.Buffer)
@@ -358,15 +369,12 @@ func TestSlackSync_RefusesWhenDisabled(t *testing.T) {
 	rootCmd.SetOut(outBuf)
 	rootCmd.SetErr(errBuf)
 	rootCmd.SetArgs([]string{"slack-sync"})
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatalf("expected error when slack disabled; got nil (out=%s)", outBuf.String())
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("expected env-var token to bypass disabled flag; got err: %v\nerr=%s", err, errBuf.String())
 	}
-	if !strings.Contains(err.Error(), "disabled") {
-		t.Errorf("error should mention 'disabled', got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "slack-login") {
-		t.Errorf("error should steer user to slack-login, got: %v", err)
+	// "No new items" is the success path — the empty stars.list was served.
+	if !strings.Contains(outBuf.String(), "No new items.") {
+		t.Errorf("expected success output, got:\n%s", outBuf.String())
 	}
 }
 

@@ -33,7 +33,7 @@ func runSlackStatus(cmd *cobra.Command, args []string) error {
 
 	// Token source is derived from SlackToken: env > file > none. Token value
 	// itself is never printed; we only care about the source here.
-	_, source, tokErr := config.SlackToken()
+	token, source, tokErr := config.SlackToken()
 	if tokErr != nil {
 		return fmt.Errorf("read slack token: %w", tokErr)
 	}
@@ -45,6 +45,13 @@ func runSlackStatus(cmd *cobra.Command, args []string) error {
 	if workspace == "" {
 		workspace = "(not set)"
 	}
+
+	// Active reflects whether Slack polling/syncing will actually run. Token
+	// presence from any source is sufficient — the slack.enabled flag is
+	// only a toggle for the file-based token. An env-var user bypasses the
+	// enabled flag by design, so show them as active even when the flag is
+	// false.
+	active := token != ""
 
 	// Count on-disk tasks sourced from Slack. Iterates the whole store; fine
 	// for a personal backlog size. We do not filter by status — completed
@@ -63,6 +70,7 @@ func runSlackStatus(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "Workspace:       %s\n", workspace)
 	fmt.Fprintf(out, "Token source:    %s\n", source)
 	fmt.Fprintf(out, "Enabled:         %t\n", slackCfg.Enabled)
+	fmt.Fprintf(out, "Active:          %t\n", active)
 	fmt.Fprintf(out, "Ingested so far: %d\n", ingested)
 	return nil
 }

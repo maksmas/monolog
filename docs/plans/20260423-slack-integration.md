@@ -130,7 +130,7 @@ Notes:
 - Files/attachments in `message.files[]` are skipped.
 - Channel name (for tag): `stars.list` returns only channel ID. Resolve via `conversations.info` once per unique channel per poll cycle (in-cycle cache). Same for author display name via `users.info`.
 
-**`stars.remove` request:** `POST https://slack.com/api/stars.remove` with form body `channel=C0123&channel_timestamp=1712345678.000100` and `Authorization: Bearer xoxp-...`. (Current Slack accepts either `timestamp` or `channel_timestamp`; use `channel_timestamp` which targets the saved message specifically.)
+**`stars.remove` request:** `POST https://slack.com/api/stars.remove` with form body `channel=C0123&timestamp=1712345678.000100` and `Authorization: Bearer xoxp-...`. (Plan originally specified `channel_timestamp` based on a now-obsolete assumption; real Slack returns `no_item_specified` when only `channel_timestamp` is sent. The documented parameter name is `timestamp`.)
 
 **Idempotent errors treated as success:** `not_starred`, `already_unstarred`, `message_not_found`.
 
@@ -245,7 +245,7 @@ Unknown top-level keys preserved on rewrite.
 - [x] Define `type SavedItem struct { Channel, ChannelName, TS, Text, AuthorID, AuthorName, Permalink string; ThreadTS string; HasFiles bool }`.
 - [x] Implement `Client.AuthTest(ctx) (workspace string, err error)` — `POST /auth.test`, parse `ok` + `team` (subdomain via URL parsing on `url` field, falling back to `team`).
 - [x] Implement `Client.ListSaved(ctx) ([]SavedItem, error)` — `POST /stars.list?limit=100`, follow `response_metadata.next_cursor` until empty, filter `type=="message"`, resolve channel names via in-cycle cache calling `conversations.info`, resolve author names via `users.info` (both cached across paginated calls in the same `ListSaved` invocation). Treat `has_more=false` / empty cursor as end of pages. Set `Permalink` from `message.permalink` when present, else construct from workspace (passed via client config or stored on client — use a `Client.Workspace` field).
-- [x] Implement `Client.Unsave(ctx, channel, ts string) error` — `POST /stars.remove` form-encoded with `channel`, `channel_timestamp`. Treat errors `not_starred`, `already_unstarred`, `message_not_found` as success (return nil). Return a typed error `ErrMissingScope` when the API returns `missing_scope` / `invalid_auth` so callers can show a distinct status message.
+- [x] Implement `Client.Unsave(ctx, channel, ts string) error` — `POST /stars.remove` form-encoded with `channel`, `timestamp`. Treat errors `not_starred`, `already_unstarred`, `message_not_found` as success (return nil). Return a typed error `ErrMissingScope` when the API returns `missing_scope` / `invalid_auth` so callers can show a distinct status message.
 - [x] Define a single typed sentinel `var ErrMissingScope = errors.New("slack: missing scope")` — callers match via `errors.Is` and show the distinct "run monolog slack-login" remedy. All other API errors are returned as `fmt.Errorf("slack %s: %s", method, rawError)` — one remedy ("try again"), no taxonomy needed. (Collapse from the previously-proposed 4-error set; YAGNI.)
 - [x] Honor `429` rate-limit with the `Retry-After` header: return the raw error wrapped (no retry, no sentinel; polling cadence is already slow enough for Tier 3).
 - [x] fixtures hand-crafted from documented API shapes (no real token available in execution environment)
@@ -256,7 +256,7 @@ Unknown top-level keys preserved on rewrite.
   - `ListSaved` resolves channel name and author name via cached `conversations.info` / `users.info` (test server counts requests, asserts 1 per unique ID even when the same channel appears 5 times).
   - `ListSaved` on mid-pagination error returns `(partial items, error)` — caller can decide whether to use partial data; `Ingest` will skip.
   - `ListSaved` constructs permalink when `message.permalink` absent.
-  - `Unsave` sends correct form body with `channel_timestamp`.
+  - `Unsave` sends correct form body with `timestamp`.
   - `Unsave` returns nil for `not_starred`, `already_unstarred`, `message_not_found`.
   - `Unsave` returns `ErrMissingScope` (matchable via `errors.Is`) for Slack error `missing_scope` and `invalid_auth`.
   - All methods return a descriptive error when `ok=false` with an unrecognized Slack error.
@@ -278,7 +278,7 @@ Unknown top-level keys preserved on rewrite.
 - [x] Implement `Ingest(s *store.Store, items []SavedItem, synced map[string]bool, opts Options) (newCount int, err error)`:
   - For each item, compute `key = item.Channel + "/" + item.TS`.
   - Skip if `synced[key]`.
-  - Skip items where `item.Channel` starts with `D` (DM) or `G`/`mpdm-` (group DM / multi-party DM) — log to stderr `slack: skipping DM bookmark <ts>` and move on. DMs are out of scope for v1 (tag semantics unclear, author-as-channel-name is confusing).
+  - Skip items where `item.Channel` starts with `D` (DM) or `mpdm-` (multi-party DM) — log to stderr `slack: skipping DM bookmark <ts>` and move on. DMs are out of scope for v1 (tag semantics unclear, author-as-channel-name is confusing). Note: the `G` prefix is NOT a skip trigger — Slack also uses `G` for private channels, which are a legitimate ingest target.
   - Call `BuildTask(item, opts)`, assign a new ULID via `model.NewID`, compute position using `ordering.NextPosition(todayTasks)` for the FIRST new item and increment by the ordering-package default spacing (1000) for each subsequent item in the batch.
   - Accumulate new tasks in a slice.
   - If slice non-empty, call `store.CreateBatch(tasks, fmt.Sprintf("slack: ingest %d items", len(tasks)))`.
@@ -288,7 +288,7 @@ Unknown top-level keys preserved on rewrite.
 - [x] Tests:
   - `BuildTask` — title: 80-rune boundary (no ellipsis), 81-rune (ellipsis at 80), multi-byte emoji at boundary, leading-blank-line message, whitespace-only message (`"(empty message)"`); body format matches spec verbatim including Slack markup passthrough; `channel_as_tag=true` → `["slack", channelName]`; `=false` → `["slack"]`; threaded reply includes only reply text; attachments dropped (HasFiles=true but nothing leaks into body).
   - `Ingest` — dedup: items whose key is in `synced` are skipped; new items passed through; `synced` map updated after successful commit; empty-input returns `(0, nil)` with no commit.
-  - `Ingest` — DM skip: items with `C` channel prefixed `D`/`G`/`mpdm-` are skipped silently.
+  - `Ingest` — DM skip: items with channel prefixed `D`/`mpdm-` are skipped silently; items with `G` prefix (private channels) pass through.
   - `Ingest` — commit failure path: `synced` unchanged when `store.CreateBatch` errors.
   - `Ingest` — positions: first ingested task gets `NextPosition(today)`, subsequent tasks increment by 1000.
 - [x] Run `go test ./internal/slack/...` — must pass before Task 8.
@@ -430,7 +430,7 @@ Decisions documented here so an implementer does not re-debate them mid-task:
 - **Config changes require TUI restart** — `poll_interval_seconds`, `enabled`, token changes, etc. are read by `newModel`. Changing them mid-session has no effect on the running TUI. Quit and relaunch to pick up new values.
 - **TUI + CLI `slack-sync` should not run concurrently** — both will call `git.AutoCommit`; concurrent commits in the same working tree can race. Recommend running one or the other. Not guarded in code (cross-process mutex is out of scope for a personal tool).
 - **Slack markup renders literally** — `<@U0456>`, `<#C0123|name>`, `<https://…|label>`, and HTML entities (`&lt;` / `&amp;`) appear verbatim in task bodies. A markup-to-plaintext pass is out of scope for v1; user can clean up via `monolog note` or in the YAML edit flow.
-- **DMs are skipped** — bookmarks on DM channels (`D...`) and group DMs (`G...` / `mpdm-*`) are not ingested. Tag semantics are unclear (no channel name; author-as-channel is confusing). May be revisited if users hit the limitation.
+- **DMs are skipped** — bookmarks on DM channels (`D...`) and multi-party DMs (`mpdm-*`) are not ingested. Tag semantics are unclear (no channel name; author-as-channel is confusing). May be revisited if users hit the limitation. Note: the legacy `G` prefix is NOT treated as a DM marker since Slack also uses `G` for private channels — private-channel bookmarks are a legitimate ingest target. Legacy G-prefixed group DMs (rare in modern workspaces) will therefore ingest rather than skip.
 - **Title format under 80 runes** — long titles are truncated at 79 runes with a trailing `…`. Rune-safe; no mid-codepoint splits.
 - **No `stars:read` → `stars:write` split handling** — if the user grants only `stars:read` during login, `auth.test` still succeeds and the TUI polls fine; the first `d` on a slack-sourced task fails with `ErrMissingScope` and surfaces the "re-run slack-login" remedy.
 - **First-run "sync everything" can be large** — on first configure with N existing saved items, one batched `slack: ingest N items` commit. No pagination-level throttling beyond Slack's own rate limit.
