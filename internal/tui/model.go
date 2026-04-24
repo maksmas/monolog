@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/mmaksmas/monolog/internal/ordering"
 	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/mmaksmas/monolog/internal/schedule"
+	"github.com/mmaksmas/monolog/internal/slack"
 	"github.com/mmaksmas/monolog/internal/store"
 )
 
@@ -216,6 +218,23 @@ type Model struct {
 	// (standard redo semantics). Cleared alongside undoStack when syncing with
 	// a remote.
 	redoStack []string
+
+	// Slack integration state. slackClient is nil when Slack is disabled or no
+	// token is configured — all slack-related commands short-circuit to no-ops
+	// in that case.
+	slackClient *slack.Client
+	// slackSynced is an in-memory dedup cache keyed by "channel/ts". Seeded
+	// from existing Source=="slack" tasks in newModel and maintained by
+	// slack.Ingest as new items land.
+	slackSynced map[string]bool
+	// slackPollInterval is the gap between scheduled polls (derived from
+	// config.Slack().PollIntervalSeconds at startup). Ignored when slackClient
+	// is nil.
+	slackPollInterval time.Duration
+	// slackLastErr holds the most recent poll error message to rate-limit
+	// identical consecutive errors in the status bar. Cleared on the next
+	// successful poll.
+	slackLastErr string
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -356,6 +375,20 @@ func (m *Model) renderListItem(index int, it list.Item, selected bool) string {
 	return title + "\n" + desc + "\n"
 }
 
+// slackTickMsg fires on the tea.Tick scheduled after each poll cycle. The
+// Update loop responds by kicking off the next poll; the next tick is
+// scheduled only after that poll's slackFetchedMsg lands, which keeps a slow
+// poll from stacking concurrent pollers.
+type slackTickMsg struct{}
+
+// slackFetchedMsg carries the result of a slackPollCmd goroutine back to the
+// main goroutine. Ingest and status-bar updates run in Update so the store is
+// never touched off-thread.
+type slackFetchedMsg struct {
+	items []slack.SavedItem
+	err   error
+}
+
 // taskSavedMsg is dispatched back to Update after an async mutation completes.
 // Fields manipulate undo/redo stacks from the Update loop rather than the
 // goroutine closure, so the stacks are never mutated concurrently.
@@ -463,7 +496,45 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		}
 	}
 
+	// Seed the Slack dedup cache from already-ingested tasks so the first
+	// poll does not re-create tasks for messages that landed in a prior
+	// session. Always initialize the map (even when slack is disabled) so
+	// helpers can check it without a nil guard.
+	m.slackSynced = make(map[string]bool)
+	m.seedSlackSynced(m.allTasks)
+
+	// Build the slack client only when both the feature is enabled AND a
+	// token is available. Any other combination (no token, not enabled) is
+	// treated as "disabled" and leaves slackClient nil so polling is a no-op.
+	slackCfg := config.Slack()
+	token, _, _ := config.SlackToken()
+	if slackCfg.Enabled && token != "" {
+		m.slackClient = &slack.Client{
+			Token:     token,
+			Workspace: slackCfg.Workspace,
+		}
+		interval := slackCfg.PollIntervalSeconds
+		if interval <= 0 {
+			interval = 60
+		}
+		m.slackPollInterval = time.Duration(interval) * time.Second
+	}
+
 	return m, nil
+}
+
+// seedSlackSynced walks the given task list and populates m.slackSynced
+// for every task that carries a Slack source identifier. Separated into a
+// helper so tests can reseed the cache after mutating the store.
+func (m *Model) seedSlackSynced(tasks []model.Task) {
+	if m.slackSynced == nil {
+		m.slackSynced = make(map[string]bool)
+	}
+	for _, t := range tasks {
+		if t.Source == "slack" && t.SourceID != "" {
+			m.slackSynced[t.SourceID] = true
+		}
+	}
 }
 
 // initLists creates a fresh slice of vlist widgets, one per tab.
@@ -905,8 +976,15 @@ func (m *Model) skipSeparator(dir int) {
 	m.lists[m.activeTab].SkipSeparator(dir)
 }
 
-// Init is the Bubble Tea Init hook.
-func (m *Model) Init() tea.Cmd { return nil }
+// Init is the Bubble Tea Init hook. When Slack polling is configured, the
+// first tick fires immediately (d=0) so saved items land without a 60s wait
+// on TUI launch.
+func (m *Model) Init() tea.Cmd {
+	if m.slackClient == nil {
+		return nil
+	}
+	return m.slackTickCmd(0)
+}
 
 // Update routes a tea.Msg through the model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -968,6 +1046,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case slackTickMsg:
+		// Defensive: if the client went away between tick scheduling and
+		// firing (shouldn't happen today), just stop the loop.
+		if m.slackClient == nil {
+			return m, nil
+		}
+		return m, m.slackPollCmd()
+
+	case slackFetchedMsg:
+		return m.handleSlackFetched(msg)
+
 	case tea.KeyMsg:
 		switch m.mode {
 		case modeNormal:
@@ -986,6 +1075,63 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// handleSlackFetched processes a slackFetchedMsg on the main goroutine:
+// ingests any new items via the store, updates the status bar (rate-limited
+// on identical consecutive errors), and schedules the next tick. Runs in all
+// modes (matches taskSavedMsg behavior) so background polling cannot stall
+// when the user has a modal open.
+func (m *Model) handleSlackFetched(msg slackFetchedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		errMsg := msg.err.Error()
+		if errMsg != m.slackLastErr {
+			m.statusMsg = "Slack: " + errMsg
+			m.slackLastErr = errMsg
+		}
+		return m, m.slackTickCmd(m.slackPollInterval)
+	}
+
+	// Success clears the rate-limit guard so the next error (if any) will
+	// flash once more.
+	m.slackLastErr = ""
+
+	// Capture focus so the cursor does not jump when ingest inserts new
+	// items at the bottom of the Today bucket.
+	var focusID string
+	if t := m.selectedTask(); t != nil {
+		focusID = t.ID
+	}
+
+	newCount, err := slack.Ingest(m.store, msg.items, m.slackSynced, slack.Options{
+		ChannelAsTag: config.Slack().ChannelAsTag,
+		DateFormat:   config.DateFormat(),
+	})
+	if err != nil {
+		// Treat ingest failures like poll failures for status reporting —
+		// rate-limit identical messages so a hung git repo does not spam.
+		errMsg := err.Error()
+		if errMsg != m.slackLastErr {
+			m.statusMsg = "Slack: " + errMsg
+			m.slackLastErr = errMsg
+		}
+		return m, m.slackTickCmd(m.slackPollInterval)
+	}
+
+	if newCount > 0 {
+		m.statusMsg = fmt.Sprintf("Slack: %d new", newCount)
+		if rerr := m.reloadAll(); rerr != nil {
+			m.err = rerr
+		}
+		m.recomputeLayout()
+		if focusID != "" {
+			m.focusTaskByID(focusID)
+		}
+		if m.viewMode == viewTag {
+			m.skipSeparator(0)
+		}
+	}
+	return m, m.slackTickCmd(m.slackPollInterval)
 }
 
 // updateNormal handles keys when no modal is open.
@@ -1084,6 +1230,12 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openEdit()
 	case "s":
 		m.statusMsg = "Syncing..."
+		if m.slackClient != nil {
+			// Trigger git sync + Slack poll in parallel. The poll's
+			// slackFetchedMsg handler re-schedules the tick, so this does
+			// not leak the background loop.
+			return m, tea.Batch(m.syncCmd(), m.slackPollCmd())
+		}
 		return m, m.syncCmd()
 	case "u", "ctrl+z":
 		if len(m.undoStack) == 0 {
@@ -2066,6 +2218,9 @@ func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.pendingAction = func() tea.Cmd {
 			m.statusMsg = "Syncing..."
+			if m.slackClient != nil {
+				return tea.Batch(m.syncCmd(), m.slackPollCmd())
+			}
 			return m.syncCmd()
 		}
 		return m, m.commitGrab()
@@ -2466,6 +2621,34 @@ func (m *Model) focusTaskByID(id string) {
 				return
 			}
 		}
+	}
+}
+
+// slackTickCmd schedules a slackTickMsg d from now. Returns nil when Slack
+// is disabled (no client) so the Bubble Tea scheduler has nothing to fire —
+// turning the whole polling loop into a no-op without conditional dispatch
+// at every call site.
+func (m *Model) slackTickCmd(d time.Duration) tea.Cmd {
+	if m.slackClient == nil {
+		return nil
+	}
+	return tea.Tick(d, func(time.Time) tea.Msg { return slackTickMsg{} })
+}
+
+// slackPollCmd fires a single ListSaved request against the Slack API with a
+// 30s timeout and returns the result as a slackFetchedMsg. Returns nil when
+// Slack is disabled (same guard as slackTickCmd) so callers can safely wrap
+// this in a tea.Batch without checking slackClient themselves.
+func (m *Model) slackPollCmd() tea.Cmd {
+	if m.slackClient == nil {
+		return nil
+	}
+	client := m.slackClient
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		items, err := client.ListSaved(ctx)
+		return slackFetchedMsg{items: items, err: err}
 	}
 }
 

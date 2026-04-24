@@ -19,6 +19,7 @@ import (
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/schedule"
+	"github.com/mmaksmas/monolog/internal/slack"
 	"github.com/mmaksmas/monolog/internal/store"
 )
 
@@ -10253,6 +10254,266 @@ func TestRedoStack_StatusStripsRevertPrefix(t *testing.T) {
 	}
 	if strings.Contains(m.statusMsg, `Revert "`) {
 		t.Errorf("after second redo: statusMsg = %q, should not contain %q", m.statusMsg, `Revert "`)
+	}
+}
+
+// --- Slack integration (Task 11) -------------------------------------------
+
+// TestSlack_NewModelSeedsSyncedCache verifies that newModel walks the existing
+// task set and populates slackSynced with every Slack-sourced task. This is
+// what keeps the first post-restart poll from re-ingesting items that landed
+// in a prior session.
+func TestSlack_NewModelSeedsSyncedCache(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01SL1", Title: "saved a", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today),
+			Source:   "slack", SourceID: "C1/1700000000.000001",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01SL2", Title: "saved b", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today),
+			Source:   "slack", SourceID: "C2/1700000000.000002",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01MAN", Title: "manual", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today),
+			Source:   "tui", SourceID: "",
+			Position: 3000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if !m.slackSynced["C1/1700000000.000001"] {
+		t.Errorf("slackSynced missing C1/1700000000.000001; got %v", m.slackSynced)
+	}
+	if !m.slackSynced["C2/1700000000.000002"] {
+		t.Errorf("slackSynced missing C2/1700000000.000002; got %v", m.slackSynced)
+	}
+	// A non-slack task must not leak into the map.
+	if len(m.slackSynced) != 2 {
+		t.Errorf("slackSynced size = %d, want 2 (got %v)", len(m.slackSynced), m.slackSynced)
+	}
+}
+
+// TestSlack_TickMsgNoopWhenClientNil verifies that a slackTickMsg dispatched
+// into a model with no Slack client returns no command — the polling loop
+// must not run when the user has not configured Slack.
+func TestSlack_TickMsgNoopWhenClientNil(t *testing.T) {
+	m := newTestModel(t)
+	if m.slackClient != nil {
+		t.Fatalf("slackClient should be nil without config; got %+v", m.slackClient)
+	}
+	next, cmd := m.Update(slackTickMsg{})
+	if cmd != nil {
+		t.Errorf("slackTickMsg with nil client should return nil cmd; got %T", cmd)
+	}
+	if next == nil {
+		t.Fatal("Update returned nil model")
+	}
+}
+
+// TestSlack_FetchedMsgIngestsItems exercises the happy ingest path: a
+// slackFetchedMsg with two new items lands, Ingest writes them, the reloaded
+// list shows the new tasks, and slackSynced is updated.
+func TestSlack_FetchedMsgIngestsItems(t *testing.T) {
+	m := newTestModel(t)
+	// Pretend Slack is on so the re-schedule does not blow up — we do not
+	// need a real client because Ingest runs on the main goroutine.
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	items := []slack.SavedItem{
+		{Channel: "C1", ChannelName: "general", TS: "1700000001.000001",
+			Text: "first thing", AuthorName: "alice",
+			Permalink: "https://x.slack.com/archives/C1/p1700000001000001"},
+		{Channel: "C1", ChannelName: "general", TS: "1700000002.000002",
+			Text: "second thing", AuthorName: "bob",
+			Permalink: "https://x.slack.com/archives/C1/p1700000002000002"},
+	}
+	next, _ := m.Update(slackFetchedMsg{items: items})
+	m = next.(*Model)
+
+	if m.err != nil {
+		t.Fatalf("ingest err: %v", m.err)
+	}
+	if !strings.Contains(m.statusMsg, "2 new") {
+		t.Errorf("statusMsg = %q, want to contain %q", m.statusMsg, "2 new")
+	}
+	if got := len(m.lists[0].Items()); got != 2 {
+		t.Errorf("Today tab = %d items, want 2", got)
+	}
+	if !m.slackSynced["C1/1700000001.000001"] || !m.slackSynced["C1/1700000002.000002"] {
+		t.Errorf("slackSynced not updated: %v", m.slackSynced)
+	}
+}
+
+// TestSlack_FetchedMsgErrorSetsStatusAndLastErr confirms that the first poll
+// error lands in the status bar and is stored in slackLastErr so subsequent
+// identical errors can be rate-limited.
+func TestSlack_FetchedMsgErrorSetsStatusAndLastErr(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	next, _ := m.Update(slackFetchedMsg{err: errors.New("network down")})
+	m = next.(*Model)
+
+	if !strings.Contains(m.statusMsg, "network down") {
+		t.Errorf("statusMsg = %q, want to contain %q", m.statusMsg, "network down")
+	}
+	if !strings.HasPrefix(m.statusMsg, "Slack:") {
+		t.Errorf("statusMsg = %q, want Slack: prefix", m.statusMsg)
+	}
+	if m.slackLastErr != "network down" {
+		t.Errorf("slackLastErr = %q, want %q", m.slackLastErr, "network down")
+	}
+}
+
+// TestSlack_FetchedMsgRateLimitsIdenticalErrors confirms that the second
+// identical error does NOT re-flash the status bar. The user has already
+// seen this error; spamming it on every tick is noise.
+func TestSlack_FetchedMsgRateLimitsIdenticalErrors(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	// First error: flashes.
+	next, _ := m.Update(slackFetchedMsg{err: errors.New("auth failed")})
+	m = next.(*Model)
+	if m.statusMsg == "" {
+		t.Fatal("first error should set statusMsg")
+	}
+	// Clear status manually (real UI would move on to another message).
+	m.statusMsg = ""
+
+	// Second identical error: must be silenced.
+	next, _ = m.Update(slackFetchedMsg{err: errors.New("auth failed")})
+	m = next.(*Model)
+	if m.statusMsg != "" {
+		t.Errorf("second identical error should be rate-limited; statusMsg = %q", m.statusMsg)
+	}
+}
+
+// TestSlack_FetchedMsgSuccessClearsLastErr confirms that a successful poll
+// resets slackLastErr so the next distinct error will flash again.
+func TestSlack_FetchedMsgSuccessClearsLastErr(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+	m.slackLastErr = "previous failure"
+
+	next, _ := m.Update(slackFetchedMsg{items: nil})
+	m = next.(*Model)
+	if m.slackLastErr != "" {
+		t.Errorf("success did not clear slackLastErr; got %q", m.slackLastErr)
+	}
+}
+
+// TestSlack_FetchedMsgSkipsAlreadySynced confirms the dedup cache is honored:
+// items whose key is in slackSynced are not re-ingested.
+func TestSlack_FetchedMsgSkipsAlreadySynced(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01SL1", Title: "old", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today),
+			Source:   "slack", SourceID: "C1/1700000000.000001",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	// Re-deliver the same item — must be skipped because it is already in
+	// slackSynced (seeded from the existing task).
+	items := []slack.SavedItem{
+		{Channel: "C1", ChannelName: "general", TS: "1700000000.000001",
+			Text: "old", AuthorName: "alice",
+			Permalink: "https://x.slack.com/archives/C1/p1700000000000001"},
+	}
+	next, _ := m.Update(slackFetchedMsg{items: items})
+	m = next.(*Model)
+
+	if m.err != nil {
+		t.Fatalf("ingest err: %v", m.err)
+	}
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Errorf("Today tab = %d items, want 1 (dedup failed)", got)
+	}
+	if strings.Contains(m.statusMsg, "new") {
+		t.Errorf("statusMsg = %q, should not report new items on dedup", m.statusMsg)
+	}
+}
+
+// TestSlack_SKeyWithClientBatchesSyncAndPoll confirms that pressing 's' when
+// a Slack client is present returns a tea.Batch carrying both the git sync
+// command and the slack poll command.
+func TestSlack_SKeyWithClientBatchesSyncAndPoll(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	_, cmd := key(t, m, "s")
+	if cmd == nil {
+		t.Fatal("s key returned nil cmd")
+	}
+	// tea.Batch returns a single cmd whose invocation yields a BatchMsg
+	// (a slice of sub-commands). We check for a 2-element batch.
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("s key cmd did not produce tea.BatchMsg; got %T", msg)
+	}
+	if len(batch) != 2 {
+		t.Errorf("batch size = %d, want 2 (sync + poll)", len(batch))
+	}
+}
+
+// TestSlack_SKeyWithoutClientReturnsSyncOnly confirms that pressing 's' when
+// Slack is disabled behaves as before — a plain sync command, not a batch.
+func TestSlack_SKeyWithoutClientReturnsSyncOnly(t *testing.T) {
+	m := newTestModel(t)
+	if m.slackClient != nil {
+		t.Fatal("precondition: slackClient must be nil")
+	}
+	_, cmd := key(t, m, "s")
+	if cmd == nil {
+		t.Fatal("s key returned nil cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.BatchMsg); ok {
+		t.Errorf("s key without client should NOT return BatchMsg; got %T", msg)
+	}
+}
+
+// TestSlack_FetchedMsgProcessedInModal confirms that the ingest path runs
+// regardless of the current modal. The user has the add modal open, a poll
+// result lands, ingest writes the new task, and the add modal's typed-in
+// state (addTitle etc.) is preserved across the reloadAll.
+func TestSlack_FetchedMsgProcessedInModal(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	// Open the add modal and type partway.
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("precondition failed: mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "draft")
+	typedBefore := m.titleArea.Value()
+
+	items := []slack.SavedItem{
+		{Channel: "C1", ChannelName: "general", TS: "1700000010.000001",
+			Text: "slack one", AuthorName: "alice"},
+	}
+	next, _ := m.Update(slackFetchedMsg{items: items})
+	m = next.(*Model)
+
+	if m.err != nil {
+		t.Fatalf("ingest err in modal: %v", m.err)
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode changed during background ingest; got %v, want modeAdd", m.mode)
+	}
+	if m.titleArea.Value() != typedBefore {
+		t.Errorf("addTitle mutated during ingest; got %q, want %q",
+			m.titleArea.Value(), typedBefore)
+	}
+	if !m.slackSynced["C1/1700000010.000001"] {
+		t.Error("slackSynced not updated from modal-mode ingest")
 	}
 }
 

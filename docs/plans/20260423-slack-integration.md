@@ -357,19 +357,19 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] Add Model fields: `slackSynced map[string]bool`, `slackClient *slack.Client` (nil when disabled), `slackLastErr string` (for rate-limited error suppression), `slackPollInterval time.Duration`.
-- [ ] In `newModel` (or equivalent init), after tasks load: walk tasks once and populate `slackSynced` from every task with `Source=="slack" && SourceID!=""`. Read `config.Slack()`; if `Enabled && token != ""`, build `slackClient`; else leave nil.
-- [ ] Add `(m *Model) slackTickCmd(d time.Duration) tea.Cmd` wrapping `tea.Tick(d, func(time.Time) tea.Msg { return slackTickMsg{} })`. Only returns a real command when `slackClient != nil`; else returns `nil` (no-op).
-- [ ] Add `(m *Model) slackPollCmd() tea.Cmd` — goroutine calls `slackClient.ListSaved(ctx)` with a 30s timeout; returns `slackFetchedMsg{items, err}`.
-- [ ] In `Model.Init`, include `m.slackTickCmd(0)` in the batch so the first poll fires immediately on startup.
-- [ ] In `Update`, handle `slackTickMsg` → return `m.slackPollCmd()` (the next tick is scheduled from `slackFetchedMsg` after ingest finishes — self-rescheduling).
-- [ ] In `Update`, handle `slackFetchedMsg`:
+- [x] Add Model fields: `slackSynced map[string]bool`, `slackClient *slack.Client` (nil when disabled), `slackLastErr string` (for rate-limited error suppression), `slackPollInterval time.Duration`.
+- [x] In `newModel` (or equivalent init), after tasks load: walk tasks once and populate `slackSynced` from every task with `Source=="slack" && SourceID!=""`. Read `config.Slack()`; if `Enabled && token != ""`, build `slackClient`; else leave nil.
+- [x] Add `(m *Model) slackTickCmd(d time.Duration) tea.Cmd` wrapping `tea.Tick(d, func(time.Time) tea.Msg { return slackTickMsg{} })`. Only returns a real command when `slackClient != nil`; else returns `nil` (no-op).
+- [x] Add `(m *Model) slackPollCmd() tea.Cmd` — goroutine calls `slackClient.ListSaved(ctx)` with a 30s timeout; returns `slackFetchedMsg{items, err}`.
+- [x] In `Model.Init`, include `m.slackTickCmd(0)` in the batch so the first poll fires immediately on startup.
+- [x] In `Update`, handle `slackTickMsg` → return `m.slackPollCmd()` (the next tick is scheduled from `slackFetchedMsg` after ingest finishes — self-rescheduling).
+- [x] In `Update`, handle `slackFetchedMsg`:
   - On err: update status bar (first occurrence: show `Slack: <reason>`; identical error as `m.slackLastErr`: suppress). Re-schedule next tick via `m.slackTickCmd(m.slackPollInterval)`.
   - On success: clear `m.slackLastErr`; call `slack.Ingest(m.store, items, m.slackSynced, opts)` on main goroutine; on newCount>0 set status bar `Slack: N new` and call `m.reloadAll()`; on 0 be silent. Re-schedule next tick.
   - **Cursor preservation**: `m.reloadAll()` after ingest should preserve the user's current cursor position (focus the same task ID as before ingest, or first task of current tab if the focused task is gone). Prevents the cursor from jumping when new Slack items land mid-browse.
   - **Processing in non-normal modes**: ingest always runs regardless of current mode (search overlay, add modal, settings, detail panel). This matches the existing `taskSavedMsg` behavior — async events are never queued. Add-modal input state lives in `Model.addTitle` / `Model.addTags` / etc., which `reloadAll()` does NOT touch, so the user's in-progress typing is preserved. Add a test for this.
-- [ ] Modify the `s` key handler: `return m, tea.Batch(m.syncCmd(), m.slackPollCmd())` — parallel git sync + immediate slack poll. (Pollcmd resets the tick indirectly through its own fetchmsg path.)
-- [ ] Tests (using existing `key()` helper and synthetic messages):
+- [x] Modify the `s` key handler: `return m, tea.Batch(m.syncCmd(), m.slackPollCmd())` — parallel git sync + immediate slack poll. (Pollcmd resets the tick indirectly through its own fetchmsg path.)
+- [x] Tests (using existing `key()` helper and synthetic messages):
   - `newModel` with `Source=="slack"` tasks present seeds `slackSynced` correctly.
   - Dispatching `slackTickMsg` when `slackClient == nil` returns no command (disabled).
   - Dispatching `slackFetchedMsg` with items ingests via store and updates `slackSynced`.
@@ -377,7 +377,7 @@ Unknown top-level keys preserved on rewrite.
   - Second identical `slackFetchedMsg` error does NOT re-flash status bar (rate-limit).
   - `slackFetchedMsg` success after an error clears `slackLastErr`.
   - Pressing `s` returns a `tea.Batch` that includes both sync and slack poll commands (inspect via test-internal hook, or assert on a combined message sequence).
-- [ ] Run `go test ./internal/tui/...` — must pass before Task 12.
+- [x] Run `go test ./internal/tui/...` — must pass before Task 12.
 
 ### Task 12: TUI + CLI — Slack unsave on completion
 
