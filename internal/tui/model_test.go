@@ -10517,6 +10517,185 @@ func TestSlack_FetchedMsgProcessedInModal(t *testing.T) {
 	}
 }
 
+// --- Slack unsave on done (Task 12) ----------------------------------------
+
+// TestSlack_DoneSlackTaskSchedulesUnsave verifies that completing a task with
+// Source=="slack" && SourceID!="" returns a taskSavedMsg populated with
+// slackUnsaveChannel and slackUnsaveTS so the Update handler can chain the
+// stars.remove HTTP call.
+func TestSlack_DoneSlackTaskSchedulesUnsave(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01SL", Title: "slack bookmark", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today),
+			Source:   "slack", SourceID: "C0123/1700000000.000001",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+
+	cmd := m.doneSelected()
+	if cmd == nil {
+		t.Fatal("doneSelected returned nil cmd")
+	}
+	msg := cmd()
+	saved, ok := msg.(taskSavedMsg)
+	if !ok {
+		t.Fatalf("doneSelected msg = %T, want taskSavedMsg", msg)
+	}
+	if saved.err != nil {
+		t.Fatalf("done returned err: %v", saved.err)
+	}
+	if saved.slackUnsaveChannel != "C0123" {
+		t.Errorf("slackUnsaveChannel = %q, want %q", saved.slackUnsaveChannel, "C0123")
+	}
+	if saved.slackUnsaveTS != "1700000000.000001" {
+		t.Errorf("slackUnsaveTS = %q, want %q", saved.slackUnsaveTS, "1700000000.000001")
+	}
+}
+
+// TestSlack_DoneNonSlackTaskNoUnsave verifies that completing a task whose
+// Source is not "slack" does NOT populate the slackUnsave fields on
+// taskSavedMsg.
+func TestSlack_DoneNonSlackTaskNoUnsave(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01MAN", Title: "manual task", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today),
+			Source:   "tui",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+
+	cmd := m.doneSelected()
+	if cmd == nil {
+		t.Fatal("doneSelected returned nil cmd")
+	}
+	msg := cmd()
+	saved, ok := msg.(taskSavedMsg)
+	if !ok {
+		t.Fatalf("doneSelected msg = %T, want taskSavedMsg", msg)
+	}
+	if saved.slackUnsaveChannel != "" || saved.slackUnsaveTS != "" {
+		t.Errorf("non-slack done should leave unsave fields empty; got channel=%q ts=%q",
+			saved.slackUnsaveChannel, saved.slackUnsaveTS)
+	}
+}
+
+// TestSlack_TaskSavedMsgDispatchesUnsaveCmd confirms that the taskSavedMsg
+// handler returns slackUnsaveCmd as the next command when the unsave fields
+// are populated and the client is configured.
+func TestSlack_TaskSavedMsgDispatchesUnsaveCmd(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+
+	next, cmd := m.Update(taskSavedMsg{
+		status:             "Completed: foo",
+		slackUnsaveChannel: "C0123",
+		slackUnsaveTS:      "1700000000.000001",
+	})
+	m = next.(*Model)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd to chain slackUnsaveCmd")
+	}
+	if m.statusMsg != "Completed: foo" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "Completed: foo")
+	}
+}
+
+// TestSlack_TaskSavedMsgSkipsUnsaveWhenClientNil confirms that the chain is a
+// no-op when Slack is disabled — no command returned, no panic from a nil
+// client.
+func TestSlack_TaskSavedMsgSkipsUnsaveWhenClientNil(t *testing.T) {
+	m := newTestModel(t)
+	if m.slackClient != nil {
+		t.Fatal("precondition: slackClient must be nil")
+	}
+	_, cmd := m.Update(taskSavedMsg{
+		status:             "Completed: foo",
+		slackUnsaveChannel: "C0123",
+		slackUnsaveTS:      "1700000000.000001",
+	})
+	if cmd != nil {
+		t.Errorf("slackClient nil should skip unsave chain; got cmd %T", cmd)
+	}
+}
+
+// TestSlack_UnsaveDoneNilErrSilent verifies that a successful unsave leaves
+// the status bar alone (the preceding done message already informed the
+// user). Also clears any previously-stored unsave error so the next distinct
+// error will flash.
+func TestSlack_UnsaveDoneNilErrSilent(t *testing.T) {
+	m := newTestModel(t)
+	m.statusMsg = "Completed: foo"
+	m.slackUnsaveLastErr = "previous failure"
+
+	next, _ := m.Update(slackUnsaveDoneMsg{err: nil})
+	m = next.(*Model)
+	if m.statusMsg != "Completed: foo" {
+		t.Errorf("statusMsg mutated on nil unsave err; got %q", m.statusMsg)
+	}
+	if m.slackUnsaveLastErr != "" {
+		t.Errorf("slackUnsaveLastErr not cleared on success; got %q", m.slackUnsaveLastErr)
+	}
+}
+
+// TestSlack_UnsaveDoneMissingScope shows the distinct re-run-login remedy on
+// missing-scope errors rather than the generic "failed" message.
+func TestSlack_UnsaveDoneMissingScope(t *testing.T) {
+	m := newTestModel(t)
+	next, _ := m.Update(slackUnsaveDoneMsg{err: slack.ErrMissingScope})
+	m = next.(*Model)
+	if !strings.Contains(m.statusMsg, "stars:write") {
+		t.Errorf("statusMsg = %q, want to mention stars:write", m.statusMsg)
+	}
+	if !strings.Contains(m.statusMsg, "slack-login") {
+		t.Errorf("statusMsg = %q, want to mention slack-login", m.statusMsg)
+	}
+}
+
+// TestSlack_UnsaveDoneGenericErrorRateLimited confirms the generic failure
+// path rate-limits identical consecutive errors, matching poll-error
+// behavior.
+func TestSlack_UnsaveDoneGenericErrorRateLimited(t *testing.T) {
+	m := newTestModel(t)
+	next, _ := m.Update(slackUnsaveDoneMsg{err: errors.New("network down")})
+	m = next.(*Model)
+	if !strings.Contains(m.statusMsg, "network down") {
+		t.Errorf("first error statusMsg = %q, want to contain network down", m.statusMsg)
+	}
+	// Clear status to detect whether the second identical error re-flashes.
+	m.statusMsg = ""
+	next, _ = m.Update(slackUnsaveDoneMsg{err: errors.New("network down")})
+	m = next.(*Model)
+	if m.statusMsg != "" {
+		t.Errorf("second identical unsave error should be silenced; got %q", m.statusMsg)
+	}
+}
+
+// TestSlack_UnsaveErrDoesNotCrossSilencePollErr verifies that unsave and poll
+// errors use separate rate-limit state. A poll error should not cause an
+// unsave error with the same text to be silenced, and vice versa.
+func TestSlack_UnsaveErrDoesNotCrossSilencePollErr(t *testing.T) {
+	m := newTestModel(t)
+	m.slackClient = &slack.Client{Token: "xoxp-test"}
+	m.slackPollInterval = 60 * time.Second
+
+	// Poll error first.
+	next, _ := m.Update(slackFetchedMsg{err: errors.New("same text")})
+	m = next.(*Model)
+	pollStatus := m.statusMsg
+	if pollStatus == "" {
+		t.Fatal("poll error did not set statusMsg")
+	}
+
+	// Clear status bar. A subsequent unsave error with the same text should
+	// still flash because slackUnsaveLastErr is independent of slackLastErr.
+	m.statusMsg = ""
+	next, _ = m.Update(slackUnsaveDoneMsg{err: errors.New("same text")})
+	m = next.(*Model)
+	if m.statusMsg == "" {
+		t.Error("unsave error was silenced by prior poll error (cross-silencing bug)")
+	}
+}
+
 // TestStripRevertPrefix verifies the pure helper peels off arbitrarily nested
 // `Revert "..."` layers.
 func TestStripRevertPrefix(t *testing.T) {

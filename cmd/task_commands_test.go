@@ -3,13 +3,19 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/slack"
 )
 
 // addTestTask adds a task via the CLI and returns its ID.
@@ -1126,5 +1132,333 @@ func TestEdit_TagsPreservesActive(t *testing.T) {
 	}
 	if !hasPersonal {
 		t.Errorf("expected tags to contain 'personal', got %v", task.Tags)
+	}
+}
+
+// --- Slack unsave on `done` (Task 12) --------------------------------------
+
+// doneSlackMock is a minimal httptest handler for the two Slack endpoints the
+// done command might hit: stars.remove (the unsave call). Auth.test is not
+// hit by `done`, so we skip it. Tracks the form body of the last stars.remove
+// request so tests can assert channel + channel_timestamp were sent correctly.
+type doneSlackMock struct {
+	mu            sync.Mutex
+	starsRemoveN  int
+	lastChannel   string
+	lastTimestamp string
+	// errorResp, when non-empty, is returned as the Slack error field on the
+	// next stars.remove call (ok=false).
+	errorResp string
+}
+
+func (m *doneSlackMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	method := strings.TrimPrefix(r.URL.Path, "/")
+	if method != "stars.remove" {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":false,"error":"unknown_method"}`)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	m.mu.Lock()
+	m.starsRemoveN++
+	m.lastChannel = r.Form.Get("channel")
+	m.lastTimestamp = r.Form.Get("channel_timestamp")
+	errResp := m.errorResp
+	m.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	if errResp != "" {
+		_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, errResp)
+		return
+	}
+	_, _ = fmt.Fprint(w, `{"ok":true}`)
+}
+
+// installDoneSlackClient substitutes newDoneSlackClientFn to point at the
+// httptest server. Returns a restore closure for defer.
+func installDoneSlackClient(t *testing.T, server *httptest.Server) func() {
+	t.Helper()
+	orig := newDoneSlackClientFn
+	newDoneSlackClientFn = func(token, workspace string) *slack.Client {
+		return &slack.Client{Token: token, Workspace: workspace, BaseURL: server.URL}
+	}
+	return func() { newDoneSlackClientFn = orig }
+}
+
+// writeSlackSourcedTaskFile plants a Source="slack" task on disk. Tests use
+// this to simulate a previously-ingested saved item without going through the
+// full slack.Ingest flow.
+func writeSlackSourcedTaskFile(t *testing.T, dir, id, sourceID string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	task := model.Task{
+		ID: id, Title: "slack sourced", Status: "open",
+		Source: "slack", SourceID: sourceID,
+		Schedule:  "today",
+		Position:  1000,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	tasksDir := filepath.Join(dir, ".monolog", "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks: %v", err)
+	}
+	data, err := json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	p := filepath.Join(tasksDir, id+".json")
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// git commit the seeded file so subsequent AutoCommit calls operate on a
+	// clean tree. Absent this, the initial task lingers in the working tree
+	// and the next commit folds it in, which is harmless but confuses log
+	// assertions.
+	gitAdd := exec.Command("git", "-C", dir, "add", filepath.Join(".monolog", "tasks", id+".json"))
+	if out, err := gitAdd.CombinedOutput(); err != nil {
+		t.Fatalf("git add seed: %v\n%s", err, out)
+	}
+	gitCommit := exec.Command("git", "-C", dir, "commit", "-m", "seed: "+id)
+	if out, err := gitCommit.CombinedOutput(); err != nil {
+		t.Fatalf("git commit seed: %v\n%s", err, out)
+	}
+}
+
+func TestDoneCommand_SlackTaskTriggersUnsave(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+
+	id := "01HDONESLACK000000000000AA"
+	writeSlackSourcedTaskFile(t, dir, id, "C0123/1712345678.000100")
+
+	mock := &doneSlackMock{}
+	server := httptest.NewServer(mock)
+	defer server.Close()
+	defer installDoneSlackClient(t, server)()
+
+	rootCmd := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(outBuf)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done error = %v\nerr=%s", err, errBuf.String())
+	}
+
+	if mock.starsRemoveN != 1 {
+		t.Errorf("stars.remove calls = %d, want 1", mock.starsRemoveN)
+	}
+	if mock.lastChannel != "C0123" {
+		t.Errorf("channel = %q, want C0123", mock.lastChannel)
+	}
+	if mock.lastTimestamp != "1712345678.000100" {
+		t.Errorf("channel_timestamp = %q, want 1712345678.000100", mock.lastTimestamp)
+	}
+	// The task should still have landed done.
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task missing after done")
+	}
+	if task.Status != "done" {
+		t.Errorf("status = %q, want done", task.Status)
+	}
+}
+
+func TestDoneCommand_NonSlackTaskNoUnsave(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+
+	id := addTestTask(t, dir, "manual task")
+
+	mock := &doneSlackMock{}
+	server := httptest.NewServer(mock)
+	defer server.Close()
+	defer installDoneSlackClient(t, server)()
+
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	rootCmd.SetErr(new(bytes.Buffer))
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done error = %v", err)
+	}
+	if mock.starsRemoveN != 0 {
+		t.Errorf("stars.remove calls = %d, want 0 (non-slack task)", mock.starsRemoveN)
+	}
+}
+
+func TestDoneCommand_SlackUnsaveFailureWarnsButExitsZero(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+
+	id := "01HDONESLACK000000000000BB"
+	writeSlackSourcedTaskFile(t, dir, id, "C0123/1712345678.000100")
+
+	// Mock returns a generic Slack error (not idempotent-success, not
+	// missing-scope). done should print a warning and still exit 0.
+	mock := &doneSlackMock{errorResp: "server_error"}
+	server := httptest.NewServer(mock)
+	defer server.Close()
+	defer installDoneSlackClient(t, server)()
+
+	rootCmd := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(outBuf)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done should exit 0 on slack failure; got err=%v", err)
+	}
+	if !strings.Contains(errBuf.String(), "slack unsave failed") {
+		t.Errorf("stderr should warn about slack unsave failure; got:\n%s", errBuf.String())
+	}
+	// Completion itself must still have happened.
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task missing")
+	}
+	if task.Status != "done" {
+		t.Errorf("status = %q, want done", task.Status)
+	}
+}
+
+func TestDoneCommand_SlackMissingScopeShowsLoginRemedy(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+
+	id := "01HDONESLACK000000000000CC"
+	writeSlackSourcedTaskFile(t, dir, id, "C0123/1712345678.000100")
+
+	mock := &doneSlackMock{errorResp: "missing_scope"}
+	server := httptest.NewServer(mock)
+	defer server.Close()
+	defer installDoneSlackClient(t, server)()
+
+	rootCmd := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(outBuf)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done should exit 0 on missing_scope; got err=%v", err)
+	}
+	if !strings.Contains(errBuf.String(), "slack-login") {
+		t.Errorf("stderr should point at slack-login; got:\n%s", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "stars:write") {
+		t.Errorf("stderr should mention stars:write; got:\n%s", errBuf.String())
+	}
+}
+
+func TestDoneCommand_RecurringSlackTaskUnsavesAndSpawnsWithoutSourceID(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	t.Setenv("MONOLOG_SLACK_TOKEN", "xoxp-test")
+
+	// Plant a recurring slack-sourced task: Source=slack, SourceID set, and
+	// a recurrence rule so CompleteAndSpawn creates a follow-up.
+	id := "01HDONESLACKREC0000000000A"
+	now := time.Now().UTC().Format(time.RFC3339)
+	task := model.Task{
+		ID: id, Title: "weekly slack task", Status: "open",
+		Source: "slack", SourceID: "C0123/1712345678.000100",
+		Recurrence: "weekly:mon",
+		Schedule:   "today",
+		Position:   1000,
+		CreatedAt:  now, UpdatedAt: now,
+	}
+	writeTaskFile(t, dir, task)
+	// Commit the seed so later AutoCommit calls work on a clean tree.
+	if out, err := exec.Command("git", "-C", dir, "add",
+		filepath.Join(".monolog", "tasks", id+".json")).CombinedOutput(); err != nil {
+		t.Fatalf("git add seed: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "seed").CombinedOutput(); err != nil {
+		t.Fatalf("git commit seed: %v\n%s", err, out)
+	}
+
+	mock := &doneSlackMock{}
+	server := httptest.NewServer(mock)
+	defer server.Close()
+	defer installDoneSlackClient(t, server)()
+
+	rootCmd := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(outBuf)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done error = %v\nerr=%s", err, errBuf.String())
+	}
+
+	// Unsave happened once for the completed occurrence.
+	if mock.starsRemoveN != 1 {
+		t.Errorf("stars.remove calls = %d, want 1", mock.starsRemoveN)
+	}
+
+	// The spawn should have Source="slack" (provenance copied) but empty
+	// SourceID — it has no Slack message of its own.
+	tasks := readTasks(t, dir)
+	var spawn model.Task
+	spawns := 0
+	for _, task := range tasks {
+		if task.ID == id {
+			continue
+		}
+		if task.Title == "weekly slack task" {
+			spawn = task
+			spawns++
+		}
+	}
+	if spawns != 1 {
+		t.Fatalf("expected 1 spawn, got %d", spawns)
+	}
+	if spawn.Source != "slack" {
+		t.Errorf("spawn Source = %q, want slack (provenance)", spawn.Source)
+	}
+	if spawn.SourceID != "" {
+		t.Errorf("spawn SourceID = %q, want empty (cleared on recurrence spawn)", spawn.SourceID)
+	}
+}
+
+func TestDoneCommand_SlackNoTokenSkipsSilently(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	// No token configured.
+	t.Setenv("MONOLOG_SLACK_TOKEN", "")
+
+	id := "01HDONESLACK000000000000DD"
+	writeSlackSourcedTaskFile(t, dir, id, "C0123/1712345678.000100")
+
+	// Install a mock anyway — it should never be hit.
+	mock := &doneSlackMock{}
+	server := httptest.NewServer(mock)
+	defer server.Close()
+	defer installDoneSlackClient(t, server)()
+
+	rootCmd := NewRootCmd()
+	rootCmd.SetOut(new(bytes.Buffer))
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"done", id[:8]})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("done error = %v", err)
+	}
+	if mock.starsRemoveN != 0 {
+		t.Errorf("stars.remove hit despite no token; calls = %d", mock.starsRemoveN)
+	}
+	if errBuf.String() != "" {
+		t.Errorf("no-token should be silent; stderr = %q", errBuf.String())
 	}
 }

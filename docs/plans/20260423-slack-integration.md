@@ -387,20 +387,20 @@ Unknown top-level keys preserved on rewrite.
 - Modify: `cmd/done.go`
 - Modify: `cmd/task_commands_test.go` (or `cmd/done_test.go` if it exists; create if not)
 
-- [ ] TUI `doneSelected`: **chain the unsave after the done commit** (not parallel). Mechanism: `doneSelected` returns only the existing done-commit command. When `Update` handles the resulting `taskSavedMsg`, if the completed task had `Source=="slack" && SourceID!="" && m.slackClient!=nil`, it dispatches `slackUnsaveCmd(task)` as the next command via the normal `tea.Cmd` return. This ensures the git commit lands before the HTTP call goes out — simpler to reason about and avoids a race where the user hits `u` between commit and HTTP response. To carry the slack info across, extend `taskSavedMsg` with `slackUnsaveChannel string` and `slackUnsaveTS string` fields (populated by the done goroutine when the task was slack-sourced).
-- [ ] The unsave goroutine itself: parses `SourceID` into `channel, ts` (split on `/`), calls `slackClient.Unsave(ctx, channel, ts)` with 5s timeout; result becomes `slackUnsaveDoneMsg{err}`.
-- [ ] Handle `slackUnsaveDoneMsg` in `Update`: on nil err, silent; on `ErrMissingScope`, status bar `Slack unsave needs stars:write — run monolog slack-login`; on other error, status bar `Slack unsave failed: <reason>` (rate-limited the same way as poll errors — share `slackLastErr`? use a separate field `slackUnsaveLastErr` to avoid cross-silencing). Keep separate.
-- [ ] CLI `cmd/done.go`: after existing done logic, if `task.Source=="slack" && task.SourceID!=""` and `config.SlackToken` returns a token, build `slack.Client` and call `Unsave` synchronously with 5s timeout. Print any non-`nil`-non-`idempotent` error as a warning to stderr (`monolog: slack unsave failed: ...`), but exit 0 — completion itself succeeded.
-- [ ] Do not trigger unsave on `rm`, edit, schedule changes, or undo. Only on the `done` state transition.
-- [ ] Make CLI's Slack client injectable (same pattern as `slack-sync`) for tests.
-- [ ] Tests:
+- [x] TUI `doneSelected`: **chain the unsave after the done commit** (not parallel). Mechanism: `doneSelected` returns only the existing done-commit command. When `Update` handles the resulting `taskSavedMsg`, if the completed task had `Source=="slack" && SourceID!="" && m.slackClient!=nil`, it dispatches `slackUnsaveCmd(task)` as the next command via the normal `tea.Cmd` return. This ensures the git commit lands before the HTTP call goes out — simpler to reason about and avoids a race where the user hits `u` between commit and HTTP response. To carry the slack info across, extend `taskSavedMsg` with `slackUnsaveChannel string` and `slackUnsaveTS string` fields (populated by the done goroutine when the task was slack-sourced).
+- [x] The unsave goroutine itself: parses `SourceID` into `channel, ts` (split on `/`), calls `slackClient.Unsave(ctx, channel, ts)` with 5s timeout; result becomes `slackUnsaveDoneMsg{err}`.
+- [x] Handle `slackUnsaveDoneMsg` in `Update`: on nil err, silent; on `ErrMissingScope`, status bar `Slack unsave needs stars:write — run monolog slack-login`; on other error, status bar `Slack unsave failed: <reason>` (rate-limited the same way as poll errors — share `slackLastErr`? use a separate field `slackUnsaveLastErr` to avoid cross-silencing). Keep separate.
+- [x] CLI `cmd/done.go`: after existing done logic, if `task.Source=="slack" && task.SourceID!=""` and `config.SlackToken` returns a token, build `slack.Client` and call `Unsave` synchronously with 5s timeout. Print any non-`nil`-non-`idempotent` error as a warning to stderr (`monolog: slack unsave failed: ...`), but exit 0 — completion itself succeeded.
+- [x] Do not trigger unsave on `rm`, edit, schedule changes, or undo. Only on the `done` state transition.
+- [x] Make CLI's Slack client injectable (same pattern as `slack-sync`) for tests.
+- [x] Tests:
   - TUI: marking a `Source="slack"` task done dispatches `slackUnsaveCmd`; non-slack task does not.
   - TUI: `slackUnsaveDoneMsg{err: slack.ErrMissingScope}` sets the "needs stars:write" status.
   - TUI: `slackUnsaveDoneMsg{err: nil}` leaves status bar unchanged.
   - CLI: `monolog done <id>` on a slack task (with httptest Slack) calls `stars.remove` with correct `channel`+`ts`; on a non-slack task, no HTTP call is made.
   - CLI: slack unsave failure prints a stderr warning but exits 0.
   - Recurrence + slack: completing a recurring slack task spawns a new task with `SourceID=""` (covered by Task 2's test, but add integration coverage here).
-- [ ] Run `go test ./...` — must pass before Task 13.
+- [x] Run `go test ./...` — must pass before Task 13.
 
 ### Task 13: Verify acceptance criteria
 

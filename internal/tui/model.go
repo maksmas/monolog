@@ -235,6 +235,10 @@ type Model struct {
 	// identical consecutive errors in the status bar. Cleared on the next
 	// successful poll.
 	slackLastErr string
+	// slackUnsaveLastErr rate-limits unsave (stars.remove) error messages the
+	// same way slackLastErr does for polls. Kept separate so a poll error and
+	// an unsave error do not silence each other.
+	slackUnsaveLastErr string
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -402,6 +406,21 @@ type taskSavedMsg struct {
 	redoSHA        string // revert-commit SHA to push onto redoStack (successful undo)
 	redoneSHA      string // commit SHA to push onto undoStack WITHOUT clearing redoStack (successful redo)
 	restoreRedoSHA string // pushed back onto redoStack before error return (redo retry)
+	// slackUnsaveChannel / slackUnsaveTS chain a Slack stars.remove after a
+	// successful done-commit. Populated by doneSelected() when the completed
+	// task had Source=="slack" && SourceID!=""; the Update handler dispatches
+	// slackUnsaveCmd as the next tea.Cmd once the git commit has landed.
+	slackUnsaveChannel string
+	slackUnsaveTS      string
+}
+
+// slackUnsaveDoneMsg carries the result of a Slack stars.remove HTTP call back
+// to the main goroutine. Nil err means the unsave succeeded (or the API
+// treated it as an idempotent success); non-nil err is surfaced in the status
+// bar with the same rate-limiting discipline as poll errors, using a separate
+// slackUnsaveLastErr field so unsave errors do not cross-silence poll errors.
+type slackUnsaveDoneMsg struct {
+	err error
 }
 
 // newModel constructs a Model and loads initial task data for each tab.
@@ -1044,7 +1063,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingAction = nil
 			return m, action()
 		}
+		// Chain Slack unsave after a successful done-commit. We run this
+		// AFTER the commit has landed so a user pressing `u` between the
+		// commit and the HTTP response cannot race with in-flight network
+		// I/O. Fire-and-forget from the Update perspective — the goroutine
+		// returns a slackUnsaveDoneMsg whose handler updates the status bar.
+		if msg.slackUnsaveChannel != "" && msg.slackUnsaveTS != "" && m.slackClient != nil {
+			return m, m.slackUnsaveCmd(msg.slackUnsaveChannel, msg.slackUnsaveTS)
+		}
 		return m, nil
+
+	case slackUnsaveDoneMsg:
+		return m.handleSlackUnsaveDone(msg)
 
 	case slackTickMsg:
 		// Defensive: if the client went away between tick scheduling and
@@ -1413,6 +1443,18 @@ func (m *Model) doneSelected() tea.Cmd {
 	flat := flattenTitle(t.Title)
 	storeRef := m.store
 	repoPath := m.repoPath
+	// Capture slack provenance before the done mutation; CompleteAndSpawn
+	// mutates the task in place (status, timestamps, body) but leaves Source
+	// and SourceID untouched, so reading them after would also work — we
+	// capture here for clarity.
+	slackSource := t.Source == "slack" && t.SourceID != ""
+	slackChannel, slackTS := "", ""
+	if slackSource {
+		if idx := strings.Index(t.SourceID, "/"); idx > 0 && idx < len(t.SourceID)-1 {
+			slackChannel = t.SourceID[:idx]
+			slackTS = t.SourceID[idx+1:]
+		}
+	}
 	return func() tea.Msg {
 		// warnBuf collects any recurrence warnings surfaced through the
 		// status bar (stderr has no natural home in the TUI).
@@ -1433,7 +1475,12 @@ func (m *Model) doneSelected() tea.Cmd {
 			// status line so the user sees the recurrence worked.
 			status = fmt.Sprintf("Completed: %s (next occurrence spawned)", flat)
 		}
-		return taskSavedMsg{status: status, sha: sha}
+		return taskSavedMsg{
+			status:             status,
+			sha:                sha,
+			slackUnsaveChannel: slackChannel,
+			slackUnsaveTS:      slackTS,
+		}
 	}
 }
 
@@ -2650,6 +2697,48 @@ func (m *Model) slackPollCmd() tea.Cmd {
 		items, err := client.ListSaved(ctx)
 		return slackFetchedMsg{items: items, err: err}
 	}
+}
+
+// slackUnsaveCmd fires a stars.remove against (channel, ts) with a 5s timeout
+// and returns the result as a slackUnsaveDoneMsg. Returns nil when Slack is
+// disabled (no client) so callers can dispatch unconditionally.
+func (m *Model) slackUnsaveCmd(channel, ts string) tea.Cmd {
+	if m.slackClient == nil || channel == "" || ts == "" {
+		return nil
+	}
+	client := m.slackClient
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return slackUnsaveDoneMsg{err: client.Unsave(ctx, channel, ts)}
+	}
+}
+
+// handleSlackUnsaveDone routes unsave results to the status bar. nil err is
+// silent (completion already reported by the done handler). ErrMissingScope
+// surfaces the re-run-login remedy. Other errors are rate-limited against
+// slackUnsaveLastErr so repeated failures on a wedged connection do not
+// spam the status bar. A successful unsave clears slackUnsaveLastErr so the
+// next distinct error will flash once.
+func (m *Model) handleSlackUnsaveDone(msg slackUnsaveDoneMsg) (tea.Model, tea.Cmd) {
+	if msg.err == nil {
+		m.slackUnsaveLastErr = ""
+		return m, nil
+	}
+	if errors.Is(msg.err, slack.ErrMissingScope) {
+		status := "Slack unsave needs stars:write — run monolog slack-login"
+		if status != m.slackUnsaveLastErr {
+			m.statusMsg = status
+			m.slackUnsaveLastErr = status
+		}
+		return m, nil
+	}
+	status := "Slack unsave failed: " + msg.err.Error()
+	if status != m.slackUnsaveLastErr {
+		m.statusMsg = status
+		m.slackUnsaveLastErr = status
+	}
+	return m, nil
 }
 
 // syncCmd runs a full sync (commit + pull + auto-resolve + push) in the
