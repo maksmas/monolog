@@ -268,14 +268,14 @@ Unknown top-level keys preserved on rewrite.
 - Create: `internal/slack/ingest.go`
 - Create: `internal/slack/ingest_test.go`
 
-- [ ] Define `type Options struct { ChannelAsTag bool; DateFormat string; Now func() time.Time }`. `Now` defaulted in caller to `time.Now` (tests inject).
-- [ ] Implement `BuildTask(item SavedItem, opts Options) model.Task` — pure function producing the Task struct per the mapping in Technical Details. Title rules:
+- [x] Define `type Options struct { ChannelAsTag bool; DateFormat string; Now func() time.Time }`. `Now` defaulted in caller to `time.Now` (tests inject).
+- [x] Implement `BuildTask(item SavedItem, opts Options) model.Task` — pure function producing the Task struct per the mapping in Technical Details. Title rules:
   - First non-blank line of `item.Text` (skip leading empty lines).
   - If resulting title exceeds 80 runes, truncate at 79 runes and append `…` (single rune, total 80).
   - Rune-safe everywhere (no byte slicing of multi-byte chars).
   - If text is entirely empty/whitespace after trimming, title falls back to `"(empty message)"` to avoid blank-title tasks.
-- [ ] Body composition: pass `item.Text` through **verbatim** — no Slack-markup decoding in the first cut. `<@U0456>` / `<#C0123|name>` / `<https://…|label>` / HTML entities render literally. Document this as a known limitation. Follow text with blank line + `— @<authorName> in #<channelName>, <displayTime>` + blank line + permalink.
-- [ ] Implement `Ingest(s *store.Store, items []SavedItem, synced map[string]bool, opts Options) (newCount int, err error)`:
+- [x] Body composition: pass `item.Text` through **verbatim** — no Slack-markup decoding in the first cut. `<@U0456>` / `<#C0123|name>` / `<https://…|label>` / HTML entities render literally. Document this as a known limitation. Follow text with blank line + `— @<authorName> in #<channelName>, <displayTime>` + blank line + permalink.
+- [x] Implement `Ingest(s *store.Store, items []SavedItem, synced map[string]bool, opts Options) (newCount int, err error)`:
   - For each item, compute `key = item.Channel + "/" + item.TS`.
   - Skip if `synced[key]`.
   - Skip items where `item.Channel` starts with `D` (DM) or `G`/`mpdm-` (group DM / multi-party DM) — log to stderr `slack: skipping DM bookmark <ts>` and move on. DMs are out of scope for v1 (tag semantics unclear, author-as-channel-name is confusing).
@@ -284,14 +284,14 @@ Unknown top-level keys preserved on rewrite.
   - If slice non-empty, call `store.CreateBatch(tasks, fmt.Sprintf("slack: ingest %d items", len(tasks)))`.
   - After successful commit, populate `synced[key]=true` for each ingested key.
   - Return `(len(tasks), nil)`; on commit failure, return `(0, err)` without updating `synced`.
-- [ ] **Missing channel-name fallback** (`conversations.info` returns `channel_not_found` / `not_in_channel`): use the raw channel ID (e.g. `C0123`) as channel name. Ugly but truthful. Same for author fallback (use user ID). Handled inside `Client.ListSaved` so `Ingest` never sees empty names.
-- [ ] Tests:
+- [x] **Missing channel-name fallback** (`conversations.info` returns `channel_not_found` / `not_in_channel`): use the raw channel ID (e.g. `C0123`) as channel name. Ugly but truthful. Same for author fallback (use user ID). Handled inside `Client.ListSaved` so `Ingest` never sees empty names.
+- [x] Tests:
   - `BuildTask` — title: 80-rune boundary (no ellipsis), 81-rune (ellipsis at 80), multi-byte emoji at boundary, leading-blank-line message, whitespace-only message (`"(empty message)"`); body format matches spec verbatim including Slack markup passthrough; `channel_as_tag=true` → `["slack", channelName]`; `=false` → `["slack"]`; threaded reply includes only reply text; attachments dropped (HasFiles=true but nothing leaks into body).
   - `Ingest` — dedup: items whose key is in `synced` are skipped; new items passed through; `synced` map updated after successful commit; empty-input returns `(0, nil)` with no commit.
   - `Ingest` — DM skip: items with `C` channel prefixed `D`/`G`/`mpdm-` are skipped silently.
   - `Ingest` — commit failure path: `synced` unchanged when `store.CreateBatch` errors.
   - `Ingest` — positions: first ingested task gets `NextPosition(today)`, subsequent tasks increment by 1000.
-- [ ] Run `go test ./internal/slack/...` — must pass before Task 8.
+- [x] Run `go test ./internal/slack/...` — must pass before Task 8.
 
 ### Task 8: `monolog slack-login` wizard
 
