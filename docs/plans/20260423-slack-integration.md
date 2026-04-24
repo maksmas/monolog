@@ -404,11 +404,11 @@ Unknown top-level keys preserved on rewrite.
 
 ### Task 13: Verify acceptance criteria
 
-- [ ] Every decision from the Overview is implemented: saved-message ingest with correct mapping; dedup via Source+SourceID; in-memory cache; first-run ingests all with a single commit; token via env var or git-ignored file; `slack-login` / `slack-logout` / `slack-status` / `slack-sync` commands; TUI poll on startup + tick + `s` key; unsave on TUI `d` and CLI `done` but not on `rm` / edit / undo; error rate-limiting; config schema additions.
-- [ ] Run full test suite: `go test ./...`.
-- [ ] Run `go vet ./...`.
-- [ ] Build binary: `go build -o monolog` and run `./monolog --help` and `./monolog slack-status` to smoke-test command registration.
-- [ ] Review diff for dead code, accidental debug logs, stale comments.
+- [x] Every decision from the Overview is implemented: saved-message ingest with correct mapping; dedup via Source+SourceID; in-memory cache; first-run ingests all with a single commit; token via env var or git-ignored file; `slack-login` / `slack-logout` / `slack-status` / `slack-sync` commands; TUI poll on startup + tick + `s` key; unsave on TUI `d` and CLI `done` but not on `rm` / edit / undo; error rate-limiting; config schema additions.
+- [x] Run full test suite: `go test ./...`.
+- [x] Run `go vet ./...`.
+- [x] Build binary: `go build -o monolog` and run `./monolog --help` and `./monolog slack-status` to smoke-test command registration.
+- [x] Review diff for dead code, accidental debug logs, stale comments.
 
 ### Task 14: Documentation and plan archival
 
