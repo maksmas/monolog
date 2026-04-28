@@ -189,12 +189,12 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Create: `internal/email/oauth.go`
 - Create: `internal/email/oauth_test.go`
 
-- [ ] implement `LoadToken(path string) (*oauth2.Token, error)` reading 0600-mode JSON token file; return wrapped error with `"run monolog email auth"` hint when missing
-- [ ] implement `SaveToken(path string, tok *oauth2.Token) error` writing JSON with 0600 perms, creating parent dir if needed
-- [ ] implement `Authorize(ctx context.Context, clientSecretsPath, tokenPath string) error` running local-redirect OAuth flow (`oauth2.Config.AuthCodeURL` + small `http.Server` listening on `127.0.0.1:0` for the callback), persists token via `SaveToken`. **Authorize itself is exercised manually in Task 12 — no unit test (interactive browser flow).**
-- [ ] implement `HTTPClient(ctx context.Context, clientSecretsPath, tokenPath string) (*http.Client, error)` that loads token, wraps with auto-refreshing `oauth2.Config.Client`, persists refreshed tokens back to disk via a custom `oauth2.TokenSource` wrapper
-- [ ] write tests: LoadToken/SaveToken roundtrip with file mode assertion (`0600`); LoadToken on missing file returns wrapped "run monolog email auth" error; refresh-token persistence using fake `oauth2.TokenSource` (asserts that a refreshed token gets written back to disk)
-- [ ] run `go test ./internal/email/` — must pass before next task
+- [x] implement `LoadToken(path string) (*oauth2.Token, error)` reading 0600-mode JSON token file; return wrapped error with `"run monolog email auth"` hint when missing
+- [x] implement `SaveToken(path string, tok *oauth2.Token) error` writing JSON with 0600 perms, creating parent dir if needed
+- [x] implement `Authorize(ctx context.Context, clientSecretsPath, tokenPath string) error` running local-redirect OAuth flow (`oauth2.Config.AuthCodeURL` + small `http.Server` listening on `127.0.0.1:0` for the callback), persists token via `SaveToken`. **Authorize itself is exercised manually in Task 12 — no unit test (interactive browser flow).**
+- [x] implement `HTTPClient(ctx context.Context, clientSecretsPath, tokenPath string) (*http.Client, error)` that loads token, wraps with auto-refreshing `oauth2.Config.Client`, persists refreshed tokens back to disk via a custom `oauth2.TokenSource` wrapper
+- [x] write tests: LoadToken/SaveToken roundtrip with file mode assertion (`0600`); LoadToken on missing file returns wrapped "run monolog email auth" error; refresh-token persistence using fake `oauth2.TokenSource` (asserts that a refreshed token gets written back to disk)
+- [x] run `go test ./internal/email/` — must pass before next task
 
 ### Task 5: Pure conversion (gmail Message → model.Task)
 
