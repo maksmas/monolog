@@ -202,11 +202,11 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Create: `internal/email/convert.go`
 - Create: `internal/email/convert_test.go`
 
-- [ ] implement `ToTask(msg *Message, now time.Time) model.Task` (pure): subject prefix stripping via `regexp.MustCompile(`(?i)^((re|fwd?|fw):\s*)+`)`, sender parsing via `net/mail.ParseAddress`, snippet HTML-unescape + 200-char hard cap with `…` suffix only when truncation occurs (no suffix when snippet ≤200 chars), body assembly with `From:` line and `https://mail.google.com/mail/#all/<msg-id>` URL (no `/u/0/`), tags=`["email"]`, schedule=today via `schedule` package, fresh ULID, Source=`"gmail"`, SourceID=msg.ID
-- [ ] handle empty/whitespace-only subject → `"(no subject)"`; sender parse error → `"unknown"`; empty snippet → no extra blank lines in body (still emit `From:` and URL; no body text after them)
-- [ ] write table-driven tests: chained Re/Fwd/Fw stripping (mixed case, e.g. `"Re: RE: Fwd: foo"`), empty/whitespace subject, sender variants (`Name <email>`, bare `<email>`, malformed), snippet truncation at >200 chars (asserts `…` suffix), snippet shorter than 200 chars passes through unchanged with NO `…` suffix, HTML entity decoding (`&amp;`, `&#39;`)
-- [ ] write tests asserting Schedule=today (use injected `now`), Source/SourceID populated, tags equals `["email"]`, fresh ULID per call (different across calls)
-- [ ] run `go test ./internal/email/` — must pass before next task
+- [x] implement `ToTask(msg *Message, now time.Time) model.Task` (pure): subject prefix stripping via `regexp.MustCompile(`(?i)^((re|fwd?|fw):\s*)+`)`, sender parsing via `net/mail.ParseAddress`, snippet HTML-unescape + 200-char hard cap with `…` suffix only when truncation occurs (no suffix when snippet ≤200 chars), body assembly with `From:` line and `https://mail.google.com/mail/#all/<msg-id>` URL (no `/u/0/`), tags=`["email"]`, schedule=today via `schedule` package, fresh ULID, Source=`"gmail"`, SourceID=msg.ID
+- [x] handle empty/whitespace-only subject → `"(no subject)"`; sender parse error → `"unknown"`; empty snippet → no extra blank lines in body (still emit `From:` and URL; no body text after them)
+- [x] write table-driven tests: chained Re/Fwd/Fw stripping (mixed case, e.g. `"Re: RE: Fwd: foo"`), empty/whitespace subject, sender variants (`Name <email>`, bare `<email>`, malformed), snippet truncation at >200 chars (asserts `…` suffix), snippet shorter than 200 chars passes through unchanged with NO `…` suffix, HTML entity decoding (`&amp;`, `&#39;`)
+- [x] write tests asserting Schedule=today (use injected `now`), Source/SourceID populated, tags equals `["email"]`, fresh ULID per call (different across calls)
+- [x] run `go test ./internal/email/` — must pass before next task
 
 ### Task 6: Sync orchestration with batch commit
 
