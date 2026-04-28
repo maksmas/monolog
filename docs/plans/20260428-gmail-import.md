@@ -150,10 +150,10 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Modify: `internal/model/task.go`
 - Modify: `internal/model/task_test.go` (or create if absent)
 
-- [ ] add `SourceID string \`json:"source_id,omitempty"\`` field to `Task` struct (slot after the existing `Source` field)
-- [ ] write test asserting JSON round-trip preserves SourceID when set
-- [ ] write test asserting JSON output has no `source_id` key when SourceID is empty (omitempty preserves backward compat)
-- [ ] run `go test ./internal/model/` — must pass before next task
+- [x] add `SourceID string \`json:"source_id,omitempty"\`` field to `Task` struct (slot after the existing `Source` field)
+- [x] write test asserting JSON round-trip preserves SourceID when set
+- [x] write test asserting JSON output has no `source_id` key when SourceID is empty (omitempty preserves backward compat)
+- [x] run `go test ./internal/model/` — must pass before next task
 
 ### Task 2: Add email config schema (LoadEmail + Save + struct accessor)
 
