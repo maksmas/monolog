@@ -312,10 +312,10 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Modify: `README.md`
 - Modify: `CLAUDE.md`
 
-- [ ] add an `## Email integration` section to `README.md`: BYO GCP setup steps (5-min walkthrough — see Post-Completion), config block example, command reference (`auth`/`sync`/`status`), `s` keybinding overload note, archive-on-done semantics
-- [ ] add an `**Email integration**:` bullet to `CLAUDE.md` under "Key Design Decisions" matching the existing density: label trigger, dedup model (SourceID set spans open+done), body format (`https://mail.google.com/mail/#all/<id>`), archive-on-done semantics (option A — keep `monolog` label), OAuth scope + token storage path, soft cap, batch commit message format, `internal/email/` does NOT import `internal/config`
-- [ ] cross-check README and CLAUDE.md against the *implemented* code (not against this plan) — read the actual final code paths before describing them, so docs reflect reality
-- [ ] move this plan to `docs/plans/completed/`: `mkdir -p docs/plans/completed && mv docs/plans/20260428-gmail-import.md docs/plans/completed/`
+- [x] add an `## Email integration` section to `README.md`: BYO GCP setup steps (5-min walkthrough — see Post-Completion), config block example, command reference (`auth`/`sync`/`status`), `s` keybinding overload note, archive-on-done semantics
+- [x] add an `**Email integration**:` bullet to `CLAUDE.md` under "Key Design Decisions" matching the existing density: label trigger, dedup model (SourceID set spans open+done), body format (`https://mail.google.com/mail/#all/<id>`), archive-on-done semantics (option A — keep `monolog` label), OAuth scope + token storage path, soft cap, batch commit message format, `internal/email/` does NOT import `internal/config`
+- [x] cross-check README and CLAUDE.md against the *implemented* code (not against this plan) — read the actual final code paths before describing them, so docs reflect reality
+- [x] move this plan to `docs/plans/completed/`: `mkdir -p docs/plans/completed && mv docs/plans/20260428-gmail-import.md docs/plans/completed/`
 
 ## Post-Completion
 
