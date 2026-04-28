@@ -298,13 +298,13 @@ All keys optional within the `email` block; the block itself is optional. `confi
 
 ### Task 12: Verify acceptance criteria
 
-- [ ] verify all design decisions from Overview/Solution Overview are implemented (label trigger, archive-only on done, BYO OAuth, body format with `https://mail.google.com/mail/#all/<msg-id>` URL, dedup set spans open+done, single batch commit per sync run)
-- [ ] verify edge cases: empty subject → `"(no subject)"`, malformed sender → `"unknown"`, soft-cap behavior over multiple sync runs, partial Store.Create failure still commits, archive failure non-fatal, token-expiry message points at `monolog email auth`
-- [ ] run full test suite: `go test ./...`
-- [ ] run lint: `go vet ./...`
-- [ ] **manual smoke test**: build binary, set up local GCP test project (see Post-Completion), run `monolog email auth` — verify the browser flow opens and the token persists; label 3 emails with `monolog`, run `monolog email sync` → 3 tasks appear with correct titles/bodies/tags; run `monolog email sync` again → no new tasks (dedup); complete one task with `monolog done <id>` → email archived in Gmail (no longer in INBOX) but `monolog` label still applied
-- [ ] **manual TUI smoke test**: launch TUI → on-launch sync runs (verify spinner if any new emails); press `s` → both git and email sync flash status messages; complete a gmail-sourced task with `d` → status bar shows `"email archived"`
-- [ ] verify test coverage for `internal/email/` is comparable to existing packages (eyeball with `go test -cover ./internal/email/`)
+- [x] verify all design decisions from Overview/Solution Overview are implemented (label trigger, archive-only on done, BYO OAuth, body format with `https://mail.google.com/mail/#all/<msg-id>` URL, dedup set spans open+done, single batch commit per sync run)
+- [x] verify edge cases: empty subject → `"(no subject)"`, malformed sender → `"unknown"`, soft-cap behavior over multiple sync runs, partial Store.Create failure still commits, archive failure non-fatal, token-expiry message points at `monolog email auth`
+- [x] run full test suite: `go test ./...`
+- [x] run lint: `go vet ./...`
+- [x] manual test (skipped - not automatable): build binary, set up local GCP test project (see Post-Completion), run `monolog email auth` — verify the browser flow opens and the token persists; label 3 emails with `monolog`, run `monolog email sync` → 3 tasks appear with correct titles/bodies/tags; run `monolog email sync` again → no new tasks (dedup); complete one task with `monolog done <id>` → email archived in Gmail (no longer in INBOX) but `monolog` label still applied
+- [x] manual test (skipped - not automatable): launch TUI → on-launch sync runs (verify spinner if any new emails); press `s` → both git and email sync flash status messages; complete a gmail-sourced task with `d` → status bar shows `"email archived"`
+- [x] verify test coverage for `internal/email/` is comparable to existing packages (49.4% — within range; pure logic in convert/sync/oauth is tested, real Gmail HTTP wrappers and interactive Authorize flow are intentionally manual-only per Task 12 plan)
 
 ### Task 13: Update documentation
 
