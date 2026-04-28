@@ -32,6 +32,42 @@ type emailNoOpMsg struct{}
 // long as the TUI is alive and email is enabled.
 type emailTickMsg struct{}
 
+// archiveResult is dispatched by archiveEmailCmd after an archive call to
+// Gmail completes. err is non-nil when the call failed; the Update handler
+// flashes either "email archived" or "archive failed: <err>" but does NOT
+// roll back the underlying done — archive is always non-fatal.
+type archiveResult struct {
+	err error
+}
+
+// archiveTimeout caps how long we wait for the Gmail archive call after a
+// successful done. Mirrors cmd/done.go so flaky network never freezes the
+// TUI command pipeline either.
+const archiveTimeout = 5 * time.Second
+
+// archiveEmailCmd removes the INBOX label from the given Gmail message ID
+// in the background, with a 5s context timeout. Returns archiveResult so
+// the Update handler can flash status. Returns nil when email is disabled
+// or sourceID is empty so callers can dispatch unconditionally.
+func (m *Model) archiveEmailCmd(sourceID string) tea.Cmd {
+	if !m.emailEnabled || sourceID == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ec := config.Email()
+		ctx, cancel := context.WithTimeout(context.Background(), archiveTimeout)
+		defer cancel()
+		g, err := emailClientBuilder(ctx, ec)
+		if err != nil {
+			return archiveResult{err: err}
+		}
+		if err := g.ArchiveLabel(ctx, sourceID); err != nil {
+			return archiveResult{err: err}
+		}
+		return archiveResult{}
+	}
+}
+
 // emailClientBuilder constructs a Gmail client from the on-disk OAuth state.
 // Tests swap this seam to inject a fake; the production implementation
 // resolves token + http client + gmail.Service the same way cmd/email does.

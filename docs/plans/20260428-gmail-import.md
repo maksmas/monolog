@@ -288,13 +288,13 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] add `archiveEmailCmd(sourceID string) tea.Cmd` running `gmail.ArchiveLabel` in a goroutine with a 5s context timeout, returning `archiveResult{ err error }`
-- [ ] add `archiveResult` handler in `Update`: status flash `"email archived"` on success or `"archive failed: <err>"` on error (NON-FATAL — task stays done)
-- [ ] modify `doneSelected` (or wherever `recurrence.CompleteAndSpawn` is invoked) to also return `archiveEmailCmd(task.SourceID)` when `task.Source == "gmail"` && `task.SourceID != ""` && email enabled
-- [ ] add status indicator: single character right of stats bar — `↻` while `m.emailSyncing`, blank otherwise. Render-string change in the stats line only.
-- [ ] update bottom-bar help hint for `s` to read `"sync (git+email)"` when email enabled, else current text (`"sync"`)
-- [ ] write tests: `d` on a gmail-sourced task with email enabled returns a Batch containing the archive cmd; `d` on a non-gmail task does not; `d` with email disabled does not; `archiveResult{err: ...}` leaves the task done and produces the flash message; status bar contains `↻` while `emailSyncing` is true and is blank otherwise; help-hint copy reflects email-enabled state
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] add `archiveEmailCmd(sourceID string) tea.Cmd` running `gmail.ArchiveLabel` in a goroutine with a 5s context timeout, returning `archiveResult{ err error }`
+- [x] add `archiveResult` handler in `Update`: status flash `"email archived"` on success or `"archive failed: <err>"` on error (NON-FATAL — task stays done)
+- [x] modify `doneSelected` (or wherever `recurrence.CompleteAndSpawn` is invoked) to also return `archiveEmailCmd(task.SourceID)` when `task.Source == "gmail"` && `task.SourceID != ""` && email enabled
+- [x] add status indicator: single character right of stats bar — `↻` while `m.emailSyncing`, blank otherwise. Render-string change in the stats line only.
+- [x] update bottom-bar help hint for `s` to read `"sync (git+email)"` when email enabled, else current text (`"sync"`)
+- [x] write tests: `d` on a gmail-sourced task with email enabled returns a Batch containing the archive cmd; `d` on a non-gmail task does not; `d` with email disabled does not; `archiveResult{err: ...}` leaves the task done and produces the flash message; status bar contains `↻` while `emailSyncing` is true and is blank otherwise; help-hint copy reflects email-enabled state
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 12: Verify acceptance criteria
 

@@ -522,3 +522,304 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+// --- Task 11: archive-on-done + status indicator + help-hint ---
+
+func TestArchiveEmailCmd_DisabledReturnsNil(t *testing.T) {
+	m := newTestModel(t) // email disabled
+	if cmd := m.archiveEmailCmd("msg1"); cmd != nil {
+		t.Errorf("archiveEmailCmd with email disabled returned non-nil cmd; want nil so callers can batch unconditionally")
+	}
+}
+
+func TestArchiveEmailCmd_EmptySourceIDReturnsNil(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	if cmd := m.archiveEmailCmd(""); cmd != nil {
+		t.Errorf("archiveEmailCmd with empty sourceID returned non-nil cmd; want nil")
+	}
+}
+
+func TestArchiveEmailCmd_SuccessYieldsArchiveResultNoErr(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	fake := &fakeGmail{}
+	stubEmailClientBuilder(t, fake, nil)
+
+	cmd := m.archiveEmailCmd("msg1")
+	if cmd == nil {
+		t.Fatal("archiveEmailCmd returned nil with email enabled and non-empty sourceID")
+	}
+	res, ok := cmd().(archiveResult)
+	if !ok {
+		t.Fatalf("archiveEmailCmd produced %T, want archiveResult", cmd())
+	}
+	if res.err != nil {
+		t.Errorf("res.err = %v, want nil", res.err)
+	}
+	if len(fake.archived) != 1 || fake.archived[0] != "msg1" {
+		t.Errorf("fake.archived = %v, want [msg1]", fake.archived)
+	}
+}
+
+func TestArchiveEmailCmd_BuilderErrorPropagates(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	stubEmailClientBuilder(t, nil, errors.New("no token: run monolog email auth"))
+
+	cmd := m.archiveEmailCmd("msg1")
+	if cmd == nil {
+		t.Fatal("archiveEmailCmd returned nil")
+	}
+	res, ok := cmd().(archiveResult)
+	if !ok {
+		t.Fatalf("got %T, want archiveResult", cmd())
+	}
+	if res.err == nil {
+		t.Error("res.err = nil, want non-nil from builder failure")
+	}
+}
+
+func TestArchiveEmailCmd_ArchiveErrorPropagates(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	fake := &fakeGmail{archiveErr: errors.New("403 forbidden")}
+	stubEmailClientBuilder(t, fake, nil)
+
+	cmd := m.archiveEmailCmd("msg1")
+	res, ok := cmd().(archiveResult)
+	if !ok {
+		t.Fatalf("got %T, want archiveResult", cmd())
+	}
+	if res.err == nil {
+		t.Error("res.err = nil, want non-nil from archive failure")
+	}
+}
+
+func TestArchiveResult_SuccessFlashesEmailArchived(t *testing.T) {
+	m := newTestModel(t)
+	m.statusMsg = "stale"
+
+	next, cmd := m.Update(archiveResult{})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Errorf("archiveResult success returned cmd %v, want nil", cmd)
+	}
+	if !contains(m.statusMsg, "email archived") {
+		t.Errorf("statusMsg = %q, want to contain 'email archived'", m.statusMsg)
+	}
+}
+
+func TestArchiveResult_ErrorFlashesArchiveFailed(t *testing.T) {
+	m := newTestModel(t)
+
+	next, _ := m.Update(archiveResult{err: errors.New("network fail")})
+	m = next.(*Model)
+	if !contains(m.statusMsg, "archive failed") {
+		t.Errorf("statusMsg = %q, want to contain 'archive failed'", m.statusMsg)
+	}
+	if !contains(m.statusMsg, "network fail") {
+		t.Errorf("statusMsg = %q, want to contain underlying error 'network fail'", m.statusMsg)
+	}
+}
+
+// TestDoneOnGmailTask_ArchivesViaSavedMsg pins the end-to-end TUI flow:
+// pressing 'd' on a gmail-sourced task with email enabled produces a
+// taskSavedMsg whose archiveSourceID is the task's SourceID. The Update
+// handler kicks off the archive cmd which lands in the fake.
+func TestDoneOnGmailTask_ArchivesViaSavedMsg(t *testing.T) {
+	m := newTestModelWithEmail(t,
+		model.Task{ID: "01GMAIL", Title: "from gmail", Status: "open",
+			Schedule: "today", Position: 1000,
+			Source:    "gmail",
+			SourceID:  "msg-abc",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	fake := &fakeGmail{}
+	stubEmailClientBuilder(t, fake, nil)
+
+	// Press 'd' — produces the doneSelected cmd. Run it to get taskSavedMsg.
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d returned nil cmd")
+	}
+	saved, ok := cmd().(taskSavedMsg)
+	if !ok {
+		t.Fatalf("d cmd produced %T, want taskSavedMsg", cmd())
+	}
+	if saved.archiveSourceID != "msg-abc" {
+		t.Errorf("archiveSourceID = %q, want %q", saved.archiveSourceID, "msg-abc")
+	}
+	// Dispatch the saved msg into Update. It should return an archive cmd.
+	next, archiveCmd := m.Update(saved)
+	m = next.(*Model)
+	if archiveCmd == nil {
+		t.Fatal("Update on taskSavedMsg with archiveSourceID returned nil cmd; want archiveEmailCmd")
+	}
+	// Run the archive cmd — fake records the call.
+	if _, ok := archiveCmd().(archiveResult); !ok {
+		t.Errorf("archive cmd produced %T, want archiveResult", archiveCmd())
+	}
+	if len(fake.archived) != 1 || fake.archived[0] != "msg-abc" {
+		t.Errorf("fake.archived = %v, want [msg-abc]", fake.archived)
+	}
+}
+
+// TestDoneOnGmailTask_EmailDisabled_NoArchive pins that pressing 'd' on a
+// gmail-sourced task with email disabled produces a taskSavedMsg whose
+// archiveSourceID is empty — the Update handler returns no archive cmd.
+func TestDoneOnGmailTask_EmailDisabled_NoArchive(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01GMAIL", Title: "from gmail", Status: "open",
+			Schedule: "today", Position: 1000,
+			Source:    "gmail",
+			SourceID:  "msg-abc",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if m.emailEnabled {
+		t.Fatal("precondition: email should be disabled")
+	}
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d returned nil cmd")
+	}
+	saved, ok := cmd().(taskSavedMsg)
+	if !ok {
+		t.Fatalf("d cmd produced %T, want taskSavedMsg", cmd())
+	}
+	if saved.archiveSourceID != "" {
+		t.Errorf("archiveSourceID = %q, want empty (email disabled)", saved.archiveSourceID)
+	}
+}
+
+// TestDoneOnNonGmailTask_NoArchive pins that pressing 'd' on a non-gmail
+// task (Source != "gmail") with email enabled does NOT trigger archive.
+func TestDoneOnNonGmailTask_NoArchive(t *testing.T) {
+	m := newTestModelWithEmail(t,
+		model.Task{ID: "01MANUAL", Title: "typed manually", Status: "open",
+			Schedule: "today", Position: 1000,
+			Source:    "manual",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	stubEmailClientBuilder(t, &fakeGmail{}, nil)
+
+	m, cmd := key(t, m, "d")
+	if cmd == nil {
+		t.Fatal("d returned nil cmd")
+	}
+	saved, ok := cmd().(taskSavedMsg)
+	if !ok {
+		t.Fatalf("d cmd produced %T, want taskSavedMsg", cmd())
+	}
+	if saved.archiveSourceID != "" {
+		t.Errorf("archiveSourceID = %q, want empty (Source != gmail)", saved.archiveSourceID)
+	}
+}
+
+// TestDoneOnGmailTask_ArchiveFailureLeavesTaskDone pins the non-fatal
+// contract: when the archive call returns an error, the task is still
+// marked done in the store and the status flashes "archive failed".
+func TestDoneOnGmailTask_ArchiveFailureLeavesTaskDone(t *testing.T) {
+	m := newTestModelWithEmail(t,
+		model.Task{ID: "01GMAIL", Title: "from gmail", Status: "open",
+			Schedule: "today", Position: 1000,
+			Source:    "gmail",
+			SourceID:  "msg-abc",
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	fake := &fakeGmail{archiveErr: errors.New("network down")}
+	stubEmailClientBuilder(t, fake, nil)
+
+	m, cmd := key(t, m, "d")
+	saved, _ := cmd().(taskSavedMsg)
+	next, archiveCmd := m.Update(saved)
+	m = next.(*Model)
+
+	// Verify the task moved to done in the store regardless of archive outcome.
+	task, err := m.store.GetByPrefix("01GMAIL")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if task.Status != "done" {
+		t.Errorf("task.Status = %q, want done — archive failure must NOT roll back done", task.Status)
+	}
+
+	// Run archive cmd → archiveResult{err: ...} → flashes failure, leaves task done.
+	if archiveCmd == nil {
+		t.Fatal("expected archive cmd to be returned from saved msg dispatch")
+	}
+	resultMsg := archiveCmd()
+	res, ok := resultMsg.(archiveResult)
+	if !ok {
+		t.Fatalf("archive cmd produced %T, want archiveResult", resultMsg)
+	}
+	if res.err == nil {
+		t.Error("res.err = nil, want non-nil from fake archive error")
+	}
+	next, _ = m.Update(res)
+	m = next.(*Model)
+	if !contains(m.statusMsg, "archive failed") {
+		t.Errorf("statusMsg = %q, want to flash archive failure", m.statusMsg)
+	}
+}
+
+// TestStatsBar_SpinnerIndicator pins that the stats bar contains the ↻
+// spinner character while emailSyncing is true and lacks it when false.
+func TestStatsBar_SpinnerIndicator(t *testing.T) {
+	m := newTestModelWithEmail(t)
+
+	// Default state: no spinner.
+	if contains(m.statsBarView(), "↻") {
+		t.Errorf("statsBarView with emailSyncing=false contains ↻; want absent")
+	}
+	// Flip syncing on.
+	m.emailSyncing = true
+	if !contains(m.statsBarView(), "↻") {
+		t.Errorf("statsBarView with emailSyncing=true missing ↻; want present")
+	}
+	// And back off.
+	m.emailSyncing = false
+	if contains(m.statsBarView(), "↻") {
+		t.Errorf("statsBarView with emailSyncing=false (after toggle) contains ↻; want absent")
+	}
+}
+
+// TestHelpLine_SyncCopyReflectsEmailEnabled pins that the bottom-bar help
+// line reads "sync (git+email)" when email is enabled and just "sync"
+// otherwise. Uses the rendered helpLine() string for a substring check.
+func TestHelpLine_SyncCopyReflectsEmailEnabled(t *testing.T) {
+	// Disabled: should mention "sync" but not "(git+email)".
+	disabled := newTestModel(t)
+	if disabled.emailEnabled {
+		t.Fatal("precondition: disabled model should have email off")
+	}
+	dh := disabled.helpLine()
+	if !contains(dh, "sync") {
+		t.Errorf("disabled helpLine missing 'sync': %q", dh)
+	}
+	if contains(dh, "git+email") {
+		t.Errorf("disabled helpLine should not mention 'git+email': %q", dh)
+	}
+
+	// Enabled: should advertise the wider scope.
+	enabled := newTestModelWithEmail(t)
+	if !enabled.emailEnabled {
+		t.Fatal("precondition: enabled model should have email on")
+	}
+	eh := enabled.helpLine()
+	if !contains(eh, "git+email") {
+		t.Errorf("enabled helpLine missing 'git+email': %q", eh)
+	}
+}
+
+// TestHelpLine_SyncCopyEnabled_TagView covers the tag-view branch of
+// helpLine(), which has its own slice of help bindings. Both branches
+// must reflect the email-enabled label.
+func TestHelpLine_SyncCopyEnabled_TagView(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	m.viewMode = viewTag
+	// rebuild tabs for tag view via toggleViewMode would need data; we
+	// just need the helpLine to render the tag branch, which it does
+	// based on m.viewMode.
+	h := m.helpLine()
+	if !contains(h, "git+email") {
+		t.Errorf("tag-view helpLine missing 'git+email': %q", h)
+	}
+}
+

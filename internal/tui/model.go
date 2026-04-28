@@ -380,6 +380,11 @@ type taskSavedMsg struct {
 	redoSHA        string // revert-commit SHA to push onto redoStack (successful undo)
 	redoneSHA      string // commit SHA to push onto undoStack WITHOUT clearing redoStack (successful redo)
 	restoreRedoSHA string // pushed back onto redoStack before error return (redo retry)
+	// archiveSourceID, when non-empty on a successful taskSavedMsg (err==nil),
+	// signals the Update handler to kick off archiveEmailCmd. Set by
+	// doneSelected when a gmail-sourced task is completed; the archive itself
+	// is non-fatal and runs in a separate goroutine after the done commit.
+	archiveSourceID string
 }
 
 // newModel constructs a Model and loads initial task data for each tab.
@@ -991,10 +996,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.viewMode == viewTag {
 			m.skipSeparator(0)
 		}
+		// archiveSourceID is set by doneSelected when a gmail-sourced task
+		// is completed; the archive call runs in its own goroutine via
+		// archiveEmailCmd and is non-fatal — the done has already committed.
+		var archiveCmd tea.Cmd
+		if msg.archiveSourceID != "" {
+			archiveCmd = m.archiveEmailCmd(msg.archiveSourceID)
+		}
 		if action := m.pendingAction; action != nil {
 			m.pendingAction = nil
-			return m, action()
+			return m, tea.Batch(action(), archiveCmd)
 		}
+		if archiveCmd != nil {
+			return m, archiveCmd
+		}
+		return m, nil
+
+	case archiveResult:
+		// Archive is non-fatal: surface the result via a status flash but do
+		// not roll back the underlying done. The task stays done either way.
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("archive failed: %v", msg.err)
+			return m, nil
+		}
+		m.statusMsg = "email archived"
 		return m, nil
 
 	case emailSyncResult:
@@ -1336,6 +1361,14 @@ func (m *Model) doneSelected() tea.Cmd {
 	flat := flattenTitle(t.Title)
 	storeRef := m.store
 	repoPath := m.repoPath
+	// Capture archive trigger inputs at dispatch time. Only request an
+	// archive when email is enabled AND the task is a gmail-sourced import
+	// that still carries a Gmail message ID; otherwise leave the field
+	// empty so the Update handler skips the archive call entirely.
+	archiveID := ""
+	if m.emailEnabled && t.Source == "gmail" && t.SourceID != "" {
+		archiveID = t.SourceID
+	}
 	return func() tea.Msg {
 		// warnBuf collects any recurrence warnings surfaced through the
 		// status bar (stderr has no natural home in the TUI).
@@ -1356,7 +1389,7 @@ func (m *Model) doneSelected() tea.Cmd {
 			// status line so the user sees the recurrence worked.
 			status = fmt.Sprintf("Completed: %s (next occurrence spawned)", flat)
 		}
-		return taskSavedMsg{status: status, sha: sha}
+		return taskSavedMsg{status: status, sha: sha, archiveSourceID: archiveID}
 	}
 }
 
@@ -2775,6 +2808,13 @@ func (m *Model) statsBarView() string {
 	tabParts = append(tabParts, fmt.Sprintf("%d in tab", tabCount))
 
 	line := strings.Join(overall, "  ") + "  |  " + strings.Join(tabParts, "  ")
+	// Email sync indicator: single character right of the stats line. Render
+	// "↻" while a sync is in flight, blank otherwise. Padding inside the
+	// helpTextStyle keeps the indicator visually attached to the stats line
+	// without throwing off the bar's overall vertical alignment.
+	if m.emailSyncing {
+		line += "  ↻"
+	}
 	return m.styles.helpTextStyle.Padding(0, 1).Render(line)
 }
 
@@ -3084,6 +3124,13 @@ func (m *Model) helpLine() string {
 				[2]string{"[/]", "scroll"},
 			)
 		}
+		// "s" hint copy reflects whether the binding triggers email-sync
+		// alongside git-sync. The label widens when email is enabled to make
+		// the broader behavior obvious; when disabled it stays compact.
+		syncLabel := "sync"
+		if m.emailEnabled {
+			syncLabel = "sync (git+email)"
+		}
 		if m.viewMode == viewTag {
 			return m.renderHelpBar(
 				[2]string{"d", "done"},
@@ -3096,7 +3143,7 @@ func (m *Model) helpLine() string {
 				[2]string{"/", "search"},
 				[2]string{"v", "schedule"},
 				[2]string{"x", "del"},
-				[2]string{"s", "sync"},
+				[2]string{"s", syncLabel},
 				[2]string{"u", "undo"},
 				[2]string{"ctrl+y", "redo"},
 				[2]string{"←/→", "tabs"},
@@ -3116,7 +3163,7 @@ func (m *Model) helpLine() string {
 			[2]string{"/", "search"},
 			[2]string{"v", "tags"},
 			[2]string{"x", "del"},
-			[2]string{"s", "sync"},
+			[2]string{"s", syncLabel},
 			[2]string{"u", "undo"},
 			[2]string{"ctrl+y", "redo"},
 			[2]string{",", "settings"},
