@@ -175,13 +175,13 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Create: `internal/email/client.go`
 - Create: `internal/email/client_test.go`
 
-- [ ] define `type Message struct { ID, Subject, From, Snippet string }` neutral DTO (so callers don't import `google.golang.org/api/gmail/v1`)
-- [ ] define `type Gmail interface { ListLabeled(ctx context.Context, label string) ([]string, error); Get(ctx context.Context, id string) (*Message, error); ArchiveLabel(ctx context.Context, id string) error }`
-- [ ] implement `realGmail` wrapping `*gmail.Service`: paginated `ListLabeled` (loops until `NextPageToken` empty, preserves API result order which is newest-first); `Get` using `messages.get(format=METADATA, metadataHeaders=[Subject,From])` extracting headers + snippet; `ArchiveLabel` calling `users.messages.modify(removeLabelIds=["INBOX"])`
-- [ ] add `NewClient(ctx context.Context, httpClient *http.Client) (Gmail, error)` factory wired to `gmail.NewService`
-- [ ] add `go.mod` deps: `google.golang.org/api/gmail/v1`, `golang.org/x/oauth2/google` (run `go get` then `go mod tidy`)
-- [ ] write tests using a fake `Gmail` impl (table-driven where reasonable) asserting interface shape — the real impl is exercised manually in Task 12; the fake is what every other test in this plan uses
-- [ ] run `go test ./internal/email/` and `go vet ./...` — must pass before next task
+- [x] define `type Message struct { ID, Subject, From, Snippet string }` neutral DTO (so callers don't import `google.golang.org/api/gmail/v1`)
+- [x] define `type Gmail interface { ListLabeled(ctx context.Context, label string) ([]string, error); Get(ctx context.Context, id string) (*Message, error); ArchiveLabel(ctx context.Context, id string) error }`
+- [x] implement `realGmail` wrapping `*gmail.Service`: paginated `ListLabeled` (loops until `NextPageToken` empty, preserves API result order which is newest-first); `Get` using `messages.get(format=METADATA, metadataHeaders=[Subject,From])` extracting headers + snippet; `ArchiveLabel` calling `users.messages.modify(removeLabelIds=["INBOX"])`
+- [x] add `NewClient(ctx context.Context, httpClient *http.Client) (Gmail, error)` factory wired to `gmail.NewService`
+- [x] add `go.mod` deps: `google.golang.org/api/gmail/v1`, `golang.org/x/oauth2/google` (run `go get` then `go mod tidy`)
+- [x] write tests using a fake `Gmail` impl (table-driven where reasonable) asserting interface shape — the real impl is exercised manually in Task 12; the fake is what every other test in this plan uses
+- [x] run `go test ./internal/email/` and `go vet ./...` — must pass before next task
 
 ### Task 4: OAuth2 flow + token persistence + refresh
 
