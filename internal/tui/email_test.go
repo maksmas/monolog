@@ -370,6 +370,146 @@ func TestEmailNoOpMsg_IsAccepted(t *testing.T) {
 	}
 }
 
+func TestInit_EmailDisabledReturnsNil(t *testing.T) {
+	m := newTestModel(t)
+	if m.emailEnabled {
+		t.Fatal("precondition: email should be disabled")
+	}
+	if cmd := m.Init(); cmd != nil {
+		t.Errorf("Init with email disabled returned %v, want nil", cmd)
+	}
+}
+
+func TestInit_EmailEnabledReturnsBatchWithSyncAndTick(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	stubEmailClientBuilder(t, &fakeGmail{}, nil)
+
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init returned nil with email enabled, want Batch")
+	}
+	if !m.emailSyncing {
+		t.Errorf("emailSyncing not set true after Init with email enabled")
+	}
+	msg := cmd()
+	cmds, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("Init result type %T, want tea.BatchMsg", msg)
+	}
+	// Batch should contain the immediate sync cmd and the ticker cmd. The
+	// ticker is only included when interval > 0 (which it is, 5m by default).
+	if len(cmds) != 2 {
+		t.Errorf("Init batch len = %d, want 2 (sync + tick)", len(cmds))
+	}
+}
+
+func TestInit_EmailEnabledZeroIntervalSkipsTicker(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	stubEmailClientBuilder(t, &fakeGmail{}, nil)
+	// Force interval to zero — emailTickCmd should return nil and tea.Batch
+	// drops it. The remaining single cmd is the immediate sync.
+	m.emailInterval = 0
+
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init returned nil, want sync cmd")
+	}
+	msg := cmd()
+	cmds, ok := msg.(tea.BatchMsg)
+	if !ok {
+		// A single non-nil cmd batched with a nil cmd may collapse into a
+		// non-batch message depending on bubbletea internals. Either way
+		// there should be no tick scheduled — so this branch is acceptable
+		// as long as the message isn't a tick.
+		if _, isTick := msg.(emailTickMsg); isTick {
+			t.Fatalf("Init produced an emailTickMsg with interval=0; tick should be disabled")
+		}
+		return
+	}
+	// Defensive — even when bubbletea returns a Batch with one nil entry, none
+	// of the entries should be a tick cmd.
+	for i, c := range cmds {
+		if c == nil {
+			continue
+		}
+		// Cannot inspect a tea.Cmd directly; just ensure none of them yield
+		// an emailTickMsg synchronously. The sync cmd yields emailSyncResult.
+		out := c()
+		if _, isTick := out.(emailTickMsg); isTick {
+			t.Errorf("Init batch[%d] produced emailTickMsg with interval=0", i)
+		}
+	}
+}
+
+func TestEmailTickCmd_ReturnsNilWhenDisabled(t *testing.T) {
+	m := newTestModel(t) // email disabled
+	if cmd := m.emailTickCmd(5 * time.Minute); cmd != nil {
+		t.Errorf("emailTickCmd with email disabled = %v, want nil", cmd)
+	}
+}
+
+func TestEmailTickCmd_ReturnsNilWhenIntervalZero(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	if cmd := m.emailTickCmd(0); cmd != nil {
+		t.Errorf("emailTickCmd with interval=0 = %v, want nil", cmd)
+	}
+}
+
+func TestEmailTickCmd_ReturnsTickerWhenEnabled(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	cmd := m.emailTickCmd(10 * time.Millisecond)
+	if cmd == nil {
+		t.Fatal("emailTickCmd returned nil with enabled+positive interval")
+	}
+	// Run the cmd — it should block briefly and yield emailTickMsg.
+	msg := cmd()
+	if _, ok := msg.(emailTickMsg); !ok {
+		t.Errorf("emailTickCmd produced %T, want emailTickMsg", msg)
+	}
+}
+
+func TestEmailTickMsg_RearmsAndDispatchesSync(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	stubEmailClientBuilder(t, &fakeGmail{}, nil)
+	if m.emailSyncing {
+		t.Fatal("precondition: emailSyncing should be false")
+	}
+
+	next, cmd := m.Update(emailTickMsg{})
+	m = next.(*Model)
+	if cmd == nil {
+		t.Fatal("emailTickMsg produced no cmd; want Batch(sync, tick)")
+	}
+	if !m.emailSyncing {
+		t.Errorf("emailSyncing not set true on tick handler")
+	}
+	msg := cmd()
+	cmds, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("tick handler result type %T, want tea.BatchMsg", msg)
+	}
+	if len(cmds) != 2 {
+		t.Errorf("tick handler batch len = %d, want 2 (sync + tick)", len(cmds))
+	}
+}
+
+func TestEmailTickMsg_NoOpWhenDisabled(t *testing.T) {
+	// Edge case: a stale tick fires after email is disabled (settings modal
+	// will eventually let users toggle). The handler must short-circuit so
+	// the loop unwinds.
+	m := newTestModelWithEmail(t)
+	m.emailEnabled = false
+
+	next, cmd := m.Update(emailTickMsg{})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Errorf("disabled tick handler returned cmd %v, want nil", cmd)
+	}
+	if m.emailSyncing {
+		t.Errorf("disabled tick handler set emailSyncing=true")
+	}
+}
+
 // contains is a tiny stdlib-free substring helper.
 func contains(haystack, needle string) bool {
 	if needle == "" {

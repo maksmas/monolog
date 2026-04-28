@@ -26,6 +26,12 @@ type emailSyncResult struct {
 // tea.Batch without a conditional.
 type emailNoOpMsg struct{}
 
+// emailTickMsg is dispatched by emailTickCmd after the configured sync
+// interval elapses. The Update handler responds by re-arming the ticker AND
+// dispatching another email sync — a self-rescheduling loop that runs as
+// long as the TUI is alive and email is enabled.
+type emailTickMsg struct{}
+
 // emailClientBuilder constructs a Gmail client from the on-disk OAuth state.
 // Tests swap this seam to inject a fake; the production implementation
 // resolves token + http client + gmail.Service the same way cmd/email does.
@@ -114,4 +120,15 @@ var runEmailSync = func(ctx context.Context, g email.Gmail, s *store.Store, repo
 		// into a structured log file.
 		Writer: nil,
 	})
+}
+
+// emailTickCmd returns a tea.Cmd that fires emailTickMsg after the given
+// interval. It returns nil when interval <= 0 so callers can include the
+// result in a tea.Batch unconditionally — tea.Batch silently drops nil
+// entries. The Update handler is what re-arms the next tick.
+func (m *Model) emailTickCmd(interval time.Duration) tea.Cmd {
+	if !m.emailEnabled || interval <= 0 {
+		return nil
+	}
+	return tea.Tick(interval, func(time.Time) tea.Msg { return emailTickMsg{} })
 }

@@ -925,8 +925,17 @@ func (m *Model) skipSeparator(dir int) {
 	m.lists[m.activeTab].SkipSeparator(dir)
 }
 
-// Init is the Bubble Tea Init hook.
-func (m *Model) Init() tea.Cmd { return nil }
+// Init is the Bubble Tea Init hook. When email integration is enabled it
+// kicks off an immediate sync (so newly-labeled emails are pulled at launch)
+// and arms the periodic ticker so subsequent syncs keep firing while the TUI
+// runs. When email is disabled both calls return nil and tea.Batch drops them.
+func (m *Model) Init() tea.Cmd {
+	if !m.emailEnabled {
+		return nil
+	}
+	m.emailSyncing = true
+	return tea.Batch(m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
+}
 
 // Update routes a tea.Msg through the model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1011,6 +1020,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Email integration is disabled; nothing to do. The cmd exists so
 		// tea.Batch callers can dispatch unconditionally without a check.
 		return m, nil
+
+	case emailTickMsg:
+		// Self-rescheduling tick: fire a sync and re-arm the next tick. If
+		// email was disabled mid-run (rare — settings modal does not yet
+		// expose this) emailSyncCmd and emailTickCmd both fall back to safe
+		// no-ops so the loop unwinds cleanly.
+		if !m.emailEnabled {
+			return m, nil
+		}
+		m.emailSyncing = true
+		return m, tea.Batch(m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
 
 	case tea.KeyMsg:
 		switch m.mode {

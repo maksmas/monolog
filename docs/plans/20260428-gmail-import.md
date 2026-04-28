@@ -276,11 +276,11 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] add `emailTickCmd(interval time.Duration) tea.Cmd` returning `emailTickMsg{}` after `interval` (uses `tea.Tick`); when interval is 0 or email disabled, returns nil so `tea.Batch` ignores it
-- [ ] add `emailTickMsg` handler in `Update` that returns `tea.Batch(emailSyncCmd(), emailTickCmd(interval))` — self-rescheduling
-- [ ] modify `Init()` to return `tea.Batch(<existing init cmd>, emailSyncCmd(), emailTickCmd(interval))` when email enabled (initial sync is the first tick)
-- [ ] write tests: `Init` with email enabled returns a Batch including both initial sync and tick; `Init` with email disabled returns the existing init unchanged; receiving `emailTickMsg` re-arms the ticker AND fires a sync; ticker is not armed when interval is 0
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] add `emailTickCmd(interval time.Duration) tea.Cmd` returning `emailTickMsg{}` after `interval` (uses `tea.Tick`); when interval is 0 or email disabled, returns nil so `tea.Batch` ignores it
+- [x] add `emailTickMsg` handler in `Update` that returns `tea.Batch(emailSyncCmd(), emailTickCmd(interval))` — self-rescheduling
+- [x] modify `Init()` to return `tea.Batch(<existing init cmd>, emailSyncCmd(), emailTickCmd(interval))` when email enabled (initial sync is the first tick)
+- [x] write tests: `Init` with email enabled returns a Batch including both initial sync and tick; `Init` with email disabled returns the existing init unchanged; receiving `emailTickMsg` re-arms the ticker AND fires a sync; ticker is not armed when interval is 0
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 11: TUI — archive-on-done + status indicator + help-hint
 
