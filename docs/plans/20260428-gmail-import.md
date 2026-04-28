@@ -262,13 +262,13 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
 
-- [ ] add Model fields: `emailEnabled bool`, `emailSyncing bool`, `emailLabel string`, `emailMaxPerSync int`, `emailInterval time.Duration` (note: NO `emailLastErr` — flash messages use the existing status-bar mechanism)
-- [ ] populate Model email fields in `newModel` from `config.EmailConfig()`
-- [ ] add `emailSyncCmd() tea.Cmd` running `email.Sync` in a goroutine, returning `emailSyncResult{ created int; err error }`; returns no-op msg when email disabled (so callers can always batch it without conditionals)
-- [ ] add `emailSyncResult` handler in `Update`: clear `emailSyncing`, set status flash (`"email: N imported"` or `"email sync: <err>"`), call `reloadAll()` if `created > 0`
-- [ ] modify `case "s"` in `updateNormal` to dispatch `tea.Batch(gitSyncCmd, emailSyncCmd())` and set `m.emailSyncing = true`
-- [ ] write tests: `s` keypress with email enabled produces a Batch containing both git+email commands; `s` keypress with email disabled produces only the git command (no-op email cmd is fine but should not flash anything); `emailSyncResult{created: 3}` triggers reloadAll and clears the spinner; `emailSyncResult{err: ...}` flashes an error message and clears the spinner
-- [ ] run `go test ./internal/tui/` — must pass before next task
+- [x] add Model fields: `emailEnabled bool`, `emailSyncing bool`, `emailLabel string`, `emailMaxPerSync int`, `emailInterval time.Duration` (note: NO `emailLastErr` — flash messages use the existing status-bar mechanism)
+- [x] populate Model email fields in `newModel` from `config.EmailConfig()`
+- [x] add `emailSyncCmd() tea.Cmd` running `email.Sync` in a goroutine, returning `emailSyncResult{ created int; err error }`; returns no-op msg when email disabled (so callers can always batch it without conditionals)
+- [x] add `emailSyncResult` handler in `Update`: clear `emailSyncing`, set status flash (`"email: N imported"` or `"email sync: <err>"`), call `reloadAll()` if `created > 0`
+- [x] modify `case "s"` in `updateNormal` to dispatch `tea.Batch(gitSyncCmd, emailSyncCmd())` and set `m.emailSyncing = true`
+- [x] write tests: `s` keypress with email enabled produces a Batch containing both git+email commands; `s` keypress with email disabled produces only the git command (no-op email cmd is fine but should not flash anything); `emailSyncResult{created: 3}` triggers reloadAll and clears the spinner; `emailSyncResult{err: ...}` flashes an error message and clears the spinner
+- [x] run `go test ./internal/tui/` — must pass before next task
 
 ### Task 10: TUI — periodic ticker + on-launch sync
 

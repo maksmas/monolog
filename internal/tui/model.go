@@ -216,6 +216,17 @@ type Model struct {
 	// (standard redo semantics). Cleared alongside undoStack when syncing with
 	// a remote.
 	redoStack []string
+
+	// Email integration state. Populated from config.Email() in newModel; if
+	// emailEnabled is false the `s` keybinding does not dispatch an email
+	// sync, the on-launch sync does not run, and the periodic ticker is not
+	// armed. emailSyncing tracks an in-flight sync so the status indicator
+	// can render a spinner.
+	emailEnabled    bool
+	emailSyncing    bool
+	emailLabel      string
+	emailMaxPerSync int
+	emailInterval   time.Duration
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -432,18 +443,27 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		activeTheme = defaultTheme
 	}
 
+	// Snapshot the email-integration settings once at startup so the rest of
+	// the TUI never has to round-trip through internal/config. Disabled-state
+	// (Enabled=false) makes every email-driven code path a no-op.
+	ec := config.Email()
+
 	m := &Model{
-		store:      s,
-		repoPath:   repoPath,
-		tabs:       defaultTabs,
-		input:      ti,
-		tagInput:   tagTi,
-		recurInput: recurTi,
-		titleArea:  ta,
-		noteArea:   noteTA,
-		search:     searchState{input: searchTi},
-		theme:      activeTheme,
-		styles:     buildStyles(activeTheme),
+		store:           s,
+		repoPath:        repoPath,
+		tabs:            defaultTabs,
+		input:           ti,
+		tagInput:        tagTi,
+		recurInput:      recurTi,
+		titleArea:       ta,
+		noteArea:        noteTA,
+		search:          searchState{input: searchTi},
+		theme:           activeTheme,
+		styles:          buildStyles(activeTheme),
+		emailEnabled:    ec.Enabled,
+		emailLabel:      ec.Label,
+		emailMaxPerSync: ec.MaxPerSync,
+		emailInterval:   ec.SyncInterval,
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(activeTheme)
 	if !ok {
@@ -968,6 +988,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case emailSyncResult:
+		// Always clear the in-flight flag so the spinner indicator never
+		// gets stuck on, regardless of success or failure.
+		m.emailSyncing = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("email sync: %v", msg.err)
+			return m, nil
+		}
+		m.statusMsg = fmt.Sprintf("email: %d imported", msg.created)
+		// Reload only when something changed — avoids flicker on the
+		// no-new-mail case.
+		if msg.created > 0 {
+			if err := m.reloadAll(); err != nil {
+				m.err = err
+			}
+			m.recomputeLayout()
+		}
+		return m, nil
+
+	case emailNoOpMsg:
+		// Email integration is disabled; nothing to do. The cmd exists so
+		// tea.Batch callers can dispatch unconditionally without a check.
+		return m, nil
+
 	case tea.KeyMsg:
 		switch m.mode {
 		case modeNormal:
@@ -1084,6 +1128,17 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openEdit()
 	case "s":
 		m.statusMsg = "Syncing..."
+		// When email is enabled, dispatch git-sync and email-sync in
+		// parallel so a slow Gmail call cannot block the local commit/push
+		// from finishing. The email cmd is a no-op when disabled, so this
+		// branch is safe to take unconditionally — but dispatching the
+		// no-op cmd would still flash an unwanted "no-op" through Update,
+		// so guard the batch so the disabled path stays a clean git-only
+		// sync exactly as it was before email was added.
+		if m.emailEnabled {
+			m.emailSyncing = true
+			return m, tea.Batch(m.syncCmd(), m.emailSyncCmd())
+		}
 		return m, m.syncCmd()
 	case "u", "ctrl+z":
 		if len(m.undoStack) == 0 {

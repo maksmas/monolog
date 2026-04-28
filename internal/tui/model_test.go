@@ -5603,6 +5603,11 @@ func newTestModelWithOpts(t *testing.T, opts Options, tasks ...model.Task) *Mode
 	// git.Init-written config.json ("theme": "default") instead of the
 	// user's real ~/.monolog config, which may have a different theme.
 	t.Setenv("MONOLOG_DIR", repoPath)
+	// Reload config from the temp repo so package-level state (notably
+	// emailCfg) does not leak across tests in the same package.
+	if err := config.Load(repoPath); err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
 	s, err := store.New(filepath.Join(repoPath, ".monolog", "tasks"))
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
