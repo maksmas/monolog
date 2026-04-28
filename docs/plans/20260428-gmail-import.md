@@ -235,13 +235,13 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Create: `cmd/email_test.go`
 - Modify: `cmd/root.go` (register `newEmailCmd()`)
 
-- [ ] add `monolog email` parent cobra command with subcommands `sync`, `auth`, `status`
-- [ ] `email sync`: open store, read `config.EmailConfig()`, build real Gmail client via `email.HTTPClient` + `email.NewClient`, call `email.Sync(ctx, gmail, s, repoPath, SyncOptions{...})`, print `"created N task(s)"` or wrapped error; exit 1 on auth-missing
-- [ ] `email auth`: read `config.EmailConfig()` for paths, call `email.Authorize(ctx, ...)`; print `"authorized; token saved to <path>"` on success; on success, also flip `enabled=true` via `config.SaveEmail` so subsequent invocations pick up the feature without manual config edits
-- [ ] `email status`: print auth state (`token loaded, expires <iso-time>` / `not authorized — run 'monolog email auth'`), configured label, configured interval. **Does NOT show "last sync time"** (no sentinel file in v1; the user can use `git log` if curious)
-- [ ] register `newEmailCmd()` in `cmd/root.go` alongside other subcommands
-- [ ] write tests: `sync` command success path with fake Gmail (inject via package-level `var emailClientFactory = func(...) (Gmail, error) { ... }` overridable in tests, defaulting to the real factory); `sync` command no-token error path returns user-facing hint string; `status` command formatting for both authorized and unauthorized states. The `auth` subcommand's interactive flow is NOT unit-tested (manual only — covered by Task 12).
-- [ ] run `go test ./cmd/` and `go vet ./...` — must pass before next task
+- [x] add `monolog email` parent cobra command with subcommands `sync`, `auth`, `status`
+- [x] `email sync`: open store, read `config.EmailConfig()`, build real Gmail client via `email.HTTPClient` + `email.NewClient`, call `email.Sync(ctx, gmail, s, repoPath, SyncOptions{...})`, print `"created N task(s)"` or wrapped error; exit 1 on auth-missing
+- [x] `email auth`: read `config.EmailConfig()` for paths, call `email.Authorize(ctx, ...)`; print `"authorized; token saved to <path>"` on success; on success, also flip `enabled=true` via `config.SaveEmail` so subsequent invocations pick up the feature without manual config edits
+- [x] `email status`: print auth state (`token loaded, expires <iso-time>` / `not authorized — run 'monolog email auth'`), configured label, configured interval. **Does NOT show "last sync time"** (no sentinel file in v1; the user can use `git log` if curious)
+- [x] register `newEmailCmd()` in `cmd/root.go` alongside other subcommands
+- [x] write tests: `sync` command success path with fake Gmail (inject via package-level `var emailClientFactory = func(...) (Gmail, error) { ... }` overridable in tests, defaulting to the real factory); `sync` command no-token error path returns user-facing hint string; `status` command formatting for both authorized and unauthorized states. The `auth` subcommand's interactive flow is NOT unit-tested (manual only — covered by Task 12).
+- [x] run `go test ./cmd/` and `go vet ./...` — must pass before next task
 
 ### Task 8: cmd/done.go archive hook (CLI)
 
