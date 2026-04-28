@@ -214,19 +214,19 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Create: `internal/email/sync.go`
 - Create: `internal/email/sync_test.go`
 
-- [ ] implement `type SyncOptions struct { Label string; MaxPerSync int; Now time.Time; Writer io.Writer }`
-- [ ] implement `type SyncResult struct { Created int; Err error }`
-- [ ] implement `Sync(ctx context.Context, gmail Gmail, store *store.Store, repoPath string, opts SyncOptions) SyncResult`:
+- [x] implement `type SyncOptions struct { Label string; MaxPerSync int; Now time.Time; Writer io.Writer }`
+- [x] implement `type SyncResult struct { Created int; Err error }`
+- [x] implement `Sync(ctx context.Context, gmail Gmail, store *store.Store, repoPath string, opts SyncOptions) SyncResult`:
   1. `gmail.ListLabeled(ctx, opts.Label)` → IDs (Gmail returns newest-first; preserve order)
   2. `store.List(store.ListOptions{})` (no Status filter → all open + done) → build dedup set of SourceIDs where Source==`"gmail"`
   3. Filter to new IDs, preserving Gmail's newest-first order
   4. Take first `MaxPerSync` (remaining new IDs are skipped silently — picked up on next sync; soft cap)
   5. For each: `gmail.Get(ctx, id)` → `convert.ToTask` → `store.Create` (warn-and-continue on individual fail), accumulate file paths
   6. Single `git.AutoCommit(repoPath, fmt.Sprintf("email: imported %d task(s) (label=%s)", n, label), files...)` if any created
-- [ ] no commit when zero created; partial Store.Create failure still commits successful writes
-- [ ] write tests with fake Gmail + temp store + temp git repo: first sync (5 msgs → 5 tasks, 1 commit, message format `"email: imported 5 task(s) (label=monolog)"`); second sync (same 5 → 0 created, 0 commits); mixed (3 already + 2 new → 2 created, 1 commit naming 2); soft cap (e.g. 5 msgs with `MaxPerSync=3` → 3 created in newest-first order, second sync drains remaining 2); partial Store.Create failure (4/5 succeed → 1 commit with 4 files, warning to writer)
-- [ ] write test: `ListLabeled` error → SyncResult with non-nil Err, no commit, no Store mutations
-- [ ] run `go test ./internal/email/` — must pass before next task
+- [x] no commit when zero created; partial Store.Create failure still commits successful writes
+- [x] write tests with fake Gmail + temp store + temp git repo: first sync (5 msgs → 5 tasks, 1 commit, message format `"email: imported 5 task(s) (label=monolog)"`); second sync (same 5 → 0 created, 0 commits); mixed (3 already + 2 new → 2 created, 1 commit naming 2); soft cap (e.g. 5 msgs with `MaxPerSync=3` → 3 created in newest-first order, second sync drains remaining 2); partial Store.Create failure (4/5 succeed → 1 commit with 4 files, warning to writer)
+- [x] write test: `ListLabeled` error → SyncResult with non-nil Err, no commit, no Store mutations
+- [x] run `go test ./internal/email/` — must pass before next task
 
 ### Task 7: cmd/email.go subcommands (sync, auth, status)
 
