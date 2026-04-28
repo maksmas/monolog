@@ -249,12 +249,12 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Modify: `cmd/done.go`
 - Modify: `cmd/done_recurring_test.go` (or create `cmd/done_archive_test.go`)
 
-- [ ] introduce a single package-level seam in `cmd/done.go` for testing: `var archiveFn = realArchive` where `realArchive` constructs a Gmail client (with 5s context timeout) and calls `gmail.ArchiveLabel(ctx, sourceID)`. Tests swap the var.
-- [ ] after successful `git.AutoCommit` in `RunE`, if `task.Source == "gmail"` && `task.SourceID != ""` && `config.EmailConfig().Enabled`: call `archiveFn(task.SourceID)`; on error, print `"archive failed: <err>"` to stderr (NON-FATAL — `monolog done` still exits 0)
-- [ ] on archive success, print `"email archived"` to stdout
-- [ ] do NOT call archive when email disabled or task lacks Source/SourceID
-- [ ] write tests by swapping `archiveFn` with a recording fake: gmail-sourced task triggers archive call with the right SourceID; non-gmail task does NOT call archive; archive failure logged to stderr but command still succeeds (exit 0); email-disabled config skips archive entirely (fake never called)
-- [ ] run `go test ./cmd/` — must pass before next task
+- [x] introduce a single package-level seam in `cmd/done.go` for testing: `var archiveFn = realArchive` where `realArchive` constructs a Gmail client (with 5s context timeout) and calls `gmail.ArchiveLabel(ctx, sourceID)`. Tests swap the var.
+- [x] after successful `git.AutoCommit` in `RunE`, if `task.Source == "gmail"` && `task.SourceID != ""` && `config.EmailConfig().Enabled`: call `archiveFn(task.SourceID)`; on error, print `"archive failed: <err>"` to stderr (NON-FATAL — `monolog done` still exits 0)
+- [x] on archive success, print `"email archived"` to stdout
+- [x] do NOT call archive when email disabled or task lacks Source/SourceID
+- [x] write tests by swapping `archiveFn` with a recording fake: gmail-sourced task triggers archive call with the right SourceID; non-gmail task does NOT call archive; archive failure logged to stderr but command still succeeds (exit 0); email-disabled config skips archive entirely (fake never called)
+- [x] run `go test ./cmd/` — must pass before next task
 
 ### Task 9: TUI — sync command + `s` keybinding overload + reload-on-create
 
