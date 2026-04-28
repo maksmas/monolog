@@ -161,13 +161,13 @@ All keys optional within the `email` block; the block itself is optional. `confi
 - Modify: `internal/config/config.go`
 - Modify: `internal/config/config_test.go`
 
-- [ ] define `type EmailConfig struct { Enabled bool; Label string; SyncInterval time.Duration; MaxPerSync int; ClientSecretsPath string }` exported from `internal/config`
-- [ ] extend `Load` to also unmarshal an `"email"` JSON block into a package-level `emailCfg` var; silently ignore missing fields, apply defaults (enabled=false, label="monolog", interval=5*time.Minute, max=100, client_secrets_path=`$XDG_CONFIG_HOME/monolog/gmail_credentials.json` resolved at access time)
-- [ ] add `EmailConfig() EmailConfig` accessor returning the populated struct (single function, not 5 per-field getters — this is the only public surface for email config)
-- [ ] extend `Save` signature/internals to write the `"email"` block alongside theme/date_format, preserving any keys it does not own (existing read-modify-write pattern). The simplest path: keep `Save(monologDir, theme, dateFormat string)` as-is; add a separate `SaveEmail(monologDir string, ec EmailConfig) error` callable when the email block needs to change. The TUI settings modal does NOT yet expose email config, so `SaveEmail` is exercised by `cmd email auth` (which writes `enabled=true` after first auth) and by manual config edits
-- [ ] enforce that `internal/email/` does NOT import `internal/config` — config values are passed by value into email functions
-- [ ] write tests: Load with no email block → defaults; Load with full block → values populated; SaveEmail roundtrips; SaveEmail preserves unknown keys (e.g. `default_schedule`); EmailConfig returns the loaded values
-- [ ] run `go test ./internal/config/` — must pass before next task
+- [x] define `type EmailConfig struct { Enabled bool; Label string; SyncInterval time.Duration; MaxPerSync int; ClientSecretsPath string }` exported from `internal/config`
+- [x] extend `Load` to also unmarshal an `"email"` JSON block into a package-level `emailCfg` var; silently ignore missing fields, apply defaults (enabled=false, label="monolog", interval=5*time.Minute, max=100, client_secrets_path=`$XDG_CONFIG_HOME/monolog/gmail_credentials.json` resolved at access time)
+- [x] add `Email() EmailConfig` accessor returning the populated struct (single function, not 5 per-field getters — this is the only public surface for email config). Named `Email()` rather than `EmailConfig()` because Go does not permit a function to share its name with the type it returns; callers spell this as `config.Email()`.
+- [x] extend `Save` signature/internals to write the `"email"` block alongside theme/date_format, preserving any keys it does not own (existing read-modify-write pattern). The simplest path: keep `Save(monologDir, theme, dateFormat string)` as-is; add a separate `SaveEmail(monologDir string, ec EmailConfig) error` callable when the email block needs to change. The TUI settings modal does NOT yet expose email config, so `SaveEmail` is exercised by `cmd email auth` (which writes `enabled=true` after first auth) and by manual config edits
+- [x] enforce that `internal/email/` does NOT import `internal/config` — config values are passed by value into email functions (will be enforced as the email package is created in subsequent tasks; no email package exists yet so the constraint is trivially satisfied)
+- [x] write tests: Load with no email block → defaults; Load with full block → values populated; SaveEmail roundtrips; SaveEmail preserves unknown keys (e.g. `default_schedule`); Email returns the loaded values
+- [x] run `go test ./internal/config/` — must pass before next task
 
 ### Task 3: Add Gmail client interface + real implementation
 
