@@ -999,18 +999,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// archiveSourceID is set by doneSelected when a gmail-sourced task
 		// is completed; the archive call runs in its own goroutine via
 		// archiveEmailCmd and is non-fatal — the done has already committed.
-		var archiveCmd tea.Cmd
-		if msg.archiveSourceID != "" {
-			archiveCmd = m.archiveEmailCmd(msg.archiveSourceID)
-		}
+		// archiveEmailCmd returns nil when email is disabled or sourceID is
+		// empty, and tea.Batch silently drops nil entries, so no extra
+		// guard is needed here.
+		archiveCmd := m.archiveEmailCmd(msg.archiveSourceID)
 		if action := m.pendingAction; action != nil {
 			m.pendingAction = nil
 			return m, tea.Batch(action(), archiveCmd)
 		}
-		if archiveCmd != nil {
-			return m, archiveCmd
-		}
-		return m, nil
+		return m, archiveCmd
 
 	case archiveResult:
 		// Archive is non-fatal: surface the result via a status flash but do
@@ -1175,11 +1172,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "Syncing..."
 		// When email is enabled, dispatch git-sync and email-sync in
 		// parallel so a slow Gmail call cannot block the local commit/push
-		// from finishing. The email cmd is a no-op when disabled, so this
-		// branch is safe to take unconditionally — but dispatching the
-		// no-op cmd would still flash an unwanted "no-op" through Update,
-		// so guard the batch so the disabled path stays a clean git-only
-		// sync exactly as it was before email was added.
+		// from finishing. Guard on emailEnabled so the spinner indicator
+		// (m.emailSyncing) is only flipped on when there's actually work
+		// to do — the disabled path stays a clean git-only sync.
 		if m.emailEnabled {
 			m.emailSyncing = true
 			return m, tea.Batch(m.syncCmd(), m.emailSyncCmd())

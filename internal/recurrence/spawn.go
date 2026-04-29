@@ -54,10 +54,19 @@ func spawn(s *store.Store, old model.Task, rule Rule, now time.Time, dateFormat 
 	nextDisplay := nextT.Format(dateFormat)
 
 	newTask := model.Task{
-		ID:         newID,
-		Title:      old.Title,
-		Body:       model.AppendNote(old.Body, fmt.Sprintf("Spawned from %s", old.ID), now, dateFormat),
+		ID:    newID,
+		Title: old.Title,
+		Body:  model.AppendNote(old.Body, fmt.Sprintf("Spawned from %s", old.ID), now, dateFormat),
+		// Source is propagated (e.g. "gmail") so spawned tasks inherit
+		// the original origin label, but SourceID is intentionally NOT
+		// copied: the spawn is a NEW task, not the same external entity.
+		// In particular, gmail-sourced spawns must not carry the parent
+		// message ID — otherwise the dedup set in email.Sync would treat
+		// the spawn as already-imported and skip it on subsequent runs,
+		// AND `done` would archive the parent's gmail message a second
+		// time. Leaving SourceID empty here is load-bearing; do not copy.
 		Source:     old.Source,
+		SourceID:   "",
 		Status:     "open",
 		Position:   ordering.NextPosition(existing),
 		Schedule:   nextISO,

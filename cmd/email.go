@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/config"
@@ -25,11 +24,12 @@ var emailClientFactory = realEmailClientFactory
 // refreshing http.Client, and constructs a Gmail client backed by the
 // real *gmail.Service.
 func realEmailClientFactory(ctx context.Context, ec config.EmailConfig) (email.Gmail, time.Time, error) {
-	tok, err := email.LoadToken(tokenPathFor(ec))
+	tokenPath := email.TokenPathFor(ec.ClientSecretsPath)
+	tok, err := email.LoadToken(tokenPath)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	httpClient, err := email.HTTPClient(ctx, ec.ClientSecretsPath, tokenPathFor(ec))
+	httpClient, err := email.HTTPClient(ctx, ec.ClientSecretsPath, tokenPath)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -38,20 +38,6 @@ func realEmailClientFactory(ctx context.Context, ec config.EmailConfig) (email.G
 		return nil, time.Time{}, err
 	}
 	return g, tok.Expiry, nil
-}
-
-// tokenPathFor derives the on-disk token path from the email config. The
-// token sits next to the client-secrets JSON in $XDG_CONFIG_HOME/monolog/,
-// keeping both files outside the git-synced monolog repo so OAuth secrets
-// are never accidentally committed across devices.
-func tokenPathFor(ec config.EmailConfig) string {
-	if ec.ClientSecretsPath == "" {
-		return ""
-	}
-	// Place gmail_token.json next to gmail_credentials.json. The defaults
-	// resolved by config.Email() already point at $XDG_CONFIG_HOME/monolog/
-	// so this naturally lands in the right place.
-	return filepath.Join(filepath.Dir(ec.ClientSecretsPath), "gmail_token.json")
 }
 
 func newEmailCmd() *cobra.Command {
@@ -118,7 +104,7 @@ func newEmailAuthCmd() *cobra.Command {
 		Long:  "Opens a browser window to complete Google OAuth consent. Saves the refresh token under $XDG_CONFIG_HOME/monolog/gmail_token.json and enables email integration in config.json.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ec := config.Email()
-			tokPath := tokenPathFor(ec)
+			tokPath := email.TokenPathFor(ec.ClientSecretsPath)
 
 			ctx := cmd.Context()
 			if ctx == nil {
@@ -163,7 +149,7 @@ func newEmailStatusCmd() *cobra.Command {
 
 			// Auth state — we only inspect the token file directly here so
 			// we don't burn an HTTP refresh just to render status.
-			tokPath := tokenPathFor(ec)
+			tokPath := email.TokenPathFor(ec.ClientSecretsPath)
 			tok, err := email.LoadToken(tokPath)
 			switch {
 			case err == nil:

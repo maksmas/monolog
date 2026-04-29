@@ -438,7 +438,7 @@ func TestEmailAuthCommand_PropagatesAuthorizeError(t *testing.T) {
 	}
 }
 
-// --- helper: tokenPathFor ---
+// --- helper: email.TokenPathFor ---
 
 func TestTokenPathFor(t *testing.T) {
 	cases := []struct {
@@ -464,9 +464,9 @@ func TestTokenPathFor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tokenPathFor(tc.in)
+			got := email.TokenPathFor(tc.in.ClientSecretsPath)
 			if got != tc.want {
-				t.Errorf("tokenPathFor(%+v) = %q, want %q", tc.in, got, tc.want)
+				t.Errorf("email.TokenPathFor(%+v) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

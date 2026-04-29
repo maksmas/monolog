@@ -523,6 +523,25 @@ func contains(haystack, needle string) bool {
 	return false
 }
 
+// TestEmailTokenPathFor_UsesPlatformSeparators pins that email.TokenPathFor
+// derives the token path with filepath.Dir+filepath.Join rather than a
+// byte-level '/' scan, so the result is correct on every platform Go's
+// filepath package supports (notably Windows, where the separator is
+// '\\'). Two assertions:
+//   - Empty ClientSecretsPath yields an empty result (caller short-circuits).
+//   - Non-empty ClientSecretsPath yields filepath.Join(Dir, gmail_token.json).
+func TestEmailTokenPathFor_UsesPlatformSeparators(t *testing.T) {
+	if got := email.TokenPathFor(""); got != "" {
+		t.Errorf("email.TokenPathFor with empty ClientSecretsPath = %q, want empty", got)
+	}
+	cred := filepath.Join("some", "dir", "gmail_credentials.json")
+	want := filepath.Join("some", "dir", "gmail_token.json")
+	got := email.TokenPathFor(cred)
+	if got != want {
+		t.Errorf("email.TokenPathFor(%q) = %q, want %q", cred, got, want)
+	}
+}
+
 // --- Task 11: archive-on-done + status indicator + help-hint ---
 
 func TestArchiveEmailCmd_DisabledReturnsNil(t *testing.T) {

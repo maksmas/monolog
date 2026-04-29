@@ -83,6 +83,9 @@ func TestLoadTokenMissingFileHint(t *testing.T) {
 	if !strings.Contains(err.Error(), "run monolog email auth") {
 		t.Fatalf("error %q missing user-facing hint", err.Error())
 	}
+	if !errors.Is(err, ErrAuthMissing) {
+		t.Fatalf("errors.Is(%v, ErrAuthMissing) = false want true", err)
+	}
 	if !IsAuthMissing(err) {
 		t.Fatalf("IsAuthMissing(%v) = false want true", err)
 	}
@@ -215,6 +218,9 @@ func TestHTTPClientMissingToken(t *testing.T) {
 	_, err := HTTPClient(tContext(t), secrets, tokenPath)
 	if err == nil {
 		t.Fatal("expected error for missing token")
+	}
+	if !errors.Is(err, ErrAuthMissing) {
+		t.Fatalf("errors.Is(%v, ErrAuthMissing) = false want true", err)
 	}
 	if !IsAuthMissing(err) {
 		t.Fatalf("IsAuthMissing(%v) = false want true", err)

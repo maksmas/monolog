@@ -13,11 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// archiveTimeout caps how long we wait for the Gmail archive call after a
-// successful done. Keep it short so a flaky network never makes
-// `monolog done` hang.
-const archiveTimeout = 5 * time.Second
-
 // archiveFn is a swappable seam invoked after a successful `done` on a
 // gmail-sourced task to remove the INBOX label in Gmail. Tests replace this
 // with a recording fake; production wiring uses realArchive.
@@ -30,12 +25,12 @@ var archiveFn = realArchive
 
 // realArchive constructs an authenticated Gmail client from the persisted
 // OAuth token and removes the INBOX label from the given message. The
-// 5-second context timeout caps how long this can hang on flaky network.
+// email.ArchiveTimeout context caps how long this can hang on flaky network.
 func realArchive(sourceID string, ec config.EmailConfig) error {
-	ctx, cancel := context.WithTimeout(context.Background(), archiveTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), email.ArchiveTimeout)
 	defer cancel()
 
-	tokenPath := tokenPathFor(ec)
+	tokenPath := email.TokenPathFor(ec.ClientSecretsPath)
 	httpClient, err := email.HTTPClient(ctx, ec.ClientSecretsPath, tokenPath)
 	if err != nil {
 		return err

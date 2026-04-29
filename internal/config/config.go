@@ -64,20 +64,23 @@ type EmailConfig struct {
 	ClientSecretsPath string
 }
 
-// emailCfg holds the in-session email config populated by Load. Defaults
-// match the documented behavior: feature disabled, "monolog" label, 5min
-// poll interval, soft cap of 100 messages per sync, and a token at
-// $XDG_CONFIG_HOME/monolog/gmail_credentials.json (resolved at access time
-// to honor environment overrides).
-var emailCfg = EmailConfig{
-	Enabled:      false,
-	Label:        "monolog",
-	SyncInterval: 5 * time.Minute,
-	MaxPerSync:   100,
-	// ClientSecretsPath is resolved lazily in EmailConfig() so that
-	// late changes to XDG_CONFIG_HOME / HOME (in tests) are honored.
-	ClientSecretsPath: "",
+// defaultEmailConfig returns the documented defaults for the in-session
+// email config: feature disabled, "monolog" label, 5min poll interval,
+// soft cap of 100 messages per sync. ClientSecretsPath is left empty so
+// Email() can resolve it lazily and honor late changes to
+// XDG_CONFIG_HOME / HOME (in tests).
+func defaultEmailConfig() EmailConfig {
+	return EmailConfig{
+		Enabled:           false,
+		Label:             "monolog",
+		SyncInterval:      5 * time.Minute,
+		MaxPerSync:        100,
+		ClientSecretsPath: "",
+	}
 }
+
+// emailCfg holds the in-session email config populated by Load.
+var emailCfg = defaultEmailConfig()
 
 // defaultClientSecretsPath returns the default path for the OAuth client
 // secrets JSON: $XDG_CONFIG_HOME/monolog/gmail_credentials.json, falling
@@ -192,17 +195,22 @@ type emailBlock struct {
 // Called by Load before applying any "email" block from disk so a
 // previously-loaded value is not preserved across configurations.
 func resetEmailCfgToDefaults() {
-	emailCfg = EmailConfig{
-		Enabled:           false,
-		Label:             "monolog",
-		SyncInterval:      5 * time.Minute,
-		MaxPerSync:        100,
-		ClientSecretsPath: "",
-	}
+	emailCfg = defaultEmailConfig()
 }
 
 // applyEmailBlock overlays a parsed JSON block onto emailCfg, applying
 // defaults for omitted fields.
+//
+// Note on the value-guards (e.g. "*b.Label != \"\""): these are INTENTIONAL
+// value-clamps, not absence checks. An explicit empty label or a zero/
+// negative sync_interval_minutes / max_per_sync in config.json is treated as
+// a misconfiguration and silently falls back to the documented default —
+// rather than activating a degenerate configuration (querying Gmail with
+// label="", a 0-minute polling loop, or a 0-cap that imports nothing).
+// The pointer fields are still useful: they distinguish absent from
+// explicit-false for Enabled (where false IS a valid value) so an explicit
+// "enabled": false correctly disables the feature without resetting to the
+// default-false state.
 func applyEmailBlock(b emailBlock) {
 	if b.Enabled != nil {
 		emailCfg.Enabled = *b.Enabled

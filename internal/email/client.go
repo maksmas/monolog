@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	gmailapi "google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
@@ -103,11 +104,14 @@ func (g *realGmail) Get(ctx context.Context, id string) (*Message, error) {
 	}
 	out := &Message{ID: msg.Id, Snippet: msg.Snippet}
 	if msg.Payload != nil {
+		// Gmail returns header names with the casing the sender used, so we
+		// match case-insensitively to be robust against any RFC-5322-quirky
+		// upstream MTA that capitalizes differently (e.g. "SUBJECT", "from").
 		for _, h := range msg.Payload.Headers {
-			switch h.Name {
-			case "Subject":
+			switch {
+			case strings.EqualFold(h.Name, "Subject"):
 				out.Subject = h.Value
-			case "From":
+			case strings.EqualFold(h.Name, "From"):
 				out.From = h.Value
 			}
 		}

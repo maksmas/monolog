@@ -252,6 +252,73 @@ func listTaskFiles(t *testing.T, dir string) []string {
 	return names
 }
 
+// TestCompleteAndSpawn_DoesNotCopySourceID pins the load-bearing intent of
+// the spawn function: when the parent task has Source="gmail" with a
+// non-empty SourceID, the spawned follow-up MUST inherit Source but MUST
+// NOT inherit SourceID. Copying SourceID would (a) make email.Sync's
+// dedup set treat the spawn as already-imported and skip a real new
+// arrival and (b) re-archive the same gmail message on subsequent
+// completions. Empty SourceID is the contract; this test enforces it.
+func TestCompleteAndSpawn_DoesNotCopySourceID(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "tasks")
+	s, err := store.New(tasksDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	id, err := model.NewID()
+	if err != nil {
+		t.Fatalf("model.NewID: %v", err)
+	}
+	task := model.Task{
+		ID:         id,
+		Title:      "Followup",
+		Status:     "open",
+		Schedule:   "2026-04-18",
+		Recurrence: "days:3",
+		Position:   1000,
+		Source:     "gmail",
+		SourceID:   "msg-parent-abc",
+		CreatedAt:  "2026-04-18T00:00:00Z",
+		UpdatedAt:  "2026-04-18T00:00:00Z",
+	}
+	if err := s.Create(task); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	now := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
+	var warn bytes.Buffer
+	_, commitFiles, err := CompleteAndSpawn(s, &task, now, &warn, "02-01-2006")
+	if err != nil {
+		t.Fatalf("CompleteAndSpawn: %v (stderr: %s)", err, warn.String())
+	}
+
+	// Find the spawn task and verify Source/SourceID propagation.
+	oldFile := filepath.Join(".monolog", "tasks", task.ID+".json")
+	var spawnID string
+	for _, f := range commitFiles {
+		if f == oldFile {
+			continue
+		}
+		spawnID = strings.TrimSuffix(filepath.Base(f), ".json")
+	}
+	if spawnID == "" {
+		t.Fatalf("spawn file not found in commitFiles: %v", commitFiles)
+	}
+	spawn, err := s.Get(spawnID)
+	if err != nil {
+		t.Fatalf("store.Get spawn: %v", err)
+	}
+
+	if spawn.Source != "gmail" {
+		t.Errorf("spawn.Source = %q, want %q (origin label must propagate)", spawn.Source, "gmail")
+	}
+	if spawn.SourceID != "" {
+		t.Errorf("spawn.SourceID = %q, want empty — parent's SourceID must NOT be copied (would break gmail dedup and double-archive on done)", spawn.SourceID)
+	}
+}
+
 // TestTagsWithoutActive_ReturnsFreshSlice verifies that mutating the output
 // does not affect the input. The spawn flow relies on this so that
 // subsequent SetActive/reslice work on the spawn doesn't corrupt the old

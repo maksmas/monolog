@@ -40,22 +40,18 @@ type archiveResult struct {
 	err error
 }
 
-// archiveTimeout caps how long we wait for the Gmail archive call after a
-// successful done. Mirrors cmd/done.go so flaky network never freezes the
-// TUI command pipeline either.
-const archiveTimeout = 5 * time.Second
-
 // archiveEmailCmd removes the INBOX label from the given Gmail message ID
-// in the background, with a 5s context timeout. Returns archiveResult so
-// the Update handler can flash status. Returns nil when email is disabled
-// or sourceID is empty so callers can dispatch unconditionally.
+// in the background, with email.ArchiveTimeout as the context deadline.
+// Returns archiveResult so the Update handler can flash status. Returns
+// nil when email is disabled or sourceID is empty so callers can dispatch
+// unconditionally.
 func (m *Model) archiveEmailCmd(sourceID string) tea.Cmd {
 	if !m.emailEnabled || sourceID == "" {
 		return nil
 	}
 	return func() tea.Msg {
 		ec := config.Email()
-		ctx, cancel := context.WithTimeout(context.Background(), archiveTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), email.ArchiveTimeout)
 		defer cancel()
 		g, err := emailClientBuilder(ctx, ec)
 		if err != nil {
@@ -82,7 +78,7 @@ var emailClientBuilder = realEmailClientBuilder
 // if the token is missing — the caller surfaces a "run monolog email auth"
 // hint via the wrapped error message.
 func realEmailClientBuilder(ctx context.Context, ec config.EmailConfig) (email.Gmail, error) {
-	tokenPath := emailTokenPathFor(ec)
+	tokenPath := email.TokenPathFor(ec.ClientSecretsPath)
 	if _, err := email.LoadToken(tokenPath); err != nil {
 		return nil, err
 	}
@@ -91,24 +87,6 @@ func realEmailClientBuilder(ctx context.Context, ec config.EmailConfig) (email.G
 		return nil, err
 	}
 	return email.NewClient(ctx, httpClient)
-}
-
-// emailTokenPathFor mirrors cmd/email.tokenPathFor: place gmail_token.json
-// next to gmail_credentials.json so both files live outside the
-// git-synced monolog repo and stay device-local.
-func emailTokenPathFor(ec config.EmailConfig) string {
-	if ec.ClientSecretsPath == "" {
-		return ""
-	}
-	// dir of the credentials path + gmail_token.json. Use a tiny inline
-	// implementation to avoid pulling cmd/ from internal/.
-	dir := ec.ClientSecretsPath
-	for i := len(dir) - 1; i >= 0; i-- {
-		if dir[i] == '/' {
-			return dir[:i] + "/gmail_token.json"
-		}
-	}
-	return "gmail_token.json"
 }
 
 // emailSyncCmd runs an email sync in the background and returns the result
@@ -132,7 +110,7 @@ func (m *Model) emailSyncCmd() tea.Cmd {
 		// freshest paths; the snapshot on Model only carries enabled/label
 		// /interval and not the underlying file paths used by the builder.
 		ec := config.Email()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), email.SyncTimeout)
 		defer cancel()
 		g, err := emailClientBuilder(ctx, ec)
 		if err != nil {

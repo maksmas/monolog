@@ -90,8 +90,6 @@ func truncateSnippet(snippet string) string {
 // blank lines are emitted. With a snippet, a single blank line separates
 // the URL from the snippet body.
 func buildBody(sender, msgID, snippet string) string {
-	// strconv-style fmt.Sprintf is overkill here; concatenation is cheaper
-	// and just as readable.
 	header := "From: " + sender + "\nhttps://mail.google.com/mail/#all/" + msgID
 	if snippet == "" {
 		return header

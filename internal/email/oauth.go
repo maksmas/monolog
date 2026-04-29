@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -31,14 +30,21 @@ const gmailScope = gmailapi.GmailModifyScope
 // is missing or unrecoverable. The wording matches the CLI command name.
 const authMissingHint = "run monolog email auth"
 
+// ErrAuthMissing is the sentinel returned (wrapped) by LoadToken when the
+// token file is absent on disk. Callers detect this case via errors.Is so
+// they can render a friendly "run monolog email auth" hint rather than the
+// raw wrapped error string. The sentinel lets us evolve the user-facing
+// message without breaking the detection contract.
+var ErrAuthMissing = errors.New("email: auth token not found")
+
 // LoadToken reads an OAuth2 token previously persisted by SaveToken. A
-// missing file is reported with a wrapped error containing the user-facing
-// hint to run `monolog email auth`.
+// missing file is reported with a wrapped ErrAuthMissing carrying the
+// user-facing hint to run `monolog email auth`.
 func LoadToken(path string) (*oauth2.Token, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("email: token not found at %s — %s", path, authMissingHint)
+			return nil, fmt.Errorf("%w at %s — %s", ErrAuthMissing, path, authMissingHint)
 		}
 		return nil, fmt.Errorf("email: read token %s: %w", path, err)
 	}
@@ -253,10 +259,9 @@ func HTTPClient(ctx context.Context, clientSecretsPath, tokenPath string) (*http
 
 // IsAuthMissing reports whether an error from LoadToken/HTTPClient is the
 // "no token on disk" case. cmd/email status uses this to render a friendly
-// message rather than the wrapped error string.
+// message rather than the wrapped error string. Backed by errors.Is on
+// ErrAuthMissing — string-matching the user-facing hint is intentionally
+// avoided so the surface message can change without breaking detection.
 func IsAuthMissing(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), authMissingHint)
+	return errors.Is(err, ErrAuthMissing)
 }
