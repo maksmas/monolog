@@ -1,15 +1,46 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/mmaksmas/monolog/internal/config"
 	"github.com/mmaksmas/monolog/internal/display"
+	"github.com/mmaksmas/monolog/internal/email"
 	"github.com/mmaksmas/monolog/internal/git"
 	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/spf13/cobra"
 )
+
+// archiveFn is a swappable seam invoked after a successful `done` on a
+// gmail-sourced task to remove the INBOX label in Gmail. Tests replace this
+// with a recording fake; production wiring uses realArchive.
+//
+// The function takes the Gmail message ID (Task.SourceID) and the email
+// configuration so the caller can build the Gmail client. Returning nil means
+// the archive succeeded; any error is treated as NON-FATAL by the caller (the
+// task stays done, the error is logged to stderr).
+var archiveFn = realArchive
+
+// realArchive constructs an authenticated Gmail client from the persisted
+// OAuth token and removes the INBOX label from the given message. The
+// email.ArchiveTimeout context caps how long this can hang on flaky network.
+func realArchive(sourceID string, ec config.EmailConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), email.ArchiveTimeout)
+	defer cancel()
+
+	tokenPath := email.TokenPathFor(ec.ClientSecretsPath)
+	httpClient, err := email.HTTPClient(ctx, ec.ClientSecretsPath, tokenPath)
+	if err != nil {
+		return err
+	}
+	g, err := email.NewClient(ctx, httpClient)
+	if err != nil {
+		return err
+	}
+	return g.ArchiveLabel(ctx, sourceID)
+}
 
 func newDoneCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -45,6 +76,18 @@ func newDoneCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Done: %s [%s]\n", task.Title, display.ShortID(task.ID))
+
+			// Archive in Gmail when the completed task came from a gmail
+			// import and email integration is enabled. Failures are
+			// non-fatal — we already exited 0 from the user's perspective.
+			ec := config.Email()
+			if ec.Enabled && task.Source == "gmail" && task.SourceID != "" {
+				if err := archiveFn(task.SourceID, ec); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "archive failed: %v\n", err)
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "email archived")
+				}
+			}
 			return nil
 		},
 	}

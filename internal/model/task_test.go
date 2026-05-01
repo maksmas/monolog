@@ -352,6 +352,64 @@ func TestTask_RecurrenceRoundTrip_NonEmpty(t *testing.T) {
 	}
 }
 
+func TestTask_SourceIDRoundTrip_Empty(t *testing.T) {
+	// A task JSON without a source_id field should decode to an empty
+	// SourceID and re-encode without introducing the key (omitempty preserves
+	// backward compatibility with pre-existing task files).
+	original := `{"id":"01ABC","title":"t","source":"cli","status":"open","position":1000,"schedule":"2026-04-17","created_at":"2026-04-17T00:00:00Z","updated_at":"2026-04-17T00:00:00Z"}`
+
+	var task Task
+	if err := json.Unmarshal([]byte(original), &task); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if task.SourceID != "" {
+		t.Errorf("expected empty SourceID, got %q", task.SourceID)
+	}
+
+	out, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(out), "source_id") {
+		t.Errorf("expected omitempty to omit source_id key, got %s", string(out))
+	}
+}
+
+func TestTask_SourceIDRoundTrip_NonEmpty(t *testing.T) {
+	// A task with a non-empty SourceID should serialize with the field
+	// and deserialize back to the same value.
+	task := Task{
+		ID:        "01ABC",
+		Title:     "from email",
+		Source:    "gmail",
+		SourceID:  "18f2a3b4c5d6e7f8",
+		Status:    "open",
+		Position:  1000,
+		Schedule:  "2026-04-28",
+		CreatedAt: "2026-04-28T00:00:00Z",
+		UpdatedAt: "2026-04-28T00:00:00Z",
+	}
+
+	raw, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(raw), `"source_id":"18f2a3b4c5d6e7f8"`) {
+		t.Errorf("expected source_id field in output, got %s", string(raw))
+	}
+
+	var decoded Task
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if decoded.SourceID != "18f2a3b4c5d6e7f8" {
+		t.Errorf("SourceID = %q, want %q", decoded.SourceID, "18f2a3b4c5d6e7f8")
+	}
+	if decoded.Source != "gmail" {
+		t.Errorf("Source = %q, want %q", decoded.Source, "gmail")
+	}
+}
+
 func TestSanitizeTags(t *testing.T) {
 	tests := []struct {
 		name string

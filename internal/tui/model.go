@@ -216,6 +216,17 @@ type Model struct {
 	// (standard redo semantics). Cleared alongside undoStack when syncing with
 	// a remote.
 	redoStack []string
+
+	// Email integration state. Populated from config.Email() in newModel; if
+	// emailEnabled is false the `s` keybinding does not dispatch an email
+	// sync, the on-launch sync does not run, and the periodic ticker is not
+	// armed. emailSyncing tracks an in-flight sync so the status indicator
+	// can render a spinner.
+	emailEnabled    bool
+	emailSyncing    bool
+	emailLabel      string
+	emailMaxPerSync int
+	emailInterval   time.Duration
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -369,6 +380,11 @@ type taskSavedMsg struct {
 	redoSHA        string // revert-commit SHA to push onto redoStack (successful undo)
 	redoneSHA      string // commit SHA to push onto undoStack WITHOUT clearing redoStack (successful redo)
 	restoreRedoSHA string // pushed back onto redoStack before error return (redo retry)
+	// archiveSourceID, when non-empty on a successful taskSavedMsg (err==nil),
+	// signals the Update handler to kick off archiveEmailCmd. Set by
+	// doneSelected when a gmail-sourced task is completed; the archive itself
+	// is non-fatal and runs in a separate goroutine after the done commit.
+	archiveSourceID string
 }
 
 // newModel constructs a Model and loads initial task data for each tab.
@@ -432,18 +448,27 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		activeTheme = defaultTheme
 	}
 
+	// Snapshot the email-integration settings once at startup so the rest of
+	// the TUI never has to round-trip through internal/config. Disabled-state
+	// (Enabled=false) makes every email-driven code path a no-op.
+	ec := config.Email()
+
 	m := &Model{
-		store:      s,
-		repoPath:   repoPath,
-		tabs:       defaultTabs,
-		input:      ti,
-		tagInput:   tagTi,
-		recurInput: recurTi,
-		titleArea:  ta,
-		noteArea:   noteTA,
-		search:     searchState{input: searchTi},
-		theme:      activeTheme,
-		styles:     buildStyles(activeTheme),
+		store:           s,
+		repoPath:        repoPath,
+		tabs:            defaultTabs,
+		input:           ti,
+		tagInput:        tagTi,
+		recurInput:      recurTi,
+		titleArea:       ta,
+		noteArea:        noteTA,
+		search:          searchState{input: searchTi},
+		theme:           activeTheme,
+		styles:          buildStyles(activeTheme),
+		emailEnabled:    ec.Enabled,
+		emailLabel:      ec.Label,
+		emailMaxPerSync: ec.MaxPerSync,
+		emailInterval:   ec.SyncInterval,
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(activeTheme)
 	if !ok {
@@ -905,8 +930,17 @@ func (m *Model) skipSeparator(dir int) {
 	m.lists[m.activeTab].SkipSeparator(dir)
 }
 
-// Init is the Bubble Tea Init hook.
-func (m *Model) Init() tea.Cmd { return nil }
+// Init is the Bubble Tea Init hook. When email integration is enabled it
+// kicks off an immediate sync (so newly-labeled emails are pulled at launch)
+// and arms the periodic ticker so subsequent syncs keep firing while the TUI
+// runs. When email is disabled both calls return nil and tea.Batch drops them.
+func (m *Model) Init() tea.Cmd {
+	if !m.emailEnabled {
+		return nil
+	}
+	m.emailSyncing = true
+	return tea.Batch(m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
+}
 
 // Update routes a tea.Msg through the model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -962,11 +996,63 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.viewMode == viewTag {
 			m.skipSeparator(0)
 		}
+		// archiveSourceID is set by doneSelected when a gmail-sourced task
+		// is completed; the archive call runs in its own goroutine via
+		// archiveEmailCmd and is non-fatal — the done has already committed.
+		// archiveEmailCmd returns nil when email is disabled or sourceID is
+		// empty, and tea.Batch silently drops nil entries, so no extra
+		// guard is needed here.
+		archiveCmd := m.archiveEmailCmd(msg.archiveSourceID)
 		if action := m.pendingAction; action != nil {
 			m.pendingAction = nil
-			return m, action()
+			return m, tea.Batch(action(), archiveCmd)
+		}
+		return m, archiveCmd
+
+	case archiveResult:
+		// Archive is non-fatal: surface the result via a status flash but do
+		// not roll back the underlying done. The task stays done either way.
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("archive failed: %v", msg.err)
+			return m, nil
+		}
+		m.statusMsg = "email archived"
+		return m, nil
+
+	case emailSyncResult:
+		// Always clear the in-flight flag so the spinner indicator never
+		// gets stuck on, regardless of success or failure.
+		m.emailSyncing = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("email sync: %v", msg.err)
+			return m, nil
+		}
+		m.statusMsg = fmt.Sprintf("email: %d imported", msg.created)
+		// Reload only when something changed — avoids flicker on the
+		// no-new-mail case.
+		if msg.created > 0 {
+			if err := m.reloadAll(); err != nil {
+				m.err = err
+			}
+			m.recomputeLayout()
 		}
 		return m, nil
+
+	case emailNoOpMsg:
+		// Email integration is disabled; nothing to do. The cmd exists so
+		// tea.Batch callers can dispatch unconditionally without a check.
+		return m, nil
+
+	case emailTickMsg:
+		// Self-rescheduling tick: fire a sync and re-arm the next tick. If
+		// email was disabled mid-run (rare — settings modal does not yet
+		// expose this) emailSyncCmd and emailTickCmd both fall back to safe
+		// no-ops so the loop unwinds cleanly.
+		if !m.emailEnabled {
+			return m, nil
+		}
+		m.emailSyncing = true
+		return m, tea.Batch(m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
 
 	case tea.KeyMsg:
 		switch m.mode {
@@ -1084,6 +1170,15 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openEdit()
 	case "s":
 		m.statusMsg = "Syncing..."
+		// When email is enabled, dispatch git-sync and email-sync in
+		// parallel so a slow Gmail call cannot block the local commit/push
+		// from finishing. Guard on emailEnabled so the spinner indicator
+		// (m.emailSyncing) is only flipped on when there's actually work
+		// to do — the disabled path stays a clean git-only sync.
+		if m.emailEnabled {
+			m.emailSyncing = true
+			return m, tea.Batch(m.syncCmd(), m.emailSyncCmd())
+		}
 		return m, m.syncCmd()
 	case "u", "ctrl+z":
 		if len(m.undoStack) == 0 {
@@ -1261,6 +1356,14 @@ func (m *Model) doneSelected() tea.Cmd {
 	flat := flattenTitle(t.Title)
 	storeRef := m.store
 	repoPath := m.repoPath
+	// Capture archive trigger inputs at dispatch time. Only request an
+	// archive when email is enabled AND the task is a gmail-sourced import
+	// that still carries a Gmail message ID; otherwise leave the field
+	// empty so the Update handler skips the archive call entirely.
+	archiveID := ""
+	if m.emailEnabled && t.Source == "gmail" && t.SourceID != "" {
+		archiveID = t.SourceID
+	}
 	return func() tea.Msg {
 		// warnBuf collects any recurrence warnings surfaced through the
 		// status bar (stderr has no natural home in the TUI).
@@ -1281,7 +1384,7 @@ func (m *Model) doneSelected() tea.Cmd {
 			// status line so the user sees the recurrence worked.
 			status = fmt.Sprintf("Completed: %s (next occurrence spawned)", flat)
 		}
-		return taskSavedMsg{status: status, sha: sha}
+		return taskSavedMsg{status: status, sha: sha, archiveSourceID: archiveID}
 	}
 }
 
@@ -2700,6 +2803,13 @@ func (m *Model) statsBarView() string {
 	tabParts = append(tabParts, fmt.Sprintf("%d in tab", tabCount))
 
 	line := strings.Join(overall, "  ") + "  |  " + strings.Join(tabParts, "  ")
+	// Email sync indicator: single character right of the stats line. Render
+	// "↻" while a sync is in flight, blank otherwise. Padding inside the
+	// helpTextStyle keeps the indicator visually attached to the stats line
+	// without throwing off the bar's overall vertical alignment.
+	if m.emailSyncing {
+		line += "  ↻"
+	}
 	return m.styles.helpTextStyle.Padding(0, 1).Render(line)
 }
 
@@ -3009,6 +3119,13 @@ func (m *Model) helpLine() string {
 				[2]string{"[/]", "scroll"},
 			)
 		}
+		// "s" hint copy reflects whether the binding triggers email-sync
+		// alongside git-sync. The label widens when email is enabled to make
+		// the broader behavior obvious; when disabled it stays compact.
+		syncLabel := "sync"
+		if m.emailEnabled {
+			syncLabel = "sync (git+email)"
+		}
 		if m.viewMode == viewTag {
 			return m.renderHelpBar(
 				[2]string{"d", "done"},
@@ -3021,7 +3138,7 @@ func (m *Model) helpLine() string {
 				[2]string{"/", "search"},
 				[2]string{"v", "schedule"},
 				[2]string{"x", "del"},
-				[2]string{"s", "sync"},
+				[2]string{"s", syncLabel},
 				[2]string{"u", "undo"},
 				[2]string{"ctrl+y", "redo"},
 				[2]string{"←/→", "tabs"},
@@ -3041,7 +3158,7 @@ func (m *Model) helpLine() string {
 			[2]string{"/", "search"},
 			[2]string{"v", "tags"},
 			[2]string{"x", "del"},
-			[2]string{"s", "sync"},
+			[2]string{"s", syncLabel},
 			[2]string{"u", "undo"},
 			[2]string{"ctrl+y", "redo"},
 			[2]string{",", "settings"},

@@ -102,6 +102,16 @@ Show tasks completed in the last 7 days, with `created→done` compact dates.
 
 Commit local changes, pull with rebase, and push. Warns if no remote is configured.
 
+### `monolog email`
+
+Gmail integration subcommands — see [Email integration](#email-integration).
+
+| Subcommand | Description |
+|------------|-------------|
+| `monolog email auth` | Run the OAuth flow once to authorize Gmail access. Saves the refresh token under `$XDG_CONFIG_HOME/monolog/gmail_token.json` and flips `enabled=true` in `config.json`. |
+| `monolog email sync` | Fetch all messages carrying the configured label, import new ones as tasks, and commit them in a single batch. Prints `created N task(s)`. |
+| `monolog email status` | Show auth state (token expiry or "not authorized"), `enabled` flag, label, sync interval, max-per-sync cap, and the resolved client-secrets / token paths. |
+
 ### `monolog --version`
 
 Print the monolog version.
@@ -163,7 +173,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `v` | Toggle between schedule view and tag view |
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
 | `x` | Delete task (with confirmation) |
-| `s` | Sync (commit, pull --rebase, push) |
+| `s` | Sync (commit, pull --rebase, push). When [email integration](#email-integration) is enabled, also runs `email sync` in parallel via `tea.Batch`; the bottom-bar hint widens to `sync (git+email)`. |
 | `,` | Settings modal (date format, theme) |
 | `h` | Help modal |
 | `q` | Quit |
@@ -216,6 +226,76 @@ Rules:
 - Files named `default.json` or `dracula.json` are rejected — built-ins are immutable.
 - If the configured theme disappears from disk, monolog falls back to `default` and shows `theme "<name>" not found, using default` in the status bar without rewriting `config.json`, so restoring the file brings the selection back.
 - `MONOLOG_THEME` env var takes precedence over the `config.json` setting.
+
+## Email integration
+
+Monolog can import Gmail messages labeled `monolog` (or any other label you configure) as tasks, and archive the email when the task is completed. The feature is opt-in: until you run `monolog email auth` it stays silent — no on-launch sync, no `s`-keybinding overload, no extra git activity.
+
+### One-time GCP setup
+
+You bring your own Google Cloud OAuth credentials. This keeps your account out of any shared client and means monolog never sees a third-party server.
+
+1. Create a project at [console.cloud.google.com](https://console.cloud.google.com).
+2. Enable the **Gmail API** under "APIs & Services" → "Library".
+3. Configure the OAuth consent screen. "External" user type is fine; add your own email address as a test user.
+4. Create OAuth 2.0 credentials of type **Desktop app**.
+5. Download the credentials JSON to `~/.config/monolog/gmail_credentials.json` (or wherever `email.client_secrets_path` points).
+6. Run `monolog email auth` — a browser tab opens for consent, the refresh token is saved to `~/.config/monolog/gmail_token.json` (mode `0600`), and `enabled` flips to `true` in `config.json` automatically.
+
+OAuth scope is `gmail.modify` — the smallest scope that allows listing labeled messages, reading metadata + snippet, and removing the `INBOX` label. Monolog cannot send mail, read full message bodies, or touch other mailboxes.
+
+The token and client-secrets files live OUTSIDE your monolog git repo (under `$XDG_CONFIG_HOME/monolog/`, default `~/.config/monolog/`) so OAuth secrets never get committed when you sync across devices.
+
+### Configuration
+
+A new optional `email` block in `<MONOLOG_DIR>/.monolog/config.json`:
+
+```json
+{
+  "theme": "default",
+  "date_format": "02-01-2006",
+  "email": {
+    "enabled": true,
+    "label": "monolog",
+    "sync_interval_minutes": 5,
+    "max_per_sync": 100,
+    "client_secrets_path": "~/.config/monolog/gmail_credentials.json"
+  }
+}
+```
+
+All keys are optional. Defaults: `enabled=false`, `label="monolog"`, `sync_interval_minutes=5`, `max_per_sync=100`, `client_secrets_path=$XDG_CONFIG_HOME/monolog/gmail_credentials.json`.
+
+`monolog email auth` writes the block for you on first run; you only need to hand-edit `config.json` to tweak the label or interval.
+
+### How import works
+
+1. Create a Gmail label called `monolog` (or whatever you set `email.label` to).
+2. Apply the label to any email you want imported as a task.
+3. Run `monolog email sync` (CLI) or press `s` in the TUI (which now runs both git sync and email sync via `tea.Batch`). The TUI also runs an initial sync on launch and re-syncs every `sync_interval_minutes`.
+4. Each new message becomes a task with:
+   - **Title** — the subject with chained `Re:` / `Fwd:` / `Fw:` prefixes stripped (case-insensitive). Empty subjects render as `(no subject)`.
+   - **Body** — `From: <name>\nhttps://mail.google.com/mail/#all/<msg-id>\n\n<snippet>`. The Gmail URL omits `/u/0/` so it works regardless of which Google account is currently signed in. Snippet is HTML-unescaped and hard-capped at 200 characters with a `…` suffix only when truncation occurs.
+   - **Tags** — `["email"]`. The reserved `active` tag is never auto-applied.
+   - **Schedule** — `today`.
+   - **Source** — `"gmail"`. **SourceID** — the Gmail message ID.
+5. All new tasks from a single sync run are written to disk and committed in **one** git commit: `email: imported N task(s) (label=<label>)`. Per-task write failures warn to stderr but don't abort the batch — the run still commits whatever succeeded.
+6. Dedup is built per-sync from a directory scan: the set of `SourceID`s on existing tasks (open and done) where `Source=="gmail"`. Completed-and-archived emails are self-suppressing — they won't re-import even though the `monolog` label stays on them. Deleting a task in monolog without archiving in Gmail WILL re-import it on the next sync.
+7. Soft cap: when more than `max_per_sync` new messages are pending, the first N (newest first) are imported and the rest are silently deferred to the next run. No error, no warning — just keep syncing.
+
+### Archive on done
+
+When you complete a gmail-sourced task (CLI `monolog done <id>` or TUI `d` key), monolog calls `users.messages.modify` with `removeLabelIds=["INBOX"]` so the email is archived in Gmail. The trigger label (e.g. `monolog`) is intentionally retained — archive only, not unlabel. A 5-second context timeout keeps the CLI from hanging on flaky network. Archive failure is non-fatal: the task stays done, an error is printed, and the next sync run will simply re-import the still-labeled-and-still-in-inbox email if you delete the task.
+
+The TUI shows a one-line flash (`email archived` or `archive failed: <err>`) on the status bar. While a sync is in flight, a small `↻` indicator appears at the right of the stats bar.
+
+### Manual config edits
+
+The TUI settings modal (`,`) does NOT yet expose email config — edit `config.json` directly to tweak the label, interval, or paths. The `enabled` flag is the one exception: `monolog email auth` toggles it on for you.
+
+### Token storage
+
+Tokens auto-refresh transparently. The refreshed `access_token` is written back to `$XDG_CONFIG_HOME/monolog/gmail_token.json` (mode `0600`) so subsequent processes (CLI invocations, TUI launches) pick up the new value without re-authorizing. If the refresh token itself is revoked, `monolog email status` reports the error and you can re-run `monolog email auth`.
 
 ## How it works
 

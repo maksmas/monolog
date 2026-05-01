@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 )
 
 // setDateFormatForTest swaps the package-level dateFormat for the duration
@@ -369,6 +370,307 @@ func TestSaveCreatesFilWhenMissing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(monologDir, "config.json")); err != nil {
 		t.Errorf("config.json not created: %v", err)
+	}
+}
+
+// --- EmailConfig ---
+
+// resetEmailCfg restores the package-level emailCfg to its defaults at
+// test cleanup. Always call this when a test modifies emailCfg directly
+// or via Load/SaveEmail.
+func resetEmailCfg(t *testing.T) {
+	t.Helper()
+	prev := emailCfg
+	t.Cleanup(func() { emailCfg = prev })
+}
+
+func TestEmailConfigDefaultsWhenNoBlock(t *testing.T) {
+	resetEmailCfg(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	// Write a config.json with no "email" block at all.
+	writeConfigJSON(t, tmpDir, map[string]string{"theme": "default"})
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Email()
+	if got.Enabled {
+		t.Errorf("Enabled = true, want false (default)")
+	}
+	if got.Label != "monolog" {
+		t.Errorf("Label = %q, want %q", got.Label, "monolog")
+	}
+	if got.SyncInterval != 5*time.Minute {
+		t.Errorf("SyncInterval = %v, want %v", got.SyncInterval, 5*time.Minute)
+	}
+	if got.MaxPerSync != 100 {
+		t.Errorf("MaxPerSync = %d, want 100", got.MaxPerSync)
+	}
+	if got.ClientSecretsPath == "" {
+		t.Errorf("ClientSecretsPath empty, want a default path")
+	}
+}
+
+func TestEmailConfigDefaultsWhenFileMissing(t *testing.T) {
+	resetEmailCfg(t)
+	tmpDir := t.TempDir() // no config.json at all
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Email()
+	if got.Enabled {
+		t.Errorf("Enabled = true on missing file, want false")
+	}
+	if got.Label != "monolog" {
+		t.Errorf("Label = %q, want %q", got.Label, "monolog")
+	}
+}
+
+func TestEmailConfigUsesXDGConfigHomeForDefaultPath(t *testing.T) {
+	resetEmailCfg(t)
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	got := Email()
+	want := filepath.Join(tmp, "monolog", "gmail_credentials.json")
+	if got.ClientSecretsPath != want {
+		t.Errorf("ClientSecretsPath = %q, want %q", got.ClientSecretsPath, want)
+	}
+}
+
+func TestLoadAppliesFullEmailBlock(t *testing.T) {
+	resetEmailCfg(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := map[string]any{
+		"email": map[string]any{
+			"enabled":               true,
+			"label":                 "todo",
+			"sync_interval_minutes": 15,
+			"max_per_sync":          25,
+			"client_secrets_path":   "/tmp/creds.json",
+		},
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Email()
+	if !got.Enabled {
+		t.Errorf("Enabled = false, want true")
+	}
+	if got.Label != "todo" {
+		t.Errorf("Label = %q, want %q", got.Label, "todo")
+	}
+	if got.SyncInterval != 15*time.Minute {
+		t.Errorf("SyncInterval = %v, want %v", got.SyncInterval, 15*time.Minute)
+	}
+	if got.MaxPerSync != 25 {
+		t.Errorf("MaxPerSync = %d, want 25", got.MaxPerSync)
+	}
+	if got.ClientSecretsPath != "/tmp/creds.json" {
+		t.Errorf("ClientSecretsPath = %q, want %q", got.ClientSecretsPath, "/tmp/creds.json")
+	}
+}
+
+func TestLoadAppliesPartialEmailBlock(t *testing.T) {
+	// Only "enabled" set — other fields should keep defaults.
+	resetEmailCfg(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := map[string]any{
+		"email": map[string]any{
+			"enabled": true,
+		},
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Email()
+	if !got.Enabled {
+		t.Errorf("Enabled = false, want true")
+	}
+	if got.Label != "monolog" {
+		t.Errorf("Label = %q, want default %q", got.Label, "monolog")
+	}
+	if got.SyncInterval != 5*time.Minute {
+		t.Errorf("SyncInterval = %v, want default %v", got.SyncInterval, 5*time.Minute)
+	}
+	if got.MaxPerSync != 100 {
+		t.Errorf("MaxPerSync = %d, want default 100", got.MaxPerSync)
+	}
+}
+
+func TestLoadResetsEmailBlockBetweenCalls(t *testing.T) {
+	// First call loads enabled=true; second call points at a directory with
+	// no email block at all and must NOT carry the previous value forward.
+	resetEmailCfg(t)
+	resetDateFormat(t)
+
+	enabledDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(enabledDir, ".monolog"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := map[string]any{"email": map[string]any{"enabled": true}}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(enabledDir, ".monolog", "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(enabledDir); err != nil {
+		t.Fatalf("Load (enabled): %v", err)
+	}
+	if !Email().Enabled {
+		t.Fatalf("expected Enabled=true after first Load")
+	}
+
+	// Second Load against a fresh dir without an email block.
+	emptyDir := t.TempDir()
+	writeConfigJSON(t, emptyDir, map[string]string{"theme": "default"})
+	if err := Load(emptyDir); err != nil {
+		t.Fatalf("Load (empty): %v", err)
+	}
+	if Email().Enabled {
+		t.Errorf("Enabled = true after Load with no email block, want false (carry-over leak)")
+	}
+}
+
+func TestSaveEmailRoundtripsThroughLoad(t *testing.T) {
+	resetEmailCfg(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	want := EmailConfig{
+		Enabled:           true,
+		Label:             "inbox",
+		SyncInterval:      10 * time.Minute,
+		MaxPerSync:        50,
+		ClientSecretsPath: "/tmp/secrets.json",
+	}
+	if err := SaveEmail(tmpDir, want); err != nil {
+		t.Fatalf("SaveEmail: %v", err)
+	}
+
+	// In-session value reflects the save without needing Load.
+	if got := Email(); got != want {
+		t.Errorf("Email() after SaveEmail = %+v, want %+v", got, want)
+	}
+
+	// Reset and Load to verify on-disk representation roundtrips.
+	resetEmailCfgToDefaults()
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := Email(); got != want {
+		t.Errorf("Email() after Load = %+v, want %+v", got, want)
+	}
+}
+
+func TestSaveEmailPreservesUnknownTopLevelKeys(t *testing.T) {
+	resetEmailCfg(t)
+	tmpDir := t.TempDir()
+	writeConfigJSON(t, tmpDir, map[string]string{
+		"default_schedule": "today",
+		"editor":           "$EDITOR",
+		"theme":            "dracula",
+		"date_format":      "2006-01-02",
+	})
+	ec := EmailConfig{
+		Enabled:           true,
+		Label:             "monolog",
+		SyncInterval:      5 * time.Minute,
+		MaxPerSync:        100,
+		ClientSecretsPath: "/tmp/x.json",
+	}
+	if err := SaveEmail(tmpDir, ec); err != nil {
+		t.Fatalf("SaveEmail: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".monolog", "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg["default_schedule"] != "today" {
+		t.Errorf("default_schedule lost after SaveEmail, got %v", cfg["default_schedule"])
+	}
+	if cfg["editor"] != "$EDITOR" {
+		t.Errorf("editor lost after SaveEmail, got %v", cfg["editor"])
+	}
+	if cfg["theme"] != "dracula" {
+		t.Errorf("theme lost after SaveEmail, got %v", cfg["theme"])
+	}
+	if cfg["date_format"] != "2006-01-02" {
+		t.Errorf("date_format lost after SaveEmail, got %v", cfg["date_format"])
+	}
+	emailMap, ok := cfg["email"].(map[string]any)
+	if !ok {
+		t.Fatalf("email block missing or wrong type: %T %v", cfg["email"], cfg["email"])
+	}
+	if emailMap["enabled"] != true {
+		t.Errorf("email.enabled = %v, want true", emailMap["enabled"])
+	}
+}
+
+func TestSavePreservesEmailBlock(t *testing.T) {
+	// Write an email block via SaveEmail, then run the date/theme Save and
+	// verify the email block survives — the read-modify-write pattern in
+	// Save must not strip foreign keys.
+	resetEmailCfg(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveEmail(tmpDir, EmailConfig{
+		Enabled:           true,
+		Label:             "monolog",
+		SyncInterval:      5 * time.Minute,
+		MaxPerSync:        100,
+		ClientSecretsPath: "/tmp/c.json",
+	}); err != nil {
+		t.Fatalf("SaveEmail: %v", err)
+	}
+	if err := Save(tmpDir, "dracula", "2006-01-02"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(monologDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := cfg["email"]; !ok {
+		t.Errorf("email block lost after Save, expected preserved")
 	}
 }
 
