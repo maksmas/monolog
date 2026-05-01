@@ -552,6 +552,73 @@ func TestAddCommand_AutoTagNoDuplicate(t *testing.T) {
 	}
 }
 
+func TestAddCommand_WithBody(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	body := "captured selection\n\nhttps://example.com/article#:~:text=captured%20selection"
+	rootCmd.SetArgs([]string{"add", "Read this", "-b", body})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Body != body {
+		t.Errorf("Body: got %q, want %q", tasks[0].Body, body)
+	}
+}
+
+func TestAddCommand_BodyOmittedByDefault(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"add", "no body task"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("add command error = %v\noutput: %s", err, buf.String())
+	}
+
+	tasks := readTasks(t, dir)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Body != "" {
+		t.Errorf("Body: got %q, want empty", tasks[0].Body)
+	}
+
+	// Verify omitempty is respected — raw JSON should not contain a "body" key.
+	tasksDir := filepath.Join(dir, ".monolog", "tasks")
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("read tasks dir: %v", err)
+	}
+	var raw []byte
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			raw, err = os.ReadFile(filepath.Join(tasksDir, e.Name()))
+			if err != nil {
+				t.Fatalf("read task file: %v", err)
+			}
+			break
+		}
+	}
+	if strings.Contains(string(raw), `"body"`) {
+		t.Errorf("JSON should not contain 'body' key for empty body, got: %s", string(raw))
+	}
+}
+
 func TestAddCommand_RecurrenceValidGrammar(t *testing.T) {
 	cases := []struct {
 		name  string

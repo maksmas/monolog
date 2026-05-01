@@ -81,6 +81,9 @@ func SaveToken(path string, tok *oauth2.Token) error {
 func loadOAuthConfig(clientSecretsPath string) (*oauth2.Config, error) {
 	data, err := os.ReadFile(clientSecretsPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("email: client secrets not found at %s — see README \"Email integration\" for the one-time GCP setup (create a Desktop OAuth client and download the JSON to this path): %w", clientSecretsPath, err)
+		}
 		return nil, fmt.Errorf("email: read client secrets %s: %w", clientSecretsPath, err)
 	}
 	cfg, err := google.ConfigFromJSON(data, gmailScope)

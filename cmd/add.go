@@ -21,6 +21,7 @@ func newAddCmd() *cobra.Command {
 	var scheduleArg string
 	var tags string
 	var recur string
+	var body string
 
 	cmd := &cobra.Command{
 		Use:   "add <title>",
@@ -67,6 +68,7 @@ func newAddCmd() *cobra.Command {
 			task := model.Task{
 				ID:         id,
 				Title:      title,
+				Body:       body,
 				Source:     "manual",
 				Status:     "open",
 				Position:   ordering.NextPosition(existing),
@@ -98,6 +100,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&scheduleArg, "schedule", "s", "today", fmt.Sprintf("Schedule: today, tomorrow, week, month, someday, or %s", config.DateFormatLabel()))
 	cmd.Flags().StringVarP(&tags, "tags", "t", "", "Comma-separated tags")
 	cmd.Flags().StringVar(&recur, "recur", "", "Recurrence rule: "+recurrence.GrammarHint+" (e.g. monthly:1, weekly:mon, workdays, days:7)")
+	cmd.Flags().StringVarP(&body, "body", "b", "", "Task body (notes, URL, captured text)")
 
 	return cmd
 }
