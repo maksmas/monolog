@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -140,10 +141,175 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 		return nil
 	}
 	if len(u.Message.Text) > 0 && u.Message.Text[0] == '/' {
-		// Slash dispatcher is implemented in task 6; for now stay silent.
-		return nil
+		return h.handleSlash(ctx, u.Message)
 	}
 	return h.handleCapture(ctx, u.Message)
+}
+
+// readOnlyBanner is the header message prepended to browse output when the
+// bot is currently rejecting writes. The wording matches readOnlyMessage's
+// vocabulary ("sync conflict pending") so a user who saw a write fail sees
+// the same language while browsing.
+const readOnlyBanner = "⚠️ <i>read-only — sync conflict pending</i>"
+
+// bucketLabel returns the human-readable display label for a bucket name,
+// shown as the bold title on the empty-bucket message ("Today — nothing 🎉").
+// The mapping mirrors the bucket constants in internal/schedule so users see
+// a familiar word regardless of whether the underlying value is an ISO date
+// or a legacy bucket string.
+func bucketLabel(bucket string) string {
+	switch bucket {
+	case schedule.Today:
+		return "Today"
+	case schedule.Tomorrow:
+		return "Tomorrow"
+	case schedule.Week:
+		return "Week"
+	case schedule.Month:
+		return "Month"
+	case schedule.Someday:
+		return "Someday"
+	default:
+		return bucket
+	}
+}
+
+// handleSlash dispatches a slash command. The command word is the first
+// whitespace-delimited token with its leading '/' stripped and lowercased,
+// so `/Today` and `/today extra args` both route to the today branch. The
+// trailing arguments (if any) are ignored — none of the browse commands
+// today take arguments. Unknown commands reply with a one-line hint
+// pointing at /help.
+func (h *Handler) handleSlash(ctx context.Context, m *Message) error {
+	text := strings.TrimSpace(m.Text)
+	// Strip the leading '/' that the caller already filtered on, then take
+	// the first whitespace-delimited token as the command word.
+	cmd := strings.TrimPrefix(text, "/")
+	if i := strings.IndexAny(cmd, " \t"); i >= 0 {
+		cmd = cmd[:i]
+	}
+	cmd = strings.ToLower(cmd)
+
+	switch cmd {
+	case "today":
+		return h.handleBrowse(ctx, m, schedule.Today)
+	case "week":
+		return h.handleBrowse(ctx, m, schedule.Week)
+	case "active":
+		return h.handleActive(ctx, m)
+	case "all":
+		return h.handleAll(ctx, m)
+	case "help", "start":
+		// Help / start handlers land in task 8; until then we reply with a
+		// terse note so users hitting these commands get *some* feedback.
+		_, err := h.bot.SendMessage(ctx, m.ChatID, "help command coming soon — try /today, /week, /active, /all", nil)
+		return err
+	default:
+		_, err := h.bot.SendMessage(ctx, m.ChatID, "unknown command — try /help", nil)
+		return err
+	}
+}
+
+// handleBrowse renders all open tasks whose stored schedule falls into the
+// given bucket. The bucket filter is applied post-List because store.List
+// only supports Status + Tag filtering; schedule semantics (today / week)
+// depend on now and on the virtual-bucket rules in internal/schedule, so
+// we keep them out of the store and apply them here.
+//
+// Output: one message per task (summary row + summary keyboard). When no
+// task matches, a single FormatEmptyBucket message is sent so the user
+// always sees a reply. When readOnly is set, a banner message is prepended.
+func (h *Handler) handleBrowse(ctx context.Context, m *Message, bucket string) error {
+	all, err := h.store.List(store.ListOptions{Status: "open"})
+	if err != nil {
+		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
+		return errors.Join(fmt.Errorf("store.List: %w", err), sendErr)
+	}
+	now := h.now()
+	matched := make([]model.Task, 0, len(all))
+	for _, t := range all {
+		if schedule.MatchesBucket(t.Schedule, bucket, now) {
+			matched = append(matched, t)
+		}
+	}
+	return h.sendBrowseResults(ctx, m, matched, bucketLabel(bucket), 0)
+}
+
+// handleActive renders all open tasks bearing the reserved "active" tag.
+// Unlike the bucket-based browse helpers, we let the store filter by tag
+// directly (store.ListOptions.Tag) since tag filtering is already a
+// first-class store concept.
+func (h *Handler) handleActive(ctx context.Context, m *Message) error {
+	tasks, err := h.store.List(store.ListOptions{Status: "open", Tag: model.ActiveTag})
+	if err != nil {
+		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
+		return errors.Join(fmt.Errorf("store.List: %w", err), sendErr)
+	}
+	return h.sendBrowseResults(ctx, m, tasks, "Active", 0)
+}
+
+// handleAll renders every open task, regardless of schedule or tag. The
+// list is capped at cfg.BrowseLimit; when the underlying list exceeds the
+// cap, a `+N more — open laptop` footer is sent after the per-task rows
+// so the user knows there is more content waiting on the laptop.
+//
+// The cap is applied *before* sending any per-task message so we can show
+// the right footer count without a second list traversal. A non-positive
+// cap is treated as "no cap" — this is defensive: the config layer
+// silently clamps non-positive values to defaults, but we want this
+// helper to behave sanely if a test or future caller passes a bogus
+// value directly into the Handler.
+func (h *Handler) handleAll(ctx context.Context, m *Message) error {
+	tasks, err := h.store.List(store.ListOptions{Status: "open"})
+	if err != nil {
+		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
+		return errors.Join(fmt.Errorf("store.List: %w", err), sendErr)
+	}
+	overflow := 0
+	cap := h.cfg.BrowseLimit
+	if cap > 0 && len(tasks) > cap {
+		overflow = len(tasks) - cap
+		tasks = tasks[:cap]
+	}
+	return h.sendBrowseResults(ctx, m, tasks, "All", overflow)
+}
+
+// sendBrowseResults is the common output path shared by all browse
+// helpers. It emits, in order:
+//  1. The read-only banner (if the bot's readOnly flag is set).
+//  2. One message per task (summary row + summary keyboard), OR a single
+//     empty-bucket "nothing 🎉" message when there are no tasks.
+//  3. A `+N more — open laptop` footer when overflow > 0.
+//
+// Returning the first send error short-circuits the rest of the loop —
+// further sends would likely fail too, and the Serve loop already logs
+// the error.
+func (h *Handler) sendBrowseResults(ctx context.Context, m *Message, tasks []model.Task, label string, overflow int) error {
+	if h.readOnly.Load() {
+		if _, err := h.bot.SendMessage(ctx, m.ChatID, readOnlyBanner, nil); err != nil {
+			return fmt.Errorf("send banner: %w", err)
+		}
+	}
+	if len(tasks) == 0 {
+		if _, err := h.bot.SendMessage(ctx, m.ChatID, FormatEmptyBucket(label), nil); err != nil {
+			return fmt.Errorf("send empty: %w", err)
+		}
+		return nil
+	}
+	for _, t := range tasks {
+		row := FormatTaskRow(t, h.dateFormat)
+		kb := BuildSummaryKeyboard(t.ID)
+		if _, err := h.bot.SendMessage(ctx, m.ChatID, row, kb); err != nil {
+			return fmt.Errorf("send row: %w", err)
+		}
+	}
+	if overflow > 0 {
+		footer := fmt.Sprintf("<i>+%d more — open laptop</i>", overflow)
+		if _, err := h.bot.SendMessage(ctx, m.ChatID, footer, nil); err != nil {
+			return fmt.Errorf("send footer: %w", err)
+		}
+	}
+	return nil
 }
 
 // handleCapture creates a new task from a free-text message. The flow is:

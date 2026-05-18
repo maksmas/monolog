@@ -319,18 +319,18 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `internal/telegram/handler.go`
 - Modify: `internal/telegram/handler_test.go`
 
-- [ ] add `(*Handler) handleSlash(ctx, m *Message) error` dispatching by command word (lowercased, stripped `/`): `today`, `week`, `active`, `all`, `help`, `start`; unknown commands reply with one-line `unknown command — try /help`
-- [ ] add `(*Handler) handleBrowse(ctx, m *Message, bucket string) error` parameterized by bucket name; queries `store.List(store.ListOptions{Status: "open", Schedule: bucket})` for `today` / `week`; for `active` uses `Tags: []string{"active"}` filter; for `all` uses `Status: "open"` with no schedule filter
-- [ ] sort/order: reuse existing `store.List` sort order (position-based within bucket)
-- [ ] `/all` cap: take first `cfg.BrowseLimit` tasks; if exceeded, send a footer message `<i>+N more — open laptop</i>` after the per-task messages
-- [ ] empty bucket → single `FormatEmptyBucket` message, no rows
-- [ ] read-only banner: if `readOnly` set, prepend `⚠️ <i>read-only — sync conflict pending</i>` as a header message before the per-task messages (or merged into the empty-bucket message)
-- [ ] write tests for each command using fake Bot + temp-repo store: pre-populate 3 tasks with mixed schedules and tags, assert message count and HTML content for `/today`, `/week`, `/active`, `/all`
-- [ ] test: `/all` with cap=2 and 5 tasks → 2 task messages + 1 `+3 more` footer
-- [ ] test: empty `/today` → single "nothing 🎉" message
-- [ ] test: `readOnly=true` → first message includes the banner
-- [ ] test: unknown command (`/foo`) → reply `unknown command — try /help`
-- [ ] run `go test ./internal/telegram/...` — must pass before next task
+- [x] add `(*Handler) handleSlash(ctx, m *Message) error` dispatching by command word (lowercased, stripped `/`): `today`, `week`, `active`, `all`, `help`, `start`; unknown commands reply with one-line `unknown command — try /help`
+- [x] add `(*Handler) handleBrowse(ctx, m *Message, bucket string) error` parameterized by bucket name; queries `store.List(store.ListOptions{Status: "open", Schedule: bucket})` for `today` / `week`; for `active` uses `Tags: []string{"active"}` filter; for `all` uses `Status: "open"` with no schedule filter (store doesn't support Schedule filter, so bucket filtering is applied post-List via `schedule.MatchesBucket`; active uses store.ListOptions.Tag)
+- [x] sort/order: reuse existing `store.List` sort order (position-based within bucket)
+- [x] `/all` cap: take first `cfg.BrowseLimit` tasks; if exceeded, send a footer message `<i>+N more — open laptop</i>` after the per-task messages
+- [x] empty bucket → single `FormatEmptyBucket` message, no rows
+- [x] read-only banner: if `readOnly` set, prepend `⚠️ <i>read-only — sync conflict pending</i>` as a header message before the per-task messages (or merged into the empty-bucket message)
+- [x] write tests for each command using fake Bot + temp-repo store: pre-populate 3 tasks with mixed schedules and tags, assert message count and HTML content for `/today`, `/week`, `/active`, `/all`
+- [x] test: `/all` with cap=2 and 5 tasks → 2 task messages + 1 `+3 more` footer
+- [x] test: empty `/today` → single "nothing 🎉" message
+- [x] test: `readOnly=true` → first message includes the banner
+- [x] test: unknown command (`/foo`) → reply `unknown command — try /help`
+- [x] run `go test ./internal/telegram/...` — must pass before next task
 
 ### Task 7: Callback handlers (Done, Active, Details, Collapse)
 

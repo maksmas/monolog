@@ -461,9 +461,11 @@ func TestHandleReplyToMessageIsIgnoredUntilTask8(t *testing.T) {
 	}
 }
 
-func TestHandleSlashCommandIsIgnoredUntilTask6(t *testing.T) {
-	// Symmetric to the reply test above: slash-prefixed text must be
-	// reserved for the slash dispatcher and not fall through to capture.
+func TestHandleSlashRoutesToDispatcherAndDoesNotCreateTask(t *testing.T) {
+	// Slash-prefixed text must be reserved for the slash dispatcher and not
+	// fall through to capture. With task 6 wired, `/today` now produces a
+	// browse reply (an empty-bucket message in this empty store), but it
+	// must still NOT result in a captured task.
 	h, bot, s, _ := newTestHandler(t, []int64{100})
 
 	upd := Update{
@@ -473,8 +475,11 @@ func TestHandleSlashCommandIsIgnoredUntilTask6(t *testing.T) {
 	if err := h.Handle(context.Background(), upd); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(bot.sent) != 0 {
-		t.Fatalf("expected no outbound message, got %d", len(bot.sent))
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected one browse-reply message, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "nothing") {
+		t.Fatalf("expected empty-bucket reply, got %q", bot.sent[0].HTML)
 	}
 	tasks, _ := s.List(store.ListOptions{})
 	if len(tasks) != 0 {
@@ -514,6 +519,354 @@ func TestNewHandlerDefaultsNowToTimeNow(t *testing.T) {
 	// Just exercise it — we don't compare values, only confirm callable.
 	if h.now().IsZero() {
 		t.Fatalf("default now returned zero value")
+	}
+}
+
+// seedBrowseTasks populates the given store with a deterministic set of
+// open tasks the browse tests share. Returns the ULIDs in insertion order
+// so individual tests can reference specific tasks. The schedule values are
+// expressed relative to handlerTestNow so the test runs deterministically.
+//
+// Layout:
+//   - tk1 (work, urgent) → today
+//   - tk2 (active, work) → tomorrow (falls into the "week" bucket)
+//   - tk3 (active)       → today
+//   - tk4                → someday
+//   - tk5                → week (5 days out, also "week" bucket)
+func seedBrowseTasks(t *testing.T, s *store.Store) [5]string {
+	t.Helper()
+	today := handlerTestNow.Format("2006-01-02")
+	tomorrow := handlerTestNow.AddDate(0, 0, 1).Format("2006-01-02")
+	weekISO := handlerTestNow.AddDate(0, 0, 5).Format("2006-01-02")
+	somedayISO := handlerTestNow.AddDate(0, 0, 200).Format("2006-01-02")
+	rfc := handlerTestNow.Format(time.RFC3339)
+
+	tasks := []model.Task{
+		{
+			ID:        "01ARZ3NDEKTSV4RRFFQ69G5FA1",
+			Title:     "ship login bug fix",
+			Status:    "open",
+			Position:  1000,
+			Schedule:  today,
+			CreatedAt: rfc,
+			UpdatedAt: rfc,
+			Tags:      []string{"work", "urgent"},
+		},
+		{
+			ID:        "01ARZ3NDEKTSV4RRFFQ69G5FA2",
+			Title:     "review PR",
+			Status:    "open",
+			Position:  2000,
+			Schedule:  tomorrow,
+			CreatedAt: rfc,
+			UpdatedAt: rfc,
+			Tags:      []string{"active", "work"},
+		},
+		{
+			ID:        "01ARZ3NDEKTSV4RRFFQ69G5FA3",
+			Title:     "call mom",
+			Status:    "open",
+			Position:  3000,
+			Schedule:  today,
+			CreatedAt: rfc,
+			UpdatedAt: rfc,
+			Tags:      []string{"active"},
+		},
+		{
+			ID:        "01ARZ3NDEKTSV4RRFFQ69G5FA4",
+			Title:     "plan vacation",
+			Status:    "open",
+			Position:  4000,
+			Schedule:  somedayISO,
+			CreatedAt: rfc,
+			UpdatedAt: rfc,
+		},
+		{
+			ID:        "01ARZ3NDEKTSV4RRFFQ69G5FA5",
+			Title:     "dentist appointment",
+			Status:    "open",
+			Position:  5000,
+			Schedule:  weekISO,
+			CreatedAt: rfc,
+			UpdatedAt: rfc,
+		},
+	}
+	for _, tk := range tasks {
+		if err := s.Create(tk); err != nil {
+			t.Fatalf("seed Create: %v", err)
+		}
+	}
+	return [5]string{
+		"01ARZ3NDEKTSV4RRFFQ69G5FA1",
+		"01ARZ3NDEKTSV4RRFFQ69G5FA2",
+		"01ARZ3NDEKTSV4RRFFQ69G5FA3",
+		"01ARZ3NDEKTSV4RRFFQ69G5FA4",
+		"01ARZ3NDEKTSV4RRFFQ69G5FA5",
+	}
+}
+
+func TestHandleSlashTodayListsOnlyTodayBucket(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	_ = seedBrowseTasks(t, s)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// Two tasks fall into the "today" bucket: ids[0] (ship login bug) and
+	// ids[2] (call mom). The other three are tomorrow / week / someday.
+	// We assert via titles (unique) since all seed ULIDs share the same
+	// 5-char display prefix `01ARZ`.
+	if len(bot.sent) != 2 {
+		t.Fatalf("expected 2 task rows, got %d: %+v", len(bot.sent), bot.sent)
+	}
+	combined := bot.sent[0].HTML + "\n" + bot.sent[1].HTML
+	if !strings.Contains(combined, "ship login bug fix") || !strings.Contains(combined, "call mom") {
+		t.Fatalf("expected both today-bucket titles in output, got %q", combined)
+	}
+	for _, leaked := range []string{"review PR", "plan vacation", "dentist appointment"} {
+		if strings.Contains(combined, leaked) {
+			t.Fatalf("non-today task %q leaked into /today output: %q", leaked, combined)
+		}
+	}
+	// Each row carries the 3-button summary keyboard.
+	for i, sm := range bot.sent {
+		if len(sm.Keyboard) != 1 || len(sm.Keyboard[0]) != 3 {
+			t.Fatalf("sent[%d] keyboard shape=%+v want 1x3", i, sm.Keyboard)
+		}
+	}
+}
+
+func TestHandleSlashWeekListsWeekBucketTasks(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	_ = seedBrowseTasks(t, s)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/week"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// `week` covers strictly-after-tomorrow through +7 days. The seed has
+	// one entry 5 days out (dentist). The tomorrow entry (review PR) is the
+	// Tomorrow bucket so it is NOT week.
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 task row for /week, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "dentist appointment") {
+		t.Fatalf("expected dentist task in /week, got %q", bot.sent[0].HTML)
+	}
+}
+
+func TestHandleSlashActiveListsOnlyActiveTagged(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	_ = seedBrowseTasks(t, s)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/active"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// Two tasks have the `active` tag: review PR and call mom.
+	if len(bot.sent) != 2 {
+		t.Fatalf("expected 2 task rows for /active, got %d", len(bot.sent))
+	}
+	combined := bot.sent[0].HTML + "\n" + bot.sent[1].HTML
+	if !strings.Contains(combined, "review PR") || !strings.Contains(combined, "call mom") {
+		t.Fatalf("expected both active-tagged tasks in output: %q", combined)
+	}
+	for _, leaked := range []string{"ship login bug fix", "plan vacation", "dentist appointment"} {
+		if strings.Contains(combined, leaked) {
+			t.Fatalf("non-active task %q leaked into /active: %q", leaked, combined)
+		}
+	}
+	// The `active` tag itself must not leak into the row's `<i>` line —
+	// VisibleTags filters it out.
+	for _, sm := range bot.sent {
+		if strings.Contains(sm.HTML, ">active<") {
+			t.Fatalf("active tag should be hidden from visible tag list, got %q", sm.HTML)
+		}
+	}
+}
+
+func TestHandleSlashAllRespectsBrowseLimitAndAddsFooter(t *testing.T) {
+	// Force a small cap so the overflow footer fires deterministically.
+	repoPath, s := initTelegramTestRepo(t)
+	bot := &fakeBot{}
+	h := NewHandler(bot, s, repoPath, TelegramConfig{
+		AllowedUserIDs: []int64{100},
+		BrowseLimit:    2,
+	}, "02-01-2006", func() time.Time { return handlerTestNow })
+	seedBrowseTasks(t, s)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/all"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// 2 task rows + 1 footer (5 tasks total, cap=2, overflow=3).
+	if len(bot.sent) != 3 {
+		t.Fatalf("expected 2 rows + 1 footer = 3 messages, got %d: %+v", len(bot.sent), bot.sent)
+	}
+	footer := bot.sent[2]
+	if !strings.Contains(footer.HTML, "+3 more") {
+		t.Fatalf("expected overflow footer with +3 more, got %q", footer.HTML)
+	}
+	if len(footer.Keyboard) != 0 {
+		t.Fatalf("footer should have no keyboard, got %+v", footer.Keyboard)
+	}
+}
+
+func TestHandleSlashAllReturnsAllWhenUnderLimit(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100}) // default BrowseLimit=20
+	seedBrowseTasks(t, s)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/all"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// 5 rows, no footer.
+	if len(bot.sent) != 5 {
+		t.Fatalf("expected 5 task rows, got %d", len(bot.sent))
+	}
+	for _, sm := range bot.sent {
+		if strings.Contains(sm.HTML, "more — open laptop") {
+			t.Fatalf("footer should not appear under the cap: %q", sm.HTML)
+		}
+	}
+}
+
+func TestHandleSlashTodayEmptyBucketReturnsNothingMessage(t *testing.T) {
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+	// No seed — empty store.
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected one empty-bucket message, got %d", len(bot.sent))
+	}
+	got := bot.sent[0].HTML
+	if !strings.Contains(got, "Today") || !strings.Contains(got, "nothing") {
+		t.Fatalf("expected `Today — nothing` message, got %q", got)
+	}
+	if len(bot.sent[0].Keyboard) != 0 {
+		t.Fatalf("empty-bucket message should have no keyboard, got %+v", bot.sent[0].Keyboard)
+	}
+}
+
+func TestHandleSlashReadOnlyPrependsBanner(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedBrowseTasks(t, s)
+	h.SetReadOnly(true)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// Banner + 2 today-bucket rows.
+	if len(bot.sent) != 3 {
+		t.Fatalf("expected 1 banner + 2 rows = 3, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "read-only") {
+		t.Fatalf("expected first message to be the banner, got %q", bot.sent[0].HTML)
+	}
+}
+
+func TestHandleSlashReadOnlyBannerOnEmptyBucket(t *testing.T) {
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+	h.SetReadOnly(true)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// Banner first, then empty-bucket message.
+	if len(bot.sent) != 2 {
+		t.Fatalf("expected banner + empty-bucket = 2 messages, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "read-only") {
+		t.Fatalf("expected banner first, got %q", bot.sent[0].HTML)
+	}
+	if !strings.Contains(bot.sent[1].HTML, "nothing") {
+		t.Fatalf("expected empty-bucket message, got %q", bot.sent[1].HTML)
+	}
+}
+
+func TestHandleSlashUnknownCommandReplies(t *testing.T) {
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/foo"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "unknown command") {
+		t.Fatalf("expected unknown-command reply, got %q", bot.sent[0].HTML)
+	}
+}
+
+func TestHandleSlashCaseInsensitiveAndIgnoresArgs(t *testing.T) {
+	// `/Today extra args` should normalize to `today` and route to the
+	// today browse handler.
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedBrowseTasks(t, s)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/Today some args"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 2 {
+		t.Fatalf("expected 2 today-bucket rows, got %d", len(bot.sent))
+	}
+}
+
+func TestHandleSlashHelpAndStartStub(t *testing.T) {
+	// Task 8 lands the real /help and /start replies; for now task 6's
+	// stub should send a one-line placeholder so users hitting these
+	// commands don't see silence.
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+
+	for _, cmd := range []string{"/help", "/start"} {
+		bot.sent = nil
+		upd := Update{
+			UpdateID: 1,
+			Message:  &Message{ChatID: 5, UserID: 100, Text: cmd},
+		}
+		if err := h.Handle(context.Background(), upd); err != nil {
+			t.Fatalf("Handle %s: %v", cmd, err)
+		}
+		if len(bot.sent) != 1 {
+			t.Fatalf("%s: expected 1 reply, got %d", cmd, len(bot.sent))
+		}
 	}
 }
 
