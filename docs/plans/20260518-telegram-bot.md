@@ -280,17 +280,17 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `go.mod`
 - Modify: `go.sum`
 
-- [ ] add dependency `github.com/go-telegram-bot-api/telegram-bot-api/v5` via `go get`
-- [ ] in `bot.go` define neutral DTOs: `Update`, `Message`, `CallbackQuery`, `InlineButton`, `InlineKeyboard` (per Technical Details above)
-- [ ] define `Bot` interface with `GetUpdates`, `SendMessage`, `EditMessage`, `AnswerCallback`
-- [ ] implement `realBot` struct wrapping `*tgbotapi.BotAPI`
-- [ ] implement `NewClient(token string) (Bot, error)` returning the production `realBot`; rejects empty token
-- [ ] implement `realBot.GetUpdates`: build `tgbotapi.NewUpdate(offset)` config with `Timeout = int(timeout/time.Second)`, call `bot.GetUpdates`, translate each `tgbotapi.Update` into our neutral `Update` (extract `Message`, `CallbackQuery`, `ReplyToMessage`); abort cleanly on `ctx.Done()` by setting `bot.StopReceivingUpdates()` and returning `ctx.Err()`
-- [ ] implement `realBot.SendMessage`: build `tgbotapi.NewMessage(chatID, html)`, set `ParseMode = "HTML"`, attach inline keyboard markup if kb non-empty, return `MessageID`
-- [ ] implement `realBot.EditMessage`: build `tgbotapi.NewEditMessageTextAndMarkup(...)` with ParseMode HTML
-- [ ] implement `realBot.AnswerCallback`: build `tgbotapi.NewCallback(callbackID, toast)` and send
-- [ ] in `bot_test.go` add a small `fakeBot` type implementing `Bot` (records all calls into slices) and verify the basic shape (returned `MessageID` increments, `GetUpdates` returns queued updates, no real network)
-- [ ] run `go test ./internal/telegram/...` and `go vet ./...` — must pass before next task
+- [x] add dependency `github.com/go-telegram-bot-api/telegram-bot-api/v5` via `go get`
+- [x] in `bot.go` define neutral DTOs: `Update`, `Message`, `CallbackQuery`, `InlineButton`, `InlineKeyboard` (per Technical Details above)
+- [x] define `Bot` interface with `GetUpdates`, `SendMessage`, `EditMessage`, `AnswerCallback`
+- [x] implement `realBot` struct wrapping `*tgbotapi.BotAPI`
+- [x] implement `NewClient(token string) (Bot, error)` returning the production `realBot`; rejects empty token
+- [x] implement `realBot.GetUpdates`: build `tgbotapi.NewUpdate(offset)` config with `Timeout = int(timeout/time.Second)`, call `bot.GetUpdates`, translate each `tgbotapi.Update` into our neutral `Update` (extract `Message`, `CallbackQuery`, `ReplyToMessage`); abort cleanly on `ctx.Done()` by setting `bot.StopReceivingUpdates()` and returning `ctx.Err()`
+- [x] implement `realBot.SendMessage`: build `tgbotapi.NewMessage(chatID, html)`, set `ParseMode = "HTML"`, attach inline keyboard markup if kb non-empty, return `MessageID`
+- [x] implement `realBot.EditMessage`: build `tgbotapi.NewEditMessageTextAndMarkup(...)` with ParseMode HTML
+- [x] implement `realBot.AnswerCallback`: build `tgbotapi.NewCallback(callbackID, toast)` and send
+- [x] in `bot_test.go` add a small `fakeBot` type implementing `Bot` (records all calls into slices) and verify the basic shape (returned `MessageID` increments, `GetUpdates` returns queued updates, no real network)
+- [x] run `go test ./internal/telegram/...` and `go vet ./...` — must pass before next task
 
 ### Task 5: Capture handler + access control + write flow
 
