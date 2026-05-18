@@ -451,12 +451,12 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `CLAUDE.md`
 - Modify: `docs/plans/20260518-telegram-bot.md` → move to `docs/plans/completed/`
 
-- [ ] add new bullet in "Key Design Decisions" titled **Telegram integration** describing: opt-in via config.json `"telegram"` block (defaults disabled), env-var secrets (MONOLOG_TELEGRAM_TOKEN + GIT_SSH_COMMAND), free-text=capture with #hashtag + tagname: support, slash browse commands, callback-button actions (Done/Active/Details/Collapse), reply=note, read-only-on-conflict mode, allow-list user filter, EC2 long-polling deployment topology. Match length and depth of the existing "Email integration" bullet.
-- [ ] add `internal/telegram/` to the directory listing in the "Architecture" section
-- [ ] update the "Dependencies" line to include `github.com/go-telegram-bot-api/telegram-bot-api/v5 (Telegram bot integration; only used by internal/telegram/)`
-- [ ] note the design rule: `internal/telegram/` MUST NOT import `internal/config` (same rule as `internal/email/`)
-- [ ] `mkdir -p docs/plans/completed && mv docs/plans/20260518-telegram-bot.md docs/plans/completed/`
-- [ ] run final `go test ./...` and `go vet ./...` — must pass
+- [x] add new bullet in "Key Design Decisions" titled **Telegram integration** describing: opt-in via config.json `"telegram"` block (defaults disabled), env-var secrets (MONOLOG_TELEGRAM_TOKEN + GIT_SSH_COMMAND), free-text=capture with #hashtag + tagname: support, slash browse commands, callback-button actions (Done/Active/Details/Collapse), reply=note, read-only-on-conflict mode, allow-list user filter, EC2 long-polling deployment topology. Match length and depth of the existing "Email integration" bullet.
+- [x] add `internal/telegram/` to the directory listing in the "Architecture" section
+- [x] update the "Dependencies" line to include `github.com/go-telegram-bot-api/telegram-bot-api/v5 (Telegram bot integration; only used by internal/telegram/)`
+- [x] note the design rule: `internal/telegram/` MUST NOT import `internal/config` (same rule as `internal/email/`)
+- [x] `mkdir -p docs/plans/completed && mv docs/plans/20260518-telegram-bot.md docs/plans/completed/`
+- [x] run final `go test ./...` and `go vet ./...` — must pass
 
 ## Post-Completion
 
