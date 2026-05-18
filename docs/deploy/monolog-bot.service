@@ -1,0 +1,45 @@
+[Unit]
+Description=Monolog Telegram bot (long-poll)
+Documentation=https://github.com/mmaksmas/monolog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monolog-bot
+Group=monolog-bot
+
+# Secrets and runtime knobs live in this env file (0600, owned by the
+# monolog-bot user). Required keys are documented in env.example.
+EnvironmentFile=/etc/monolog-bot/env
+
+# The bot resolves its tasks repo from MONOLOG_DIR (set in the env file).
+# WorkingDirectory still defaults to a known-good location so any relative
+# paths in subprocesses (e.g. git operations) resolve sanely if the env file
+# is misconfigured.
+WorkingDirectory=/home/monolog-bot/tasks-repo
+
+ExecStart=/opt/monolog-bot/monolog-linux-arm64 telegram serve
+
+# Restart on crash but back off if it keeps failing so a broken deploy
+# doesn't busy-loop.
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+# SIGTERM is what telegram.Serve listens for via signal.NotifyContext; the
+# long-poll loop unwinds cleanly within seconds. Give it 30s before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Light sandboxing — the bot only needs the tasks repo, the env file, and
+# outbound HTTPS for Telegram + GitHub. No raw sockets, no /tmp pollution.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/monolog-bot/tasks-repo
+
+[Install]
+WantedBy=multi-user.target

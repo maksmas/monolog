@@ -419,15 +419,15 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Create: `docs/deploy/env.example`
 - Create: `docs/deploy/README.md`
 
-- [ ] check if `Makefile` exists at repo root; create one if absent, otherwise extend
-- [ ] add `make build-bot-linux-arm64` target: `GOOS=linux GOARCH=arm64 go build -o dist/monolog-linux-arm64 .`
-- [ ] add `make deploy-bot` target with placeholder vars (read from env or `.env.deploy` file gitignored) for `EC2_HOST`, `EC2_USER`, `BIN_DIR=/opt/monolog-bot`; depends on `build-bot-linux-arm64`; scps the binary, restarts the systemd unit via ssh
-- [ ] create `docs/deploy/monolog-bot.service` systemd unit: User=monolog-bot, EnvironmentFile=/etc/monolog-bot/env, ExecStart=/opt/monolog-bot/monolog-linux-arm64 telegram serve, Restart=on-failure, RestartSec=5s, WorkingDirectory=/home/monolog-bot/tasks-repo (or similar — document MONOLOG_DIR usage so the bot finds the right repo)
-- [ ] create `docs/deploy/env.example` documenting required env vars: `MONOLOG_TELEGRAM_TOKEN=`, `GIT_SSH_COMMAND="ssh -i /etc/monolog-bot/id_ed25519 -o StrictHostKeyChecking=no"`, `MONOLOG_DIR=/home/monolog-bot/tasks-repo`
-- [ ] create `docs/deploy/README.md` walking through one-time EC2 setup: launch t4g.nano + Amazon Linux 2023 ARM64, create monolog-bot user, generate ed25519 SSH deploy key, add as GitHub deploy key (write access), git clone the tasks repo to /home/monolog-bot/tasks-repo, install systemd unit, write env file with 0600 perms, enable + start unit. Each step a numbered checklist for the user to follow manually.
-- [ ] document the security-group requirement (SSH from user IP only, outbound HTTPS open)
-- [ ] **no automated tests** for this task — these are config files. Add a single sanity test: `go test -run TestDeployArtifactsExist` in a new `cmd/telegram_deploy_test.go` that asserts the three files exist (so future renames don't break the documented references silently)
-- [ ] run `go test ./...` and `go vet ./...` — must pass before next task
+- [x] check if `Makefile` exists at repo root; create one if absent, otherwise extend
+- [x] add `make build-bot-linux-arm64` target: `GOOS=linux GOARCH=arm64 go build -o dist/monolog-linux-arm64 .`
+- [x] add `make deploy-bot` target with placeholder vars (read from env or `.env.deploy` file gitignored) for `EC2_HOST`, `EC2_USER`, `BIN_DIR=/opt/monolog-bot`; depends on `build-bot-linux-arm64`; scps the binary, restarts the systemd unit via ssh
+- [x] create `docs/deploy/monolog-bot.service` systemd unit: User=monolog-bot, EnvironmentFile=/etc/monolog-bot/env, ExecStart=/opt/monolog-bot/monolog-linux-arm64 telegram serve, Restart=on-failure, RestartSec=5s, WorkingDirectory=/home/monolog-bot/tasks-repo (or similar — document MONOLOG_DIR usage so the bot finds the right repo)
+- [x] create `docs/deploy/env.example` documenting required env vars: `MONOLOG_TELEGRAM_TOKEN=`, `GIT_SSH_COMMAND="ssh -i /etc/monolog-bot/id_ed25519 -o StrictHostKeyChecking=no"`, `MONOLOG_DIR=/home/monolog-bot/tasks-repo`
+- [x] create `docs/deploy/README.md` walking through one-time EC2 setup: launch t4g.nano + Amazon Linux 2023 ARM64, create monolog-bot user, generate ed25519 SSH deploy key, add as GitHub deploy key (write access), git clone the tasks repo to /home/monolog-bot/tasks-repo, install systemd unit, write env file with 0600 perms, enable + start unit. Each step a numbered checklist for the user to follow manually.
+- [x] document the security-group requirement (SSH from user IP only, outbound HTTPS open)
+- [x] **no automated tests** for this task — these are config files. Add a single sanity test: `go test -run TestDeployArtifactsExist` in a new `cmd/telegram_deploy_test.go` that asserts the three files exist (so future renames don't break the documented references silently)
+- [x] run `go test ./...` and `go vet ./...` — must pass before next task
 
 ### Task 12: Verify acceptance criteria
 
