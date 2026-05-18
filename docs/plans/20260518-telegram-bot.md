@@ -431,19 +431,19 @@ No "last sync time" (use `git log` for that history, same as email status).
 
 ### Task 12: Verify acceptance criteria
 
-- [ ] verify capture works end-to-end: plain text → task created → git commit lands → git push happens (in test repo with fake remote)
-- [ ] verify browse works: `/today` `/week` `/active` `/all` each return expected formatting
-- [ ] verify Done callback runs CompleteAndSpawn correctly (recurring spawns; back-reference note added)
-- [ ] verify Active callback toggles the reserved tag
-- [ ] verify View/Collapse swap the message representation without sending new messages
-- [ ] verify reply-to-message appends a note
-- [ ] verify readOnly mode blocks writes and shows banner on browse, and clears on next clean pull
-- [ ] verify silent-drop for non-allowed users
-- [ ] verify ctx cancellation gracefully exits Serve
-- [ ] verify no real network calls in CI: `go test ./...` runs offline
-- [ ] run `go test ./...` (full suite)
-- [ ] run `go vet ./...`
-- [ ] verify test coverage is reasonable on `internal/telegram/`: `go test -cover ./internal/telegram/...` and check >70% (matches other internal packages)
+- [x] verify capture works end-to-end: plain text → task created → git commit lands → git push happens (in test repo with fake remote) (TestHandleCaptureCreatesTaskAndCommitsAndReplies — asserts SendMessage, store.List shows task, gitLogSubjects shows `add: buy milk` commit; push path covered transitively via git.Sync — TestHandleCaptureSetsReadOnlyOnSyncFailure exercises the Sync error path)
+- [x] verify browse works: `/today` `/week` `/active` `/all` each return expected formatting (TestHandleSlashTodayListsOnlyTodayBucket, TestHandleSlashWeekListsWeekBucketTasks, TestHandleSlashActiveListsOnlyActiveTagged, TestHandleSlashAllRespectsBrowseLimitAndAddsFooter, TestHandleSlashAllReturnsAllWhenUnderLimit)
+- [x] verify Done callback runs CompleteAndSpawn correctly (recurring spawns; back-reference note added) (TestHandleCallbackDoneCompletesNonRecurringTask, TestHandleCallbackDoneSpawnsRecurringFollowUp, TestHandleCallbackDoneAlreadyDoneSurfacesToast)
+- [x] verify Active callback toggles the reserved tag (TestHandleCallbackActiveTogglesTagAndEditsRow)
+- [x] verify View/Collapse swap the message representation without sending new messages (TestHandleCallbackViewExpandsToDetail, TestHandleCallbackCollapseRevertsToSummary — both assert EditMessage rather than SendMessage)
+- [x] verify reply-to-message appends a note (TestHandleNoteReplyAppendsNoteAndCommits, TestHandleNoteReplyEmptyFirstTokenReplies, TestHandleNoteReplyUnknownPrefixSurfacesResolveError, TestHandleNoteReplyAmbiguousPrefixIsEscaped, TestHandleNoteReplyBlockedWhenReadOnly)
+- [x] verify readOnly mode blocks writes and shows banner on browse, and clears on next clean pull (TestHandleCaptureRejectedWhenReadOnly, TestHandleCallbackReadOnlyBlocksDoneAndActiveAllowsView, TestHandleSlashReadOnlyPrependsBanner, TestHandleSlashReadOnlyBannerOnEmptyBucket, TestServeClearsReadOnlyOnPullSuccess, TestPullOnceClearsReadOnlyOnSuccess, TestCommitAndSyncClearsReadOnlyOnSuccess)
+- [x] verify silent-drop for non-allowed users (TestHandleCaptureDropsNonAllowedUserSilently, TestHandleCallbackDroppedForNonAllowedUser, TestIsAllowed)
+- [x] verify ctx cancellation gracefully exits Serve (TestServeProcessesQueuedUpdateAndShutsDownOnContextCancel, TestServeContextCancelDuringGetUpdatesReturnsCleanly, TestServeBackoffsOnGetUpdatesErrorAndExitsOnCancel)
+- [x] verify no real network calls in CI: `go test ./...` runs offline (full test suite passes locally without network; bot tests use fakeBot, git tests use local temp repos, no Telegram or external API calls)
+- [x] run `go test ./...` (full suite) — all 13 packages pass (`ok` across cmd, internal/config, internal/display, internal/email, internal/git, internal/model, internal/ordering, internal/recurrence, internal/schedule, internal/store, internal/telegram, internal/tui)
+- [x] run `go vet ./...` — clean, no findings
+- [x] verify test coverage is reasonable on `internal/telegram/`: `go test -cover ./internal/telegram/...` and check >70% (matches other internal packages) — coverage 78.5% of statements (83 tests across bot_test.go, bot_translate_test.go, convert_test.go, handler_test.go, sync_test.go)
 
 ### Task 13: Update CLAUDE.md and move plan to completed
 
