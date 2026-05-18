@@ -37,10 +37,15 @@ var (
 // it clears the readOnly flag — capture and Done can both observe the
 // "previously failed, now healed" transition without a separate path.
 //
-// On error from git.Sync, the readOnly flag is set so subsequent write
-// requests reject early until the next clean background pull clears it.
-// The wrapper returns the original error so the caller can decide what
-// to surface to Telegram (typically the canned readOnlyMessage).
+// On error from either git.AutoCommit or syncFunc the readOnly flag is
+// set so subsequent write requests reject early until the next clean
+// background pull clears it. AutoCommit failures often indicate a stuck
+// rebase from a prior conflicted pull (the index lock is held, or
+// commit refuses because of unmerged paths); the persistent banner
+// matches what the user sees on syncFunc failures and prevents a flurry
+// of confusing per-write toasts. The wrapper returns the original error
+// so the caller can decide what to surface to Telegram (typically the
+// canned readOnlyMessage).
 //
 // Mutex: callers MUST hold h.mu before calling commitAndSync. This is
 // already true for every current caller (handleCapture, the Done /
@@ -54,6 +59,7 @@ var (
 // element.
 func (h *Handler) commitAndSync(message string, files ...string) error {
 	if err := git.AutoCommit(h.repoPath, message, files...); err != nil {
+		h.readOnly.Store(true)
 		return fmt.Errorf("auto-commit: %w", err)
 	}
 	if _, err := syncFunc(h.repoPath); err != nil {
@@ -64,15 +70,71 @@ func (h *Handler) commitAndSync(message string, files ...string) error {
 	return nil
 }
 
+// pullRecoveryFuncs are package-level seams for the conflict-recovery
+// path in pullOnce. They mirror the same pattern as pullFunc/syncFunc:
+// production calls into the git package; tests swap them via withRecovery
+// in sync_test.go. We keep the seams narrow so tests can drive
+// arbitrary failure modes without standing up a real conflicted repo.
+var (
+	isRebasingFunc      = git.IsRebasing
+	resolveConflictsFn  = git.ResolveConflicts
+	rebaseContinueFunc  = git.RebaseContinue
+	rebaseAbortFunc     = git.RebaseAbort
+)
+
 // pullOnce is the helper the pull-ticker goroutine in Serve invokes on
-// each tick. It runs git.PullRebase via the injectable seam, and on
-// success clears the read-only flag so writes can resume. Errors are
-// returned to the caller (which logs to opts.Writer); we deliberately
-// do not flip readOnly on pull errors — only the local-write path can
-// observe a "sync conflict" condition.
+// each tick. It runs git.PullRebase via the injectable seam and, when
+// PullRebase reports an error, performs the same conflict-recovery
+// dance that git.Sync uses for the write path:
+//
+//  1. Check IsRebasing; if false, the error is a real failure (network,
+//     auth, etc.) — return it without touching readOnly so the next
+//     tick can retry.
+//  2. If we ARE mid-rebase, call ResolveConflicts. For task-file
+//     conflicts the UpdatedAt-ordering rule picks a deterministic
+//     winner; for any other unmerged path (theme, config) it returns
+//     an error.
+//  3. On ResolveConflicts failure, RebaseAbort to leave the working
+//     tree clean and set readOnly so writes are blocked with the
+//     conflict banner. Operator must SSH in to recover.
+//  4. On RebaseContinue failure, same recovery: abort + readOnly.
+//
+// Without this recovery, a background pull-ticker conflict would leave
+// the repo stuck mid-rebase: every subsequent AutoCommit/Sync would
+// fail, but readOnly would never trip (only syncFunc failures set it
+// historically). The bot would silently break until manual recovery.
+//
+// On a clean pull (no conflict) we clear readOnly so writes can resume.
+//
+// Mutex: pullOnce acquires h.mu so the pull subprocess does not race
+// concurrent write handlers (which run their own git add/commit/push
+// chain). Git serializes on .git/index.lock at the OS level — two
+// processes hitting the index simultaneously fail with "Unable to
+// create '.git/index.lock'". Holding h.mu around the pull also blocks
+// browse readers for the duration of the rebase, preventing them from
+// observing intermediate fast-rename states on partially-replayed
+// commits.
 func (h *Handler) pullOnce() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if err := pullFunc(h.repoPath); err != nil {
-		return err
+		rebasing, rbErr := isRebasingFunc(h.repoPath)
+		if rbErr != nil || !rebasing {
+			return err
+		}
+		// Mid-rebase from a conflicted pull. Mirror git.Sync's recovery
+		// flow: resolve task-file conflicts via UpdatedAt ordering,
+		// then continue. Any failure leaves the repo blocked.
+		if _, resErr := resolveConflictsFn(h.repoPath); resErr != nil {
+			_ = rebaseAbortFunc(h.repoPath)
+			h.readOnly.Store(true)
+			return fmt.Errorf("pull conflict recovery: %w", resErr)
+		}
+		if contErr := rebaseContinueFunc(h.repoPath); contErr != nil {
+			_ = rebaseAbortFunc(h.repoPath)
+			h.readOnly.Store(true)
+			return fmt.Errorf("pull rebase continue: %w", contErr)
+		}
 	}
 	h.readOnly.Store(false)
 	return nil
@@ -156,6 +218,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	}
 
 	handler := NewHandler(opts.Bot, opts.Store, opts.RepoPath, opts.Cfg, opts.DateFormat, opts.Now)
+	handler.SetWriter(writer)
 
 	// Best-effort startup pull. Failure here is informational — the bot can
 	// still serve whatever's on disk, and the ticker will retry. We

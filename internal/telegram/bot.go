@@ -56,6 +56,25 @@ type CallbackQuery struct {
 	Data      string
 }
 
+// InlineButton is a single inline-keyboard button shown below a Telegram
+// message. The Text is the user-visible label; CallbackData is the
+// `<action>:<ulid>` payload (decoded by ParseCallback) that Telegram sends
+// back as a CallbackQuery when the user taps the button.
+//
+// Telegram's inline-keyboard callback_data field is capped at 64 bytes — a
+// 26-char ULID plus an 8-char action verb and the colon separator stays
+// well under the cap, so no truncation is necessary.
+type InlineButton struct {
+	Text         string
+	CallbackData string
+}
+
+// InlineKeyboard is a 2D slice of InlineButton values: the outer slice is
+// rows, the inner slice is the buttons in that row (left-to-right). An
+// empty InlineKeyboard signals "no buttons" to the rendering layer, which
+// then sends the message without a `reply_markup` field.
+type InlineKeyboard [][]InlineButton
+
 // Bot is the small interface the handler depends on. Production wires it to
 // realBot wrapping *tgbotapi.BotAPI; tests pass a recording fake. The
 // interface stays as narrow as possible: four methods covering the entire
@@ -107,10 +126,16 @@ func NewClient(token string) (Bot, error) {
 
 // GetUpdates wraps tgbotapi.BotAPI.GetUpdates with context cancellation. The
 // underlying library has no ctx-aware variant, so we run the call in a
-// goroutine and select on ctx.Done() — on cancellation we invoke
-// StopReceivingUpdates so the HTTP long-poll connection is torn down, and
-// return ctx.Err(). The goroutine is allowed to finish naturally; its result
-// is discarded.
+// goroutine and select on ctx.Done() — on cancellation we return ctx.Err()
+// immediately. The goroutine is allowed to finish naturally and its result
+// is discarded; the in-flight HTTP long-poll connection unblocks on its own
+// when Telegram's long-poll timeout (≤30s) elapses.
+//
+// We deliberately do NOT call b.api.StopReceivingUpdates here: that method
+// is intended for tearing down the package-internal GetUpdatesChan goroutine
+// (which we don't use), and calling it more than once closes an already-
+// closed channel and panics. Letting the long-poll timeout do the work
+// trades a short tail-latency on shutdown for a panic-free path.
 func (b *realBot) GetUpdates(ctx context.Context, offset int64, timeout time.Duration) ([]Update, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -138,8 +163,11 @@ func (b *realBot) GetUpdates(ctx context.Context, offset int64, timeout time.Dur
 
 	select {
 	case <-ctx.Done():
-		// Tear down the long-poll HTTP connection so the goroutine returns.
-		b.api.StopReceivingUpdates()
+		// Return immediately on cancellation. The goroutine above keeps
+		// running until Telegram's long-poll timeout fires; its result is
+		// discarded by the buffered (size 1) channel. We accept a short
+		// tail-latency rather than risk the StopReceivingUpdates panic
+		// (see function comment).
 		return nil, ctx.Err()
 	case r := <-resCh:
 		if r.err != nil {
@@ -241,6 +269,12 @@ func (b *realBot) EditMessage(ctx context.Context, chatID int64, msgID int, html
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	// The bool from toMarkup is intentionally discarded: SendMessage uses
+	// it to omit ReplyMarkup entirely on empty kb (so a fresh message ships
+	// without a keyboard field), but EditMessage WANTS the empty-markup
+	// behavior on empty kb to wipe the previous keyboard (the post-Done
+	// strike-through case). The zero-value InlineKeyboardMarkup{} clears
+	// all rows on Telegram's edit endpoint.
 	markup, _ := toMarkup(kb)
 	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, msgID, html, markup)
 	edit.ParseMode = "HTML"

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mmaksmas/monolog/internal/model"
 )
@@ -317,14 +318,14 @@ func TestFormatTaskRow(t *testing.T) {
 			want: "<code>01J5K</code>  fix login\n<i>work, urgent</i>",
 		},
 		{
-			name: "active tag filtered out",
+			name: "active tag filtered out but star marker shown",
 			task: model.Task{ID: id, Title: "fix login", Tags: []string{"work", model.ActiveTag}},
-			want: "<code>01J5K</code>  fix login\n<i>work</i>",
+			want: "⭐ <code>01J5K</code>  fix login\n<i>work</i>",
 		},
 		{
-			name: "only active tag = no <i> line",
+			name: "only active tag = star marker no <i> line",
 			task: model.Task{ID: id, Title: "fix login", Tags: []string{model.ActiveTag}},
-			want: "<code>01J5K</code>  fix login",
+			want: "⭐ <code>01J5K</code>  fix login",
 		},
 		{
 			name: "with recur marker only",
@@ -359,11 +360,37 @@ func TestFormatTaskRow(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := FormatTaskRow(tc.task, testDateFormat)
+			got := FormatTaskRow(tc.task)
 			if got != tc.want {
 				t.Fatalf("FormatTaskRow:\n got:  %q\n want: %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestFormatTaskRowActiveToggleChangesRendering is the regression guard for
+// the active-toggle EditMessage bug: a task with no other tags, no recur,
+// and no notes used to render identically before and after toggling active
+// because the active tag was filtered out of the visible row. Telegram
+// rejects identical EditMessage payloads with "message is not modified",
+// so the inline message would silently fail to refresh after the user tap.
+//
+// The fix prepends a visible ⭐ marker when t.IsActive() is true. This test
+// locks in the contract: for the same task, the active-on and active-off
+// renderings MUST differ — otherwise no future change to the row layout
+// can silently re-introduce the bug.
+func TestFormatTaskRowActiveToggleChangesRendering(t *testing.T) {
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	// Plainest possible task: title only, no tags, no recur, no notes.
+	// This is the common case that triggered the original bug.
+	inactive := model.Task{ID: id, Title: "buy milk"}
+	active := model.Task{ID: id, Title: "buy milk", Tags: []string{model.ActiveTag}}
+
+	gotInactive := FormatTaskRow(inactive)
+	gotActive := FormatTaskRow(active)
+	if gotInactive == gotActive {
+		t.Fatalf("active toggle produced identical rendering — Telegram would reject EditMessage as 'message is not modified'\n inactive: %q\n active:   %q",
+			gotInactive, gotActive)
 	}
 }
 
@@ -508,6 +535,139 @@ func TestFormatDetailView(t *testing.T) {
 		}
 		if !strings.HasSuffix(got, truncationMarker) {
 			t.Fatalf("expected truncation marker at end; got tail %q", got[len(got)-50:])
+		}
+	})
+
+	t.Run("truncation never splits HTML entity", func(t *testing.T) {
+		// Body is a long run of `&` (escaped to `&amp;`). A naive byte
+		// truncation at byte budget would often land *inside* a `&amp;`
+		// entity (e.g. `&am` at the cut), which Telegram rejects with
+		// "Bad Request: can't parse entities". Verify the output ends
+		// cleanly with the marker, and contains no partial `&...` entity
+		// before the marker.
+		body := strings.Repeat("&", telegramMaxMessage+200)
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Body:      body,
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if len(got) > telegramMaxMessage {
+			t.Fatalf("output exceeds cap: len=%d", len(got))
+		}
+		if !strings.HasSuffix(got, truncationMarker) {
+			t.Fatalf("expected truncation marker; got tail %q", got[len(got)-50:])
+		}
+		// Walk backward from just before the marker: the last `&` we
+		// see must be followed by `amp;` (a complete entity), otherwise
+		// we landed inside one.
+		beforeMarker := strings.TrimSuffix(got, truncationMarker)
+		if i := strings.LastIndexByte(beforeMarker, '&'); i >= 0 {
+			tail := beforeMarker[i:]
+			if !strings.HasPrefix(tail, "&amp;") {
+				t.Fatalf("truncation landed inside HTML entity; tail = %q", tail)
+			}
+		}
+	})
+
+	t.Run("truncation respects multi-byte UTF-8 rune boundary", func(t *testing.T) {
+		// Russian text averages 2 bytes/rune (Cyrillic). A naive byte cut
+		// inside a multi-byte rune produces invalid UTF-8 — Telegram
+		// accepts the bytes but the rendered chat shows replacement chars.
+		// Verify the output is valid UTF-8 after truncation.
+		body := strings.Repeat("Ы", telegramMaxMessage/2+100) // Ы is 2 bytes
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Body:      body,
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if len(got) > telegramMaxMessage {
+			t.Fatalf("output exceeds cap: len=%d", len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncated output is not valid UTF-8")
+		}
+		if !strings.HasSuffix(got, truncationMarker) {
+			t.Fatalf("expected truncation marker; got tail %q", got[len(got)-50:])
+		}
+	})
+
+	t.Run("truncation with mixed entities and runes is valid", func(t *testing.T) {
+		// Repeating chunk produces both `&amp;` entities (from `&`) and
+		// multi-byte Cyrillic runes — exactly the worst case for a naive
+		// byte truncation.
+		chunk := "Ы&Ы&"
+		body := strings.Repeat(chunk, telegramMaxMessage/len(chunk)+50)
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Body:      body,
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if len(got) > telegramMaxMessage {
+			t.Fatalf("output exceeds cap: len=%d", len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncated output is not valid UTF-8")
+		}
+		if !strings.HasSuffix(got, truncationMarker) {
+			t.Fatalf("expected truncation marker")
+		}
+	})
+
+	t.Run("header alone exceeds cap is safely truncated", func(t *testing.T) {
+		// Pathological case: title alone bigger than the Telegram 4096-
+		// byte cap. The fallback used to be a raw byte slice that could
+		// land mid-rune or mid-`&amp;` entity. safeTruncate must produce
+		// valid UTF-8 and not split an entity.
+		title := strings.Repeat("Ы", 3000) // ~6000 bytes of Cyrillic
+		task := model.Task{
+			ID:        id,
+			Title:     title,
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if len(got) > telegramMaxMessage {
+			t.Fatalf("oversized-header output exceeds cap: len=%d", len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("oversized-header output is not valid UTF-8")
+		}
+	})
+
+	t.Run("header with HTML entities exceeds cap respects entity boundaries", func(t *testing.T) {
+		// Title is a long run of `&` which expands to `&amp;` after
+		// htmlEscape. A naive byte cut would land inside `&am...`.
+		// safeTruncate must back up to before the partial entity.
+		title := strings.Repeat("&", 5000) // 5000 → 25000 bytes after escape
+		task := model.Task{
+			ID:        id,
+			Title:     title,
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if len(got) > telegramMaxMessage {
+			t.Fatalf("output exceeds cap: len=%d", len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("output not valid UTF-8")
+		}
+		// The last `&` we see must start a complete `&amp;` — anything
+		// else means the cut landed inside an entity.
+		if i := strings.LastIndexByte(got, '&'); i >= 0 {
+			tail := got[i:]
+			if !strings.HasPrefix(tail, "&amp;") {
+				t.Fatalf("header truncation split HTML entity; tail = %q", tail)
+			}
 		}
 	})
 

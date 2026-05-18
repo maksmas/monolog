@@ -73,6 +73,11 @@ sudo systemctl daemon-reload
 
 ## 6. Write the environment file
 
+The `install` command below copies `env.example` from this repo's
+`docs/deploy/` directory; upload it first via `scp docs/deploy/env.example
+ec2-user@<host>:~/` (or clone this repo on the host and `cd docs/deploy`).
+Then on the EC2 host:
+
 ```sh
 sudo install -d -m 0750 -o monolog-bot -g monolog-bot /etc/monolog-bot
 sudo install -m 0600 -o monolog-bot -g monolog-bot env.example /etc/monolog-bot/env
@@ -82,6 +87,16 @@ sudo $EDITOR /etc/monolog-bot/env
 - [ ] Set `MONOLOG_TELEGRAM_TOKEN` to the value @BotFather gave you
 - [ ] Confirm `GIT_SSH_COMMAND` points at `/etc/monolog-bot/id_ed25519`
 - [ ] Confirm `MONOLOG_DIR` matches the clone path from step 4
+- [ ] Set all four `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` /
+      `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` values. These are
+      REQUIRED — without them every commit fails with
+      `fatal: empty ident name not allowed` and the bot replies
+      "sync conflict — resolve on laptop" to every message even though
+      no real conflict exists. `git config --global` from inside the
+      service is awkward under `ProtectHome=read-only`, so env vars
+      are the canonical fix; all four are needed because git's commit
+      plumbing reads the COMMITTER pair independently from the AUTHOR
+      pair and the bot user has no `~/.gitconfig` to fall back to.
 - [ ] Re-verify `0600` perms (`stat /etc/monolog-bot/env`) — the secret
       lives here
 

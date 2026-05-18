@@ -232,8 +232,10 @@ func TestTelegramServeCommand_AcceptsEnvWhenFlagUnset(t *testing.T) {
 	if len(gotOpts.Cfg.AllowedUserIDs) != 1 || gotOpts.Cfg.AllowedUserIDs[0] != 42 {
 		t.Errorf("ServeOptions.Cfg.AllowedUserIDs = %v, want [42]", gotOpts.Cfg.AllowedUserIDs)
 	}
-	if gotOpts.DateFormat == "" {
-		t.Error("ServeOptions.DateFormat is empty")
+	// DateFormat must be the exact value config.DateFormat() returned at
+	// startup so the bot's user-facing date rendering matches the laptop's.
+	if want := config.DateFormat(); gotOpts.DateFormat != want {
+		t.Errorf("ServeOptions.DateFormat = %q, want %q", gotOpts.DateFormat, want)
 	}
 	if gotOpts.Writer == nil {
 		t.Error("ServeOptions.Writer is nil; expected cmd.ErrOrStderr() to be threaded through")

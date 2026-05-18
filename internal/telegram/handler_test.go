@@ -406,10 +406,12 @@ func TestHandleIgnoresBareUpdates(t *testing.T) {
 
 func TestHandleCallbackDroppedForNonAllowedUser(t *testing.T) {
 	// Callbacks from users outside the allow-list are dropped without
-	// any outbound activity — same policy as the message path. This
-	// pins the behavior so a future routing-refactor cannot accidentally
-	// answer untrusted callbacks (which would confirm the bot exists to
-	// drive-by queries).
+	// sending any visible message or edit — same policy as the message
+	// path. We DO answer the callback with an empty toast so Telegram
+	// stops the loading spinner on the user's button (otherwise it
+	// spins forever until their client times out). The empty toast is
+	// indistinguishable from a "did nothing" tap, so it doesn't leak
+	// the bot's existence to drive-by queries.
 	h, bot, _, _ := newTestHandler(t, []int64{100})
 
 	cbDenied := Update{
@@ -419,9 +421,14 @@ func TestHandleCallbackDroppedForNonAllowedUser(t *testing.T) {
 	if err := h.Handle(context.Background(), cbDenied); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(bot.answers) != 0 || len(bot.sent) != 0 || len(bot.edits) != 0 {
-		t.Fatalf("expected silent drop, got answers=%d sent=%d edits=%d",
-			len(bot.answers), len(bot.sent), len(bot.edits))
+	// Exactly one (silent) answer to stop the spinner; no other outbound
+	// activity.
+	if len(bot.answers) != 1 || bot.answers[0].Toast != "" {
+		t.Fatalf("expected one silent AnswerCallback, got %+v", bot.answers)
+	}
+	if len(bot.sent) != 0 || len(bot.edits) != 0 {
+		t.Fatalf("expected no message/edit activity, got sent=%d edits=%d",
+			len(bot.sent), len(bot.edits))
 	}
 }
 
@@ -455,6 +462,54 @@ func TestHandleReplyToMessageDoesNotCreateNewTask(t *testing.T) {
 	tasks, _ := s.List(store.ListOptions{})
 	if len(tasks) != 0 {
 		t.Fatalf("expected no task created via reply path, got %d", len(tasks))
+	}
+}
+
+func TestHandleSlashDropsNonAllowedUserSilently(t *testing.T) {
+	// Slash commands from users outside the allow-list are dropped with
+	// no outbound activity at all — same policy as plain capture. The
+	// previous review caught this gap: a future routing-refactor must
+	// not be allowed to surface a help message (or any other reply) to
+	// unknown users.
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 999, Text: "/help"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 0 || len(bot.edits) != 0 || len(bot.answers) != 0 {
+		t.Fatalf("expected silent drop for non-allowed slash, got sent=%d edits=%d answers=%d",
+			len(bot.sent), len(bot.edits), len(bot.answers))
+	}
+}
+
+func TestHandleSlashSplitsOnNewlineToken(t *testing.T) {
+	// "/today\n<args>" must route to today (not "today\n<args>" → unknown).
+	// strings.IndexAny(" \t") missed \n and \r which Telegram clients
+	// readily insert when the user pastes a multi-line message starting
+	// with a slash command.
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedBrowseTasks(t, s)
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today\nleftover"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// Two today-bucket rows; if the newline had not been treated as a
+	// separator we would have gotten the unknown-command reply.
+	if len(bot.sent) != 2 {
+		t.Fatalf("expected 2 today rows after newline-split, got %d: %+v", len(bot.sent), bot.sent)
+	}
+	for _, sm := range bot.sent {
+		if strings.Contains(sm.HTML, "unknown command") {
+			t.Fatalf("newline-separated args misrouted to unknown: %q", sm.HTML)
+		}
 	}
 }
 
@@ -1095,9 +1150,12 @@ func TestHandleCallbackDoneSpawnsRecurringFollowUp(t *testing.T) {
 	if !strings.Contains(bot.edits[0].HTML, "↻ next:") {
 		t.Fatalf("expected next-date line in done message, got %q", bot.edits[0].HTML)
 	}
-	// 2026-05-18 + 1 day = 2026-05-19; default layout DD-MM-YYYY.
-	if !strings.Contains(bot.edits[0].HTML, "19-05-2026") {
-		t.Fatalf("expected formatted next date 19-05-2026 in message, got %q", bot.edits[0].HTML)
+	// Next date is handlerTestNow + 1 day, rendered in default layout
+	// DD-MM-YYYY. Computing it keeps this test resilient if handlerTestNow
+	// is ever bumped.
+	wantNext := handlerTestNow.AddDate(0, 0, 1).Format("02-01-2006")
+	if !strings.Contains(bot.edits[0].HTML, wantNext) {
+		t.Fatalf("expected formatted next date %s in message, got %q", wantNext, bot.edits[0].HTML)
 	}
 
 	// Both files are in a single commit (one subject line).
@@ -1177,6 +1235,72 @@ func TestHandleCallbackActiveTogglesTagAndEditsRow(t *testing.T) {
 	if len(bot.edits) != 2 {
 		t.Fatalf("expected 2 edits total, got %d", len(bot.edits))
 	}
+	// Toast feedback: first toggle says "active on", second says
+	// "active off". Pinned text — the toast is the only confirmation
+	// users get before the EditMessage round-trip lands.
+	if len(bot.answers) != 2 {
+		t.Fatalf("expected 2 answers, got %d: %+v", len(bot.answers), bot.answers)
+	}
+	if bot.answers[0].Toast != "active on" {
+		t.Fatalf("first toggle toast: got %q want %q", bot.answers[0].Toast, "active on")
+	}
+	if bot.answers[1].Toast != "active off" {
+		t.Fatalf("second toggle toast: got %q want %q", bot.answers[1].Toast, "active off")
+	}
+}
+
+// TestHandleCallbackActivePlainTaskRowChangesBetweenStates is the regression
+// guard for the silent EditMessage failure on plainest-case tasks. Before
+// the ⭐ marker fix, a task with no other tags / no recur / no notes
+// rendered identically before vs. after toggling active — Telegram then
+// rejects the editMessageText call with `Bad Request: message is not
+// modified`. We simulate the API failure by configuring fakeBot.editErr
+// to the exact error string and assert two things:
+//   - the FormatTaskRow output for the active state is non-empty and
+//     differs from the inactive rendering (caught by FormatTaskRow tests),
+//   - the handler still answers the callback even when EditMessage fails,
+//     so the user is not left with a spinning loading indicator.
+func TestHandleCallbackActivePlainTaskRowChangesBetweenStates(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "buy milk", // no tags, no recur, no body → no NoteCount
+	})
+
+	// Simulate Telegram returning the exact "message is not modified"
+	// error — fakeBot.editErr is returned verbatim by EditMessage.
+	bot.editErr = fmt.Errorf("Bad Request: message is not modified")
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	// Handle returns the EditMessage error wrapped — that's expected
+	// (Serve logs it). We only care that the callback got answered.
+	_ = h.Handle(context.Background(), upd)
+
+	if len(bot.answers) != 1 {
+		t.Fatalf("expected exactly 1 AnswerCallback even on edit failure, got %d: %+v",
+			len(bot.answers), bot.answers)
+	}
+	if bot.answers[0].Toast != "active on" {
+		t.Fatalf("expected toast %q, got %q", "active on", bot.answers[0].Toast)
+	}
+
+	// And — most importantly — the row rendering differs between
+	// active-on and active-off. This is what prevents Telegram from
+	// rejecting the edit with "message is not modified" in production.
+	got, _ := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if !got.IsActive() {
+		t.Fatalf("toggle should have set active, tags=%v", got.Tags)
+	}
+	activeRow := FormatTaskRow(got)
+	got.SetActive(false)
+	inactiveRow := FormatTaskRow(got)
+	if activeRow == inactiveRow {
+		t.Fatalf("active and inactive rows are identical — Telegram would reject the edit:\n active:   %q\n inactive: %q",
+			activeRow, inactiveRow)
+	}
 }
 
 func TestHandleCallbackViewExpandsToDetail(t *testing.T) {
@@ -1212,6 +1336,53 @@ func TestHandleCallbackViewExpandsToDetail(t *testing.T) {
 	}
 	if len(bot.answers) != 1 || bot.answers[0].Toast != "" {
 		t.Fatalf("expected silent answer, got %+v", bot.answers)
+	}
+}
+
+func TestHandleCallbackAnswersEvenWhenEditMessageFails(t *testing.T) {
+	// Telegram requires every callback query to be answered within ~15s
+	// or the loading spinner persists on the button forever. The four
+	// callback branches that call EditMessage (done / active / view /
+	// collapse) MUST answer the callback regardless of whether the edit
+	// succeeded.
+	cases := []struct {
+		name   string
+		data   string
+		status string // "done" forces handleCallbackDone path; otherwise open
+	}{
+		{name: "done", data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+		{name: "active", data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+		{name: "view", data: "view:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+		{name: "collapse", data: "collapse:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, bot, s, _ := newTestHandler(t, []int64{100})
+			seedSingleTask(t, s, model.Task{
+				ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+				Title: "ship it",
+			})
+			// Force every EditMessage call to fail.
+			bot.editErr = fmt.Errorf("telegram: simulated edit failure")
+
+			upd := Update{
+				UpdateID: 1,
+				Callback: &CallbackQuery{ID: "cb-" + tc.name, UserID: 100, ChatID: 5, MessageID: 9, Data: tc.data},
+			}
+			// Done/Active wrap edit failure in an error return (write-side
+			// paths propagate so the Serve loop can log); view/collapse do
+			// the same. Either way the callback MUST be answered.
+			_ = h.Handle(context.Background(), upd)
+
+			if len(bot.answers) != 1 {
+				t.Fatalf("%s: expected exactly 1 AnswerCallback even on edit failure, got %d: %+v",
+					tc.name, len(bot.answers), bot.answers)
+			}
+			if bot.answers[0].CallbackID != "cb-"+tc.name {
+				t.Fatalf("%s: AnswerCallback targeted wrong ID: got %q want %q",
+					tc.name, bot.answers[0].CallbackID, "cb-"+tc.name)
+			}
+		})
 	}
 }
 
@@ -1278,13 +1449,16 @@ func TestHandleCallbackReadOnlyBlocksDoneAndActiveAllowsView(t *testing.T) {
 		t.Fatalf("readOnly should leave task inactive, tags=%v", got.Tags)
 	}
 
-	// Both write-side answers are present and explain the conflict.
+	// Both write-side answers are present and use the exact wording the
+	// plan pinned. The pinned text appears verbatim in the user's toast,
+	// so we assert on the full string rather than a loose substring.
 	if len(bot.answers) < 2 {
 		t.Fatalf("expected at least 2 answers, got %+v", bot.answers)
 	}
+	const wantToast = "sync conflict — resolve on laptop"
 	for _, a := range bot.answers[:2] {
-		if !strings.Contains(a.Toast, "sync conflict") {
-			t.Fatalf("expected sync-conflict toast, got %+v", a)
+		if a.Toast != wantToast {
+			t.Fatalf("expected toast %q, got %+v", wantToast, a)
 		}
 	}
 
@@ -1515,6 +1689,66 @@ func TestHandleNoteReplyBlockedWhenReadOnly(t *testing.T) {
 	if got.NoteCount != 0 || got.Body != "" {
 		t.Fatalf("expected store unchanged, got body=%q notes=%d", got.Body, got.NoteCount)
 	}
+}
+
+// TestPrefixIDRoundTripsThroughStoreResolve enforces the contract that
+// couples the rendering path (FormatTaskRow, which surfaces prefixID(t.ID)
+// as the first whitespace-bounded token) and the reply-resolver path
+// (handleNoteReply, which firstToken's the user's quoted reply text and
+// passes the result to store.Resolve). If prefixLength were ever bumped or
+// FormatTaskRow's layout reshuffled to hide the ID in the middle of the
+// line, this test would fail and force a re-validation of the coupling.
+//
+// We emulate the Telegram client's behavior of stripping HTML tags from a
+// quoted message so the captured token mirrors what handleNoteReply sees
+// on `m.ReplyTo.Text` after the round-trip through the user's phone.
+func TestPrefixIDRoundTripsThroughStoreResolve(t *testing.T) {
+	_, s := initTelegramTestRepo(t)
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	task := model.Task{ID: id, Title: "buy milk", Tags: []string{"shopping"}}
+	seedSingleTask(t, s, task)
+
+	rendered := FormatTaskRow(task)
+	// Strip HTML tags the way a Telegram client would when quoting the
+	// message in a reply. Naive but sufficient: no nested tags, no
+	// attributes besides what FormatTaskRow emits today.
+	stripped := stripHTMLTags(rendered)
+
+	prefix := firstToken(stripped)
+	if prefix == "" {
+		t.Fatalf("firstToken of rendered row %q returned empty", stripped)
+	}
+	if len(prefix) != prefixLength {
+		t.Fatalf("firstToken returned %d chars, want exactly prefixLength=%d (rendered=%q)", len(prefix), prefixLength, stripped)
+	}
+
+	resolved, err := s.Resolve(prefix)
+	if err != nil {
+		t.Fatalf("store.Resolve(%q) error = %v (rendered=%q)", prefix, err, stripped)
+	}
+	if resolved.ID != id {
+		t.Fatalf("store.Resolve(%q) = %q, want %q", prefix, resolved.ID, id)
+	}
+}
+
+// stripHTMLTags removes balanced `<tag>...</tag>` markup and self-closing
+// tags from s, returning the inner text. Used by the prefixID round-trip
+// test to simulate Telegram's "quoted reply" rendering, which surfaces
+// only the visible text to the bot.
+func stripHTMLTags(s string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+		case !inTag:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func TestFirstToken(t *testing.T) {

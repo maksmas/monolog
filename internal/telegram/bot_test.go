@@ -44,6 +44,14 @@ type fakeBot struct {
 	sendErr   error
 	editErr   error
 	answerErr error
+
+	// sendDelay / editDelay / answerDelay sleep for the given duration
+	// inside the corresponding method BEFORE recording or returning.
+	// Used by tests that verify the handler does not hold h.mu across
+	// bot HTTP I/O — the delay simulates a slow Telegram round-trip.
+	sendDelay   time.Duration
+	editDelay   time.Duration
+	answerDelay time.Duration
 }
 
 // sentMessage records one SendMessage call. We capture chat ID, body, and
@@ -97,6 +105,15 @@ func (f *fakeBot) GetUpdates(ctx context.Context, offset int64, timeout time.Dur
 // message ID. The returned ID lets tests verify EditMessage references the
 // correct prior message.
 func (f *fakeBot) SendMessage(ctx context.Context, chatID int64, html string, kb InlineKeyboard) (int, error) {
+	// Snapshot the delay under the lock, then sleep WITHOUT holding the
+	// lock so a long delay doesn't serialize unrelated calls in tests
+	// that drive concurrent traffic.
+	f.mu.Lock()
+	delay := f.sendDelay
+	f.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
@@ -110,6 +127,12 @@ func (f *fakeBot) SendMessage(ctx context.Context, chatID int64, html string, kb
 // EditMessage records the call.
 func (f *fakeBot) EditMessage(ctx context.Context, chatID int64, msgID int, html string, kb InlineKeyboard) error {
 	f.mu.Lock()
+	delay := f.editDelay
+	f.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.editErr != nil {
 		return f.editErr
@@ -120,6 +143,12 @@ func (f *fakeBot) EditMessage(ctx context.Context, chatID int64, msgID int, html
 
 // AnswerCallback records the call.
 func (f *fakeBot) AnswerCallback(ctx context.Context, callbackID, toast string) error {
+	f.mu.Lock()
+	delay := f.answerDelay
+	f.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.answerErr != nil {

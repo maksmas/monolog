@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mmaksmas/monolog/internal/display"
 	"github.com/mmaksmas/monolog/internal/model"
@@ -190,23 +191,31 @@ func prefixID(id string) string {
 // FormatTaskRow renders a compact HTML summary row for a task as shown
 // in browse output and after a capture. The layout is:
 //
-//	<code>{prefix5}</code>  {escaped-title}
+//	{⭐ if active}<code>{prefix5}</code>  {escaped-title}
 //	<i>{tag-list}  ·  {recur-marker}{notes-badge}</i>
+//
+// The leading ⭐ marker is prepended when t.IsActive() so the row
+// rendering visibly changes between the active-on and active-off states
+// even when the task has no other tags / no recur / no notes. Without
+// this marker, toggling active on a plainest-case task produces an
+// EditMessage payload identical to the previous render — Telegram then
+// rejects the edit with "message is not modified" and the user's tap
+// appears to do nothing. See TestFormatTaskRowActiveToggleChangesRendering.
 //
 // The second `<i>` line is omitted entirely when the task has no tags,
 // no recurrence rule, and no notes — so simple captures render as a
 // single line. The reserved `active` tag is filtered out via
 // display.VisibleTags so it never appears in the user-visible tag list
-// (the active state is reflected via the ⭐ button instead).
+// (the active state is reflected via the ⭐ marker + button instead).
 //
-// dateFormat is accepted for parity with the rest of the format API
-// even though no date appears in the summary row; FormatDetailView is
-// where it matters. Accepting it here keeps the call sites uniform
-// and lets a future change add e.g. a relative-time chip without
-// reworking the signature.
-func FormatTaskRow(t model.Task, dateFormat string) string {
-	_ = dateFormat // reserved for future use, see comment above
+// The row carries no date column today — FormatDetailView is where
+// dateFormat matters. If a future revision adds a relative-time chip
+// here, take dateFormat as a parameter at that point.
+func FormatTaskRow(t model.Task) string {
 	var b strings.Builder
+	if t.IsActive() {
+		b.WriteString("⭐ ")
+	}
 	b.WriteString("<code>")
 	b.WriteString(htmlEscape(prefixID(t.ID)))
 	b.WriteString("</code>  ")
@@ -323,7 +332,15 @@ func formatDetailViewAt(t model.Task, dateFormat string, now time.Time) string {
 	if t.Body == "" {
 		// Strip the trailing newline so the empty-body case doesn't
 		// leave a dangling blank line at the bottom of the message.
-		return strings.TrimRight(header, "\n")
+		out := strings.TrimRight(header, "\n")
+		// Even with no body, a pathological title can push the header
+		// past Telegram's 4096-byte cap. safeTruncate respects UTF-8
+		// rune boundaries and HTML entity boundaries so the message
+		// still parses cleanly on Telegram's side.
+		if len(out) > telegramMaxMessage {
+			return safeTruncate(out, telegramMaxMessage)
+		}
+		return out
 	}
 
 	bodyEscaped := htmlEscape(t.Body)
@@ -335,10 +352,12 @@ func formatDetailViewAt(t model.Task, dateFormat string, now time.Time) string {
 	budget := telegramMaxMessage - len(header) - len(separator) - len(truncationMarker)
 	if budget < 0 {
 		// Header alone exceeds the cap (pathological — would only
-		// happen with an absurdly long title). Return the header
-		// truncated to the cap; there is no body to add.
+		// happen with an absurdly long title). Use safeTruncate so the
+		// cut respects UTF-8 rune boundaries AND HTML entity boundaries;
+		// a raw byte slice could land mid-rune or mid-`&amp;` and make
+		// Telegram reject the message with "can't parse entities".
 		if len(header) > telegramMaxMessage {
-			return header[:telegramMaxMessage]
+			return safeTruncate(header, telegramMaxMessage)
 		}
 		return strings.TrimRight(header, "\n")
 	}
@@ -347,7 +366,52 @@ func formatDetailViewAt(t model.Task, dateFormat string, now time.Time) string {
 		// because we never have to append the marker.
 		return header + separator + bodyEscaped
 	}
-	return header + separator + bodyEscaped[:budget] + truncationMarker
+	return header + separator + safeTruncate(bodyEscaped, budget) + truncationMarker
+}
+
+// safeTruncate slices s to at most maxBytes bytes without producing an
+// invalid UTF-8 sequence or splitting a Telegram HTML entity (`&amp;`,
+// `&lt;`, `&gt;`, `&#34;`, `&#39;`). Telegram's HTML parser rejects the
+// entire message with `Bad Request: can't parse entities` if the cut
+// lands inside an entity, so we walk back to the last safe boundary.
+//
+// Algorithm: byte-slice to maxBytes, then back up over any incomplete
+// UTF-8 rune at the tail (utf8.DecodeLastRuneInString → RuneError when
+// truncated), and back up further if the tail is inside an HTML entity
+// (a `&` followed by characters but no closing `;` within the tail).
+func safeTruncate(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	// Back up past any incomplete UTF-8 multibyte rune so we never emit
+	// invalid UTF-8.
+	for cut > 0 {
+		r, size := utf8.DecodeLastRuneInString(s[:cut])
+		if r == utf8.RuneError && size == 1 {
+			cut--
+			continue
+		}
+		break
+	}
+	// Back up past any open `&...` entity that lacks its closing `;`
+	// within the truncated portion. We scan backward from `cut` for a
+	// `&`; if we find one before a `;` (or before a non-entity char like
+	// whitespace), drop everything from that `&` onward.
+	for i := cut - 1; i >= 0 && cut-i <= 8; i-- {
+		c := s[i]
+		if c == ';' {
+			break // entity already closed → safe
+		}
+		if c == '&' {
+			cut = i // truncate before the partial entity
+			break
+		}
+	}
+	return s[:cut]
 }
 
 // BuildSummaryKeyboard returns the inline keyboard shown beneath a

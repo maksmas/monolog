@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/store"
 	"github.com/mmaksmas/monolog/internal/telegram"
 )
 
@@ -23,14 +22,11 @@ const telegramTokenEnvVar = "MONOLOG_TELEGRAM_TOKEN"
 // this seam with a fake constructor so `monolog telegram serve` can be
 // exercised without touching the Telegram API. Mirrors the
 // emailClientFactory pattern in cmd/email.go.
-var telegramClientFactory = realTelegramClientFactory
-
-// realTelegramClientFactory is the production implementation of
-// telegramClientFactory: it delegates to telegram.NewClient which performs
-// the empty-token guard and constructs the tgbotapi-backed *realBot.
-func realTelegramClientFactory(token string) (telegram.Bot, error) {
-	return telegram.NewClient(token)
-}
+//
+// The default value points directly at telegram.NewClient — that function
+// already performs the empty-token guard and constructs the tgbotapi-backed
+// *realBot, so the wrapper indirection adds no value.
+var telegramClientFactory = telegram.NewClient
 
 // telegramServeFunc is the swappable handle for telegram.Serve. Tests stub
 // this so the cobra wiring can be exercised without spawning the long-poll
@@ -126,13 +122,10 @@ func newTelegramStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show Telegram bot integration status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// openStore loads config so the printed values reflect what
-			// `serve` would observe at startup. We do not actually need the
-			// returned store handle here, but going through openStore keeps
-			// the load-once-at-startup pattern consistent with email status.
-			if _, _, err := openStoreForStatus(); err != nil {
-				return err
-			}
+			// Mirrors `monolog email status`: read the in-memory config
+			// directly without going through openStore. Status is a
+			// read-only "print what you would observe" command — we don't
+			// need the git checks or store handle that openStore performs.
 			tc := config.Telegram()
 			out := cmd.OutOrStdout()
 
@@ -141,32 +134,14 @@ func newTelegramStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "pull_interval: %s\n", tc.PullInterval)
 			fmt.Fprintf(out, "browse_limit: %d\n", tc.BrowseLimit)
 
-			tokenSet := os.Getenv(telegramTokenEnvVar) != ""
-			fmt.Fprintf(out, "token_env: %s (%s)\n", telegramTokenEnvVar, tokenSetLabel(tokenSet))
+			tokenLabel := "unset"
+			if os.Getenv(telegramTokenEnvVar) != "" {
+				tokenLabel = "set"
+			}
+			fmt.Fprintf(out, "token_env: %s (%s)\n", telegramTokenEnvVar, tokenLabel)
 			return nil
 		},
 	}
-}
-
-// openStoreForStatus is a thin wrapper around openStore that discards the
-// store handle. We need the side effect (config.Load via openStore) but the
-// status command has no use for the *store.Store value.
-//
-// Kept as a separate helper to avoid sprinkling `_, _, err := openStore()`
-// noise across status; also gives tests a place to stub the load failure
-// path independently if that ever becomes useful.
-func openStoreForStatus() (*store.Store, string, error) {
-	return openStore()
-}
-
-// tokenSetLabel returns the small parenthetical hint printed alongside the
-// env-var name in `telegram status`. Extracted so the test asserts on the
-// exact wording.
-func tokenSetLabel(set bool) string {
-	if set {
-		return "set"
-	}
-	return "unset"
 }
 
 // toTelegramPackageConfig translates the user-facing config.TelegramConfig

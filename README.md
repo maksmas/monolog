@@ -112,6 +112,15 @@ Gmail integration subcommands — see [Email integration](#email-integration).
 | `monolog email sync` | Fetch all messages carrying the configured label, import new ones as tasks, and commit them in a single batch. Prints `created N task(s)`. |
 | `monolog email status` | Show auth state (token expiry or "not authorized"), `enabled` flag, label, sync interval, max-per-sync cap, and the resolved client-secrets / token paths. |
 
+### `monolog telegram`
+
+Telegram bot integration subcommands — see [Telegram integration](#telegram-integration).
+
+| Subcommand | Description |
+|------------|-------------|
+| `monolog telegram serve` | Run the long-poll loop that lets allow-listed Telegram users capture, browse, and complete tasks from their phone. Intended to run as a systemd service on an always-on host. |
+| `monolog telegram status` | Print the configured `enabled` flag, allow-list, pull interval, browse cap, and whether `MONOLOG_TELEGRAM_TOKEN` is set in the env. The token VALUE is never printed. |
+
 ### `monolog --version`
 
 Print the monolog version.
@@ -296,6 +305,83 @@ The TUI settings modal (`,`) does NOT yet expose email config — edit `config.j
 ### Token storage
 
 Tokens auto-refresh transparently. The refreshed `access_token` is written back to `$XDG_CONFIG_HOME/monolog/gmail_token.json` (mode `0600`) so subsequent processes (CLI invocations, TUI launches) pick up the new value without re-authorizing. If the refresh token itself is revoked, `monolog email status` reports the error and you can re-run `monolog email auth`.
+
+## Telegram integration
+
+Monolog ships a long-polling Telegram bot that lets you capture, browse, and complete tasks from your phone. The bot is a normal monolog client — it owns a clone of the tasks git repo and uses the same `store` + `git` paths as the CLI. The feature is opt-in: until you populate the `"telegram"` block in `config.json` and run `monolog telegram serve`, no token, listener, or extra git activity exists.
+
+### One-time BotFather setup
+
+1. DM [@BotFather](https://t.me/BotFather) on Telegram and send `/newbot`. Pick a name and unique username; BotFather replies with an HTTP API token.
+2. DM [@userinfobot](https://t.me/userinfobot) and note your numeric Telegram user ID — the allow-list is keyed on IDs, not usernames.
+3. Edit `<MONOLOG_DIR>/.monolog/config.json` and add the `"telegram"` block:
+
+   ```json
+   {
+     "telegram": {
+       "enabled": true,
+       "allowed_user_ids": [12345678],
+       "pull_interval_seconds": 30,
+       "browse_limit": 20
+     }
+   }
+   ```
+
+   Defaults if omitted: `enabled=false`, `allowed_user_ids=[]` (rejects everyone — explicit allow-list is the only auth), `pull_interval_seconds=30`, `browse_limit=20`.
+
+4. Run `monolog telegram serve --token <token>` for an ad-hoc local run, or follow the systemd deployment below for an always-on bot.
+
+### Interaction model
+
+Send any free text to **capture** a task scheduled for today. Hashtags anywhere on the first line become tags (`buy milk #shopping #urgent`). A leading `tagname: ...` auto-applies an existing tag (same rule as the CLI). Multi-line messages put the first line as the title and the rest as the body — hashtags inside the body survive untouched.
+
+Each captured task replies with a summary card carrying three inline buttons:
+
+- **Done** — complete the task. If it carries a recurrence rule the next occurrence spawns automatically with a `↻ next: <date>` line on the strike-through reply.
+- **Active** — toggle the reserved `active` tag.
+- **Details** — expand to the full body + metadata. The expanded view swaps `Details` for **Collapse** so you can fold it back without cluttering the chat.
+
+Slash commands cover the read-only side:
+
+| Command | Action |
+|---------|--------|
+| `/today` | Today's bucket |
+| `/week` | The week bucket (strictly after tomorrow through +7 days) |
+| `/active` | All tasks tagged `active` |
+| `/all` | Every open task, capped at `browse_limit` with a `+N more — open laptop` footer when over the cap |
+| `/help`, `/start` | Static cheatsheet covering capture, browse, buttons, and reply-to-note |
+
+**Notes via reply**: reply to any task summary message with text and the bot appends a timestamped note to that task. The reply path uses the same `store.Resolve` lookup as the CLI (ULID prefix or title-initials), so ambiguous prefixes surface the usual conflict error.
+
+### Access control
+
+The `allowed_user_ids` array is the only authentication layer. Updates from any user ID not in the list are silently dropped — the bot does not reply, does not log, and does not reveal its existence to drive-by queries. Callback queries from non-allowed users get a silent `AnswerCallback` so Telegram stops the loading spinner on their button, but no message or edit is sent.
+
+Rotating: edit the array in `config.json`, commit, and either restart the bot or wait for the next pull tick to pick up the change.
+
+### Read-only mode on sync conflict
+
+Every write path (capture, Done, Active, note-reply) ends with `git sync` (commit → pull --rebase → push). When the rebase fails the bot flips into read-only mode: subsequent writes reply with `⚠️ sync conflict, change not saved — resolve on laptop` and browse output prepends a `⚠️ read-only — sync conflict pending` banner. The state heals automatically on the next clean pull (every `pull_interval_seconds`), or you can restart the bot after resolving the conflict on the laptop.
+
+### Token precedence
+
+- `--token <value>` flag wins when non-empty (intended for ad-hoc local runs).
+- `MONOLOG_TELEGRAM_TOKEN` environment variable is the fallback.
+
+For systemd / long-running deployments prefer the env var: a flag value is visible to any user with `ps aux` on the host. The bot empty-token guards at startup so a misconfigured `EnvironmentFile=` fails loudly instead of silently spinning on 401s.
+
+### Deployment
+
+See [`docs/deploy/README.md`](docs/deploy/README.md) for the full one-time EC2 setup checklist: bot user creation, SSH deploy key, systemd unit, env file with `MONOLOG_TELEGRAM_TOKEN` / `GIT_SSH_COMMAND` / `MONOLOG_DIR`, and the smoke-test sequence.
+
+Build and ship from the laptop with:
+
+```sh
+make build-bot-linux-arm64                        # cross-compile to dist/monolog-linux-arm64
+make deploy-bot EC2_HOST=ec2-user@<elastic-ip>    # scp + restart systemd unit
+```
+
+The bot loses long-poll position briefly during restart; Telegram queues updates by `update_id` so nothing is dropped.
 
 ## How it works
 

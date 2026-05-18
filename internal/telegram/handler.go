@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,11 +31,27 @@ const readOnlyMessage = "⚠️ sync conflict, change not saved — resolve on l
 // outside the package, so the constructor is exported but the type's fields
 // remain unexported.
 //
-// Concurrency model: the update loop in Serve dispatches Handle calls
-// serially, but the design still serializes write paths through `mu` so
-// later parallelisations (or a future websocket path) can't race on the
-// store + git workflow. Read paths (browse, view, collapse) do not take the
-// mutex — they only read the store and the read-only flag.
+// Concurrency model: `mu` serializes git subprocess invocations and
+// in-memory task mutations across goroutines — both the dispatch
+// goroutine (this Handler's Handle calls) and the background pull-
+// ticker. Telegram bot HTTP I/O happens OUTSIDE the lock so a slow or
+// hung Telegram round-trip cannot block the pull-ticker or other write
+// handlers. The mutex covers:
+//   - The pull-ticker's git.PullRebase (held in pullOnce).
+//   - The write handlers' read-modify-write + git AutoCommit + git Sync
+//     (only — bot.SendMessage / EditMessage / AnswerCallback are issued
+//     after the lock is released).
+//   - The browse / read paths' store.List (so they don't observe a
+//     partially-rewritten tasks directory mid-rebase).
+//
+// The motivation is that git itself serializes on .git/index.lock at the
+// OS level: two processes hitting the index simultaneously fail with
+// "Unable to create '.git/index.lock'". A single sync.Mutex around every
+// store + git call sidesteps that entire class of bug. Holding the lock
+// during a pull also makes the read-modify-write done by callback
+// handlers atomic — re-reading the task under the lock observes any
+// laptop-side edits the pull just replayed. Keeping bot HTTP I/O outside
+// the lock prevents Telegram-side latency from starving the pull-ticker.
 type Handler struct {
 	bot        Bot
 	store      *store.Store
@@ -43,9 +59,10 @@ type Handler struct {
 	cfg        TelegramConfig
 	dateFormat string
 	now        func() time.Time
+	writer     io.Writer // non-fatal warnings (e.g. spawn warnings from CompleteAndSpawn)
 
-	mu       sync.Mutex   // serializes write paths
-	readOnly atomic.Bool  // set when a git.Sync conflict needs manual resolution
+	mu       sync.Mutex  // serializes write paths
+	readOnly atomic.Bool // set when a git.Sync conflict needs manual resolution
 }
 
 // TelegramConfig is the value-type view of internal/config.TelegramConfig
@@ -77,7 +94,19 @@ func NewHandler(bot Bot, s *store.Store, repoPath string, cfg TelegramConfig, da
 		cfg:        cfg,
 		dateFormat: dateFormat,
 		now:        now,
+		writer:     io.Discard,
 	}
+}
+
+// SetWriter installs the destination for non-fatal warnings (spawn warnings
+// from recurrence.CompleteAndSpawn, etc.). Serve calls this from
+// ServeOptions.Writer so warnings reach the systemd journal instead of being
+// silently discarded. nil falls back to io.Discard.
+func (h *Handler) SetWriter(w io.Writer) {
+	if w == nil {
+		w = io.Discard
+	}
+	h.writer = w
 }
 
 // IsReadOnly reports whether the bot is currently rejecting writes due to a
@@ -126,6 +155,12 @@ func (h *Handler) isAllowed(userID int64) bool {
 func (h *Handler) Handle(ctx context.Context, u Update) error {
 	if u.Callback != nil {
 		if !h.isAllowed(u.Callback.UserID) {
+			// Always answer the callback (silently) so the loading spinner
+			// stops on the user's button — Telegram requires it within ~15s
+			// or the button spins forever. We use an empty toast so the
+			// rejected user gets no visible signal about the bot's existence;
+			// from their phone it just looks like the button "did nothing".
+			_ = h.bot.AnswerCallback(ctx, u.Callback.ID, "")
 			return nil
 		}
 		return h.handleCallback(ctx, u.Callback)
@@ -182,10 +217,12 @@ func bucketLabel(bucket string) string {
 func (h *Handler) handleSlash(ctx context.Context, m *Message) error {
 	text := strings.TrimSpace(m.Text)
 	// Strip the leading '/' that the caller already filtered on, then take
-	// the first whitespace-delimited token as the command word.
+	// the first whitespace-delimited token as the command word. We use
+	// strings.Fields so any Unicode whitespace (incl. \n / \r) splits the
+	// token — `/today\nextra` must route the same as `/today extra`.
 	cmd := strings.TrimPrefix(text, "/")
-	if i := strings.IndexAny(cmd, " \t"); i >= 0 {
-		cmd = cmd[:i]
+	if fields := strings.Fields(cmd); len(fields) > 0 {
+		cmd = fields[0]
 	}
 	cmd = strings.ToLower(cmd)
 
@@ -206,6 +243,18 @@ func (h *Handler) handleSlash(ctx context.Context, m *Message) error {
 	}
 }
 
+// listLocked is a thin helper that takes h.mu around store.List. The lock
+// keeps the read coherent with the background pull-ticker — without it a
+// reader could land on a partial JSON file mid-rebase and bubble a
+// `json.Unmarshal` error up to the user as "list failed". We release the
+// lock before sending so the slow bot.SendMessage calls don't block the
+// pull-ticker.
+func (h *Handler) listLocked(opts store.ListOptions) ([]model.Task, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.store.List(opts)
+}
+
 // handleBrowse renders all open tasks whose stored schedule falls into the
 // given bucket. The bucket filter is applied post-List because store.List
 // only supports Status + Tag filtering; schedule semantics (today / week)
@@ -216,7 +265,7 @@ func (h *Handler) handleSlash(ctx context.Context, m *Message) error {
 // task matches, a single FormatEmptyBucket message is sent so the user
 // always sees a reply. When readOnly is set, a banner message is prepended.
 func (h *Handler) handleBrowse(ctx context.Context, m *Message, bucket string) error {
-	all, err := h.store.List(store.ListOptions{Status: "open"})
+	all, err := h.listLocked(store.ListOptions{Status: "open"})
 	if err != nil {
 		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
 		return errors.Join(fmt.Errorf("store.List: %w", err), sendErr)
@@ -236,7 +285,7 @@ func (h *Handler) handleBrowse(ctx context.Context, m *Message, bucket string) e
 // directly (store.ListOptions.Tag) since tag filtering is already a
 // first-class store concept.
 func (h *Handler) handleActive(ctx context.Context, m *Message) error {
-	tasks, err := h.store.List(store.ListOptions{Status: "open", Tag: model.ActiveTag})
+	tasks, err := h.listLocked(store.ListOptions{Status: "open", Tag: model.ActiveTag})
 	if err != nil {
 		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
 		return errors.Join(fmt.Errorf("store.List: %w", err), sendErr)
@@ -256,16 +305,16 @@ func (h *Handler) handleActive(ctx context.Context, m *Message) error {
 // helper to behave sanely if a test or future caller passes a bogus
 // value directly into the Handler.
 func (h *Handler) handleAll(ctx context.Context, m *Message) error {
-	tasks, err := h.store.List(store.ListOptions{Status: "open"})
+	tasks, err := h.listLocked(store.ListOptions{Status: "open"})
 	if err != nil {
 		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
 		return errors.Join(fmt.Errorf("store.List: %w", err), sendErr)
 	}
 	overflow := 0
-	cap := h.cfg.BrowseLimit
-	if cap > 0 && len(tasks) > cap {
-		overflow = len(tasks) - cap
-		tasks = tasks[:cap]
+	limit := h.cfg.BrowseLimit
+	if limit > 0 && len(tasks) > limit {
+		overflow = len(tasks) - limit
+		tasks = tasks[:limit]
 	}
 	return h.sendBrowseResults(ctx, m, tasks, "All", overflow)
 }
@@ -293,7 +342,7 @@ func (h *Handler) sendBrowseResults(ctx context.Context, m *Message, tasks []mod
 		return nil
 	}
 	for _, t := range tasks {
-		row := FormatTaskRow(t, h.dateFormat)
+		row := FormatTaskRow(t)
 		kb := BuildSummaryKeyboard(t.ID)
 		if _, err := h.bot.SendMessage(ctx, m.ChatID, row, kb); err != nil {
 			return fmt.Errorf("send row: %w", err)
@@ -336,75 +385,102 @@ func (h *Handler) handleCapture(ctx context.Context, m *Message) error {
 		return err
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	now := h.now()
-	scheduleDate, err := schedule.Parse(schedule.Today, now, h.dateFormat)
-	if err != nil {
-		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: schedule parse failed", nil)
-		return errors.Join(err, sendErr)
+	// captureResult carries the data needed to issue the bot reply AFTER
+	// the lock is released. We compute everything under the lock — store
+	// writes, git, the rendered HTML — then ship it out unlocked so a
+	// slow Telegram round-trip does not block the pull-ticker.
+	type captureResult struct {
+		html    string
+		kb      InlineKeyboard
+		err     error // returned by handleCapture to the caller
+		sendErr error // joined into err after the bot send fires (rare path)
 	}
+	var res captureResult
 
-	id, err := model.NewID()
-	if err != nil {
-		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: id generation failed", nil)
-		return errors.Join(err, sendErr)
-	}
+	func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
 
-	existing, err := h.store.List(store.ListOptions{})
-	if err != nil {
-		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
-		return errors.Join(err, sendErr)
-	}
-
-	nowStr := now.UTC().Format(time.RFC3339)
-	task := model.Task{
-		ID:        id,
-		Title:     title,
-		Body:      body,
-		Source:    "telegram",
-		Status:    "open",
-		Position:  ordering.NextPosition(existing),
-		Schedule:  scheduleDate,
-		CreatedAt: nowStr,
-		UpdatedAt: nowStr,
-		Tags:      inlineTags,
-	}
-	// Apply the same auto-tag rule used by cmd/add.go so the `tagname: ...`
-	// prefix gets folded into Tags only when tagname is already known.
-	task.Tags = model.AutoTag(title, model.CollectTags(existing), task.Tags)
-
-	if err := h.store.Create(task); err != nil {
-		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: store create failed", nil)
-		return errors.Join(fmt.Errorf("store.Create: %w", err), sendErr)
-	}
-
-	taskRel := taskRelPath(task.ID)
-	commitMsg := fmt.Sprintf("add: %s", task.Title)
-	if syncErr := h.commitAndSync(commitMsg, taskRel); syncErr != nil {
-		// commitAndSync has already set readOnly. The task is on disk
-		// locally and will be rebased on the next clean pull; tell the
-		// user the write was deferred.
-		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, readOnlyMessage, nil)
-		if sendErr != nil {
-			return errors.Join(syncErr, sendErr)
+		now := h.now()
+		scheduleDate, err := schedule.Parse(schedule.Today, now, h.dateFormat)
+		if err != nil {
+			res.html = "internal error: schedule parse failed"
+			res.err = err
+			return
 		}
-		return syncErr
-	}
 
-	// Refresh the task in case store.Create normalized fields (e.g.
-	// NoteCount). For a fresh capture this is mostly a no-op, but we
-	// want the rendered summary to reflect whatever the store wrote.
-	stored, err := h.store.Get(task.ID)
-	if err == nil {
-		task = stored
-	}
+		id, err := model.NewID()
+		if err != nil {
+			res.html = "internal error: id generation failed"
+			res.err = err
+			return
+		}
 
-	row := FormatTaskRow(task, h.dateFormat)
-	kb := BuildSummaryKeyboard(task.ID)
-	if _, err := h.bot.SendMessage(ctx, m.ChatID, row, kb); err != nil {
-		return fmt.Errorf("send summary: %w", err)
+		existing, err := h.store.List(store.ListOptions{})
+		if err != nil {
+			res.html = "internal error: list failed"
+			res.err = err
+			return
+		}
+
+		nowStr := now.UTC().Format(time.RFC3339)
+		task := model.Task{
+			ID:        id,
+			Title:     title,
+			Body:      body,
+			Source:    "telegram",
+			Status:    "open",
+			Position:  ordering.NextPosition(existing),
+			Schedule:  scheduleDate,
+			CreatedAt: nowStr,
+			UpdatedAt: nowStr,
+			Tags:      inlineTags,
+		}
+		// Apply the same auto-tag rule used by cmd/add.go so the `tagname: ...`
+		// prefix gets folded into Tags only when tagname is already known.
+		task.Tags = model.AutoTag(title, model.CollectTags(existing), task.Tags)
+
+		if err := h.store.Create(task); err != nil {
+			res.html = "internal error: store create failed"
+			res.err = fmt.Errorf("store.Create: %w", err)
+			return
+		}
+
+		taskRel := taskRelPath(task.ID)
+		commitMsg := fmt.Sprintf("add: %s", task.Title)
+		if syncErr := h.commitAndSync(commitMsg, taskRel); syncErr != nil {
+			// commitAndSync has already set readOnly. The task is on
+			// disk locally and will be rebased on the next clean pull;
+			// tell the user the write was deferred.
+			res.html = readOnlyMessage
+			res.err = syncErr
+			return
+		}
+
+		// Refresh the task in case store.Create normalized fields (e.g.
+		// NoteCount). For a fresh capture this is mostly a no-op, but we
+		// want the rendered summary to reflect whatever the store wrote.
+		if stored, err := h.store.Get(task.ID); err == nil {
+			task = stored
+		}
+
+		res.html = FormatTaskRow(task)
+		res.kb = BuildSummaryKeyboard(task.ID)
+	}()
+
+	// Bot HTTP call happens OUTSIDE the lock so a slow Telegram round-
+	// trip never blocks the pull-ticker or other write paths.
+	_, sendErr := h.bot.SendMessage(ctx, m.ChatID, res.html, res.kb)
+	if res.err != nil {
+		// Internal/sync error already captured under the lock; combine
+		// with any send error so the caller logs the full chain.
+		if sendErr != nil {
+			return errors.Join(res.err, sendErr)
+		}
+		return res.err
+	}
+	if sendErr != nil {
+		return fmt.Errorf("send summary: %w", sendErr)
 	}
 	return nil
 }
@@ -433,7 +509,14 @@ func (h *Handler) handleCallback(ctx context.Context, cq *CallbackQuery) error {
 	// Resolve the task once up-front; every branch needs it. A missing
 	// ULID is converted to a friendly toast — the message itself is left
 	// alone since the user may want to read the strike-through state.
+	// Resolve under the lock so the directory scan does not observe a
+	// partially-rewritten tasks dir mid-pull-rebase. Write handlers will
+	// re-read the task under the lock anyway, so the value returned here
+	// is only authoritative for the unlocked read-only View / Collapse
+	// branches — which is exactly what we want (consistent snapshot).
+	h.mu.Lock()
 	task, err := h.store.Resolve(ulid)
+	h.mu.Unlock()
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return h.bot.AnswerCallback(ctx, cq.ID, "task not found")
@@ -474,58 +557,119 @@ func (h *Handler) handleCallback(ctx context.Context, cq *CallbackQuery) error {
 //
 // Already-done path: a second tap on a stale message gets a "already done"
 // toast and no further work. The store is unchanged.
+//
+// Concurrency: the task value resolved in handleCallback is read OUTSIDE the
+// lock — to make the read-modify-write atomic against a concurrent pull,
+// we re-read the task inside the lock before mutating. Otherwise a
+// background pull-rebase between Resolve and Update could land laptop-side
+// edits to title/tags/schedule that we'd silently clobber on write.
 func (h *Handler) handleCallbackDone(ctx context.Context, cq *CallbackQuery, task model.Task) error {
 	if h.readOnly.Load() {
 		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
 	}
-	if task.Status == "done" {
-		return h.bot.AnswerCallback(ctx, cq.ID, "already done")
-	}
+	// NOTE: there is intentionally NO pre-lock `task.Status == "done"`
+	// short-circuit here. The `task` value passed in by handleCallback
+	// was resolved before the lock and can be stale relative to a pull-
+	// ticker that just landed a laptop-side done. The in-lock re-read
+	// below is the only trustworthy view of `Status`.
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// Re-check readOnly under the lock so a concurrent failure flip
-	// doesn't race past the unlocked check above.
-	if h.readOnly.Load() {
-		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+	// doneOutcome captures what should happen AFTER the lock is released.
+	// `toast` is the AnswerCallback text (always sent). `editRow`
+	// non-empty means EditMessage runs with that body; empty means the
+	// message is left as-is (already-done / read-only paths). `err` is
+	// returned to the caller for logging.
+	type doneOutcome struct {
+		toast   string
+		editRow string
+		err     error
 	}
+	var out doneOutcome
 
-	// Capture spawn warnings to a side buffer so they can surface on
-	// stderr after the user-facing path completes; we deliberately don't
-	// surface them in Telegram (the user can't act on them from phone).
-	var warn bytes.Buffer
-	commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(h.store, &task, h.now(), &warn, h.dateFormat)
-	if err != nil {
-		_ = h.bot.AnswerCallback(ctx, cq.ID, "internal error")
-		return fmt.Errorf("CompleteAndSpawn: %w", err)
-	}
-	if warn.Len() > 0 {
-		fmt.Fprint(os.Stderr, warn.String())
-	}
+	func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
 
-	if syncErr := h.commitAndSync(commitMsg, commitFiles...); syncErr != nil {
-		_ = h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
-		return syncErr
-	}
-
-	// Derive the next-occurrence date string for the strike-through row
-	// from the spawn-side file path (when present). commitFiles is
-	// ordered: [oldTaskFile, optional newTaskFile]. A two-element slice
-	// indicates a spawn happened.
-	var nextDate string
-	if len(commitFiles) > 1 {
-		newID := strings.TrimSuffix(filepath.Base(commitFiles[1]), ".json")
-		if spawned, gErr := h.store.Get(newID); gErr == nil {
-			nextDate = schedule.FormatDisplay(spawned.Schedule, h.dateFormat)
+		// Re-check readOnly under the lock so a concurrent failure flip
+		// doesn't race past the unlocked check above.
+		if h.readOnly.Load() {
+			out.toast = "sync conflict — resolve on laptop"
+			return
 		}
-	}
 
-	row := FormatDoneRow(task, nextDate)
-	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, row, nil); err != nil {
-		return fmt.Errorf("edit done message: %w", err)
+		// Re-read the task under the lock so we observe any laptop-side
+		// edits that landed via the pull-ticker between Resolve and now.
+		fresh, err := h.store.Get(task.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				out.toast = "task not found"
+				return
+			}
+			out.toast = "internal error"
+			out.err = fmt.Errorf("store.Get %q: %w", task.ID, err)
+			return
+		}
+		task = fresh
+		if task.Status == "done" {
+			// A concurrent CLI/TUI done landed before we acquired the lock.
+			out.toast = "already done"
+			return
+		}
+
+		// Capture spawn warnings to a side buffer so they can surface on
+		// stderr after the user-facing path completes; we deliberately don't
+		// surface them in Telegram (the user can't act on them from phone).
+		var warn bytes.Buffer
+		commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(h.store, &task, h.now(), &warn, h.dateFormat)
+		if err != nil {
+			out.toast = "internal error"
+			out.err = fmt.Errorf("CompleteAndSpawn: %w", err)
+			return
+		}
+		if warn.Len() > 0 {
+			fmt.Fprint(h.writer, warn.String())
+		}
+
+		if syncErr := h.commitAndSync(commitMsg, commitFiles...); syncErr != nil {
+			out.toast = "sync conflict — resolve on laptop"
+			out.err = syncErr
+			return
+		}
+
+		// Derive the next-occurrence date string for the strike-through
+		// row from the spawn-side file path (when present). commitFiles
+		// is ordered: [oldTaskFile, optional newTaskFile]. A two-element
+		// slice indicates a spawn happened.
+		var nextDate string
+		if len(commitFiles) > 1 {
+			newID := strings.TrimSuffix(filepath.Base(commitFiles[1]), ".json")
+			if spawned, gErr := h.store.Get(newID); gErr == nil {
+				nextDate = schedule.FormatDisplay(spawned.Schedule, h.dateFormat)
+			}
+		}
+
+		out.editRow = FormatDoneRow(task, nextDate)
+	}()
+
+	// Bot HTTP calls happen OUTSIDE the lock so a slow Telegram round-
+	// trip never blocks the pull-ticker or other write paths.
+	var editErr error
+	if out.editRow != "" {
+		editErr = h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, out.editRow, nil)
 	}
-	return h.bot.AnswerCallback(ctx, cq.ID, "")
+	// Always answer the callback so Telegram stops the loading spinner —
+	// otherwise an EditMessage failure leaves the button spinning until
+	// Telegram's ~15s timeout. The answer is silent on the happy path and
+	// on EditMessage failure alike (the user already sees the strike-
+	// through state via the next browse, or none of these messages
+	// mattered).
+	answerErr := h.bot.AnswerCallback(ctx, cq.ID, out.toast)
+	if out.err != nil {
+		return out.err
+	}
+	if editErr != nil {
+		return fmt.Errorf("edit done message: %w", editErr)
+	}
+	return answerErr
 }
 
 // handleCallbackActive toggles the reserved active tag on the task,
@@ -536,49 +680,112 @@ func (h *Handler) handleCallbackDone(ctx context.Context, cq *CallbackQuery, tas
 //
 // readOnly path mirrors handleCallbackDone: no mutation, toast points
 // at the conflict, message stays as-is.
+//
+// Concurrency: as in handleCallbackDone, we re-read the task inside the
+// lock so a concurrent pull-rebase doesn't let us write back stale
+// in-memory state on top of laptop-side edits.
 func (h *Handler) handleCallbackActive(ctx context.Context, cq *CallbackQuery, task model.Task) error {
 	if h.readOnly.Load() {
 		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.readOnly.Load() {
-		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+	// activeOutcome mirrors doneOutcome: compute everything that needs
+	// the lock, then issue bot HTTP calls unlocked. editRow/editKB are
+	// non-zero only on the happy toggle path; empty editRow means leave
+	// the message alone (read-only, not-found, already-done, error).
+	type activeOutcome struct {
+		toast   string
+		editRow string
+		editKB  InlineKeyboard
+		err     error
 	}
+	var out activeOutcome
 
-	wasActive := task.IsActive()
-	task.SetActive(!wasActive)
-	task.UpdatedAt = h.now().UTC().Format(time.RFC3339)
+	func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
 
-	if err := h.store.Update(task); err != nil {
-		_ = h.bot.AnswerCallback(ctx, cq.ID, "internal error")
-		return fmt.Errorf("store.Update: %w", err)
-	}
+		if h.readOnly.Load() {
+			out.toast = "sync conflict — resolve on laptop"
+			return
+		}
 
-	verb := "active"
-	if wasActive {
-		verb = "inactive"
-	}
-	commitMsg := fmt.Sprintf("%s: %s", verb, task.Title)
-	if syncErr := h.commitAndSync(commitMsg, taskRelPath(task.ID)); syncErr != nil {
-		_ = h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
-		return syncErr
-	}
+		// Re-read the task under the lock so the toggle is applied to
+		// the latest on-disk state, not the stale value resolved before
+		// the lock.
+		fresh, err := h.store.Get(task.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				out.toast = "task not found"
+				return
+			}
+			out.toast = "internal error"
+			out.err = fmt.Errorf("store.Get %q: %w", task.ID, err)
+			return
+		}
+		task = fresh
+		if task.Status == "done" {
+			// A concurrent CLI/TUI done landed before we acquired the
+			// lock. Toggling active on a done task would re-open it
+			// implicitly via SetActive's tag write; bail out and tell
+			// the user instead.
+			out.toast = "already done"
+			return
+		}
 
-	// Re-read the task so the rendered summary reflects whatever the
-	// store normalized (NoteCount, tag ordering, etc.).
-	if refreshed, err := h.store.Get(task.ID); err == nil {
-		task = refreshed
-	}
+		wasActive := task.IsActive()
+		task.SetActive(!wasActive)
+		task.UpdatedAt = h.now().UTC().Format(time.RFC3339)
 
-	row := FormatTaskRow(task, h.dateFormat)
-	kb := BuildSummaryKeyboard(task.ID)
-	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, row, kb); err != nil {
-		return fmt.Errorf("edit active message: %w", err)
+		if err := h.store.Update(task); err != nil {
+			out.toast = "internal error"
+			out.err = fmt.Errorf("store.Update: %w", err)
+			return
+		}
+
+		verb := "active"
+		if wasActive {
+			verb = "inactive"
+		}
+		commitMsg := fmt.Sprintf("%s: %s", verb, task.Title)
+		if syncErr := h.commitAndSync(commitMsg, taskRelPath(task.ID)); syncErr != nil {
+			out.toast = "sync conflict — resolve on laptop"
+			out.err = syncErr
+			return
+		}
+
+		// Re-read the task so the rendered summary reflects whatever
+		// the store normalized (NoteCount, tag ordering, etc.).
+		if refreshed, err := h.store.Get(task.ID); err == nil {
+			task = refreshed
+		}
+
+		// Toast confirms the new state for users on slow networks — the
+		// inline row also updates (via the ⭐ marker), but the toast
+		// gives immediate feedback before the edit round-trip completes.
+		if wasActive {
+			out.toast = "active off"
+		} else {
+			out.toast = "active on"
+		}
+		out.editRow = FormatTaskRow(task)
+		out.editKB = BuildSummaryKeyboard(task.ID)
+	}()
+
+	// Bot HTTP calls happen OUTSIDE the lock so a slow Telegram round-
+	// trip never blocks the pull-ticker or other write paths.
+	var editErr error
+	if out.editRow != "" {
+		editErr = h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, out.editRow, out.editKB)
 	}
-	return h.bot.AnswerCallback(ctx, cq.ID, "")
+	answerErr := h.bot.AnswerCallback(ctx, cq.ID, out.toast)
+	if out.err != nil {
+		return out.err
+	}
+	if editErr != nil {
+		return fmt.Errorf("edit active message: %w", editErr)
+	}
+	return answerErr
 }
 
 // handleCallbackView expands a summary message into the full detail
@@ -588,10 +795,13 @@ func (h *Handler) handleCallbackActive(ctx context.Context, cq *CallbackQuery, t
 func (h *Handler) handleCallbackView(ctx context.Context, cq *CallbackQuery, task model.Task) error {
 	body := FormatDetailView(task, h.dateFormat)
 	kb := BuildDetailKeyboard(task.ID)
-	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, body, kb); err != nil {
-		return fmt.Errorf("edit detail view: %w", err)
+	editErr := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, body, kb)
+	// Always answer the callback so the spinner stops even on edit failure.
+	answerErr := h.bot.AnswerCallback(ctx, cq.ID, "")
+	if editErr != nil {
+		return fmt.Errorf("edit detail view: %w", editErr)
 	}
-	return h.bot.AnswerCallback(ctx, cq.ID, "")
+	return answerErr
 }
 
 // handleCallbackCollapse inverts handleCallbackView — the detail message
@@ -599,12 +809,14 @@ func (h *Handler) handleCallbackView(ctx context.Context, cq *CallbackQuery, tas
 // We re-read the task in case anything mutated between view and collapse
 // (e.g. an external `monolog edit` ran on the laptop during the gap).
 func (h *Handler) handleCallbackCollapse(ctx context.Context, cq *CallbackQuery, task model.Task) error {
-	row := FormatTaskRow(task, h.dateFormat)
+	row := FormatTaskRow(task)
 	kb := BuildSummaryKeyboard(task.ID)
-	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, row, kb); err != nil {
-		return fmt.Errorf("edit collapse message: %w", err)
+	editErr := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, row, kb)
+	answerErr := h.bot.AnswerCallback(ctx, cq.ID, "")
+	if editErr != nil {
+		return fmt.Errorf("edit collapse message: %w", editErr)
 	}
-	return h.bot.AnswerCallback(ctx, cq.ID, "")
+	return answerErr
 }
 
 // helpText is the static HTML cheatsheet returned for /help and /start.
@@ -684,45 +896,82 @@ func (h *Handler) handleNoteReply(ctx context.Context, m *Message) error {
 		return err
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.readOnly.Load() {
-		_, err := h.bot.SendMessage(ctx, m.ChatID, readOnlyMessage, nil)
-		return err
+	// noteOutcome carries the data needed for the post-lock bot reply.
+	// `html` is the single message body to send; `err` is returned to
+	// the caller. A `resolveErr` is propagated as a non-fatal — the
+	// user is told what went wrong but Handle does NOT bubble it as
+	// an error (matches the pre-refactor behavior).
+	type noteOutcome struct {
+		html       string
+		err        error
+		resolveErr error // for errors.Join when the bot send fails
 	}
+	var out noteOutcome
 
-	task, err := h.store.Resolve(prefix)
-	if err != nil {
-		// Bubble the resolve error verbatim — its wording already covers
-		// the not-found and ambiguous cases. HTML-escape because the
-		// ambiguous case includes user-controlled task titles.
-		reply := "could not resolve task: " + htmlEscape(err.Error())
-		if _, sendErr := h.bot.SendMessage(ctx, m.ChatID, reply, nil); sendErr != nil {
-			return errors.Join(err, sendErr)
+	func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+
+		if h.readOnly.Load() {
+			out.html = readOnlyMessage
+			return
+		}
+
+		// Resolve under the lock — that way the resolution (which
+		// scans the directory) and the subsequent AppendNote/Update
+		// see the same on-disk state. A pre-lock Resolve followed by
+		// a post-lock Update would risk clobbering a body that the
+		// pull-ticker rewrote in between.
+		task, err := h.store.Resolve(prefix)
+		if err != nil {
+			// Bubble the resolve error verbatim — its wording already
+			// covers the not-found and ambiguous cases. HTML-escape
+			// because the ambiguous case includes user-controlled
+			// task titles.
+			out.html = "could not resolve task: " + htmlEscape(err.Error())
+			out.resolveErr = err
+			return
+		}
+
+		now := h.now()
+		task.Body = model.AppendNote(task.Body, m.Text, now, h.dateFormat)
+		task.UpdatedAt = now.UTC().Format(time.RFC3339)
+
+		if err := h.store.Update(task); err != nil {
+			out.html = "internal error: store update failed"
+			out.err = fmt.Errorf("store.Update: %w", err)
+			return
+		}
+
+		if syncErr := h.commitAndSync(fmt.Sprintf("note: %s", task.Title), taskRelPath(task.ID)); syncErr != nil {
+			out.html = readOnlyMessage
+			out.err = syncErr
+			return
+		}
+
+		out.html = noteReplySuccess
+	}()
+
+	// Bot HTTP call happens OUTSIDE the lock so a slow Telegram round-
+	// trip never blocks the pull-ticker or other write paths.
+	_, sendErr := h.bot.SendMessage(ctx, m.ChatID, out.html, nil)
+	if out.err != nil {
+		if sendErr != nil {
+			return errors.Join(out.err, sendErr)
+		}
+		return out.err
+	}
+	if out.resolveErr != nil {
+		// Pre-refactor behavior: resolve failures are surfaced to the
+		// user but not bubbled as an error from Handle. A send-side
+		// failure on top of resolve still gets joined for logging.
+		if sendErr != nil {
+			return errors.Join(out.resolveErr, sendErr)
 		}
 		return nil
 	}
-
-	now := h.now()
-	task.Body = model.AppendNote(task.Body, m.Text, now, h.dateFormat)
-	task.UpdatedAt = now.UTC().Format(time.RFC3339)
-
-	if err := h.store.Update(task); err != nil {
-		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: store update failed", nil)
-		return errors.Join(fmt.Errorf("store.Update: %w", err), sendErr)
-	}
-
-	if syncErr := h.commitAndSync(fmt.Sprintf("note: %s", task.Title), taskRelPath(task.ID)); syncErr != nil {
-		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, readOnlyMessage, nil)
-		if sendErr != nil {
-			return errors.Join(syncErr, sendErr)
-		}
-		return syncErr
-	}
-
-	if _, err := h.bot.SendMessage(ctx, m.ChatID, noteReplySuccess, nil); err != nil {
-		return fmt.Errorf("send note ack: %w", err)
+	if sendErr != nil {
+		return fmt.Errorf("send note ack: %w", sendErr)
 	}
 	return nil
 }
@@ -730,19 +979,13 @@ func (h *Handler) handleNoteReply(ctx context.Context, m *Message) error {
 // firstToken returns the first whitespace-bounded substring of text, or
 // the empty string when text is all-whitespace. Used by handleNoteReply
 // to peel the ULID prefix off the start of a replied-to summary row.
+// strings.Fields handles every Unicode whitespace category (space, tab,
+// newline, CR, NBSP, …) which matches what Telegram clients may insert.
 func firstToken(text string) string {
-	for i := 0; i < len(text); i++ {
-		if text[i] != ' ' && text[i] != '\t' && text[i] != '\n' && text[i] != '\r' {
-			start := i
-			for j := start; j < len(text); j++ {
-				c := text[j]
-				if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-					return text[start:j]
-				}
-			}
-			return text[start:]
-		}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
 	}
-	return ""
+	return fields[0]
 }
 

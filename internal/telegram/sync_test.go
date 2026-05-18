@@ -34,6 +34,35 @@ func withSyncFunc(t *testing.T, fn func(string) (git.SyncResult, error)) {
 	t.Cleanup(func() { syncFunc = prev })
 }
 
+// withPullRecovery swaps the four recovery seams pullOnce uses on a
+// conflicted PullRebase. Each fn is optional — nil means "use the
+// production value" — so individual tests can drive just the path they
+// care about (e.g. "ResolveConflicts succeeds, RebaseContinue fails").
+func withPullRecovery(t *testing.T,
+	isRebasing func(string) (bool, error),
+	resolve func(string) (int, error),
+	cont func(string) error,
+	abort func(string) error,
+) {
+	t.Helper()
+	prevIs, prevRes, prevCont, prevAbort := isRebasingFunc, resolveConflictsFn, rebaseContinueFunc, rebaseAbortFunc
+	if isRebasing != nil {
+		isRebasingFunc = isRebasing
+	}
+	if resolve != nil {
+		resolveConflictsFn = resolve
+	}
+	if cont != nil {
+		rebaseContinueFunc = cont
+	}
+	if abort != nil {
+		rebaseAbortFunc = abort
+	}
+	t.Cleanup(func() {
+		isRebasingFunc, resolveConflictsFn, rebaseContinueFunc, rebaseAbortFunc = prevIs, prevRes, prevCont, prevAbort
+	})
+}
+
 // blockingBot is a Bot fake purpose-built for Serve tests. The default
 // fakeBot returns (nil, nil) immediately on an empty update queue, which
 // would cause Serve's update loop to spin tightly until ctx cancellation —
@@ -54,6 +83,14 @@ type blockingBot struct {
 	// it to verify the backoff path. After one read the channel is left
 	// alone and subsequent polls drain `updates` normally.
 	pollErrCh chan error
+
+	// sendDelay / editDelay / answerDelay sleep for the given duration
+	// inside the corresponding method BEFORE recording the call. Used by
+	// tests that verify the handler does not hold h.mu across bot HTTP
+	// I/O — the delay simulates a slow Telegram round-trip.
+	sendDelay   time.Duration
+	editDelay   time.Duration
+	answerDelay time.Duration
 }
 
 func newBlockingBot() *blockingBot {
@@ -107,6 +144,15 @@ func (b *blockingBot) GetUpdates(ctx context.Context, offset int64, timeout time
 }
 
 func (b *blockingBot) SendMessage(ctx context.Context, chatID int64, html string, kb InlineKeyboard) (int, error) {
+	// Snapshot the delay under the lock, then sleep WITHOUT holding it
+	// so concurrent calls aren't unnecessarily serialized in tests that
+	// drive parallel traffic.
+	b.mu.Lock()
+	delay := b.sendDelay
+	b.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.nextMsgID++
@@ -116,12 +162,24 @@ func (b *blockingBot) SendMessage(ctx context.Context, chatID int64, html string
 
 func (b *blockingBot) EditMessage(ctx context.Context, chatID int64, msgID int, html string, kb InlineKeyboard) error {
 	b.mu.Lock()
+	delay := b.editDelay
+	b.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.edits = append(b.edits, editedMessage{ChatID: chatID, MsgID: msgID, HTML: html, Keyboard: kb})
 	return nil
 }
 
 func (b *blockingBot) AnswerCallback(ctx context.Context, callbackID, toast string) error {
+	b.mu.Lock()
+	delay := b.answerDelay
+	b.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.answers = append(b.answers, answeredCallback{CallbackID: callbackID, Toast: toast})
@@ -685,6 +743,12 @@ func TestPullOnceClearsReadOnlyOnSuccess(t *testing.T) {
 
 func TestPullOncePreservesReadOnlyOnFailure(t *testing.T) {
 	withPullFunc(t, func(string) error { return errors.New("nope") })
+	// IsRebasing returns false → no recovery attempted, just propagate
+	// the error. readOnly remains as the caller set it.
+	withPullRecovery(t,
+		func(string) (bool, error) { return false, nil },
+		nil, nil, nil,
+	)
 	h, _, _, _ := newTestHandler(t, nil)
 	h.SetReadOnly(true)
 	if err := h.pullOnce(); err == nil {
@@ -692,6 +756,110 @@ func TestPullOncePreservesReadOnlyOnFailure(t *testing.T) {
 	}
 	if !h.IsReadOnly() {
 		t.Fatal("readOnly should remain set when pull fails")
+	}
+}
+
+func TestPullOnceRecoversFromConflict(t *testing.T) {
+	// Simulate the production conflict path: PullRebase errors,
+	// IsRebasing reports mid-rebase, ResolveConflicts wins,
+	// RebaseContinue succeeds. pullOnce should return nil and clear
+	// readOnly so writes resume.
+	withPullFunc(t, func(string) error { return errors.New("rebase conflict") })
+	resolveCalled, continueCalled, abortCalled := false, false, false
+	withPullRecovery(t,
+		func(string) (bool, error) { return true, nil },
+		func(string) (int, error) { resolveCalled = true; return 1, nil },
+		func(string) error { continueCalled = true; return nil },
+		func(string) error { abortCalled = true; return nil },
+	)
+	h, _, _, _ := newTestHandler(t, nil)
+	h.SetReadOnly(true)
+	if err := h.pullOnce(); err != nil {
+		t.Fatalf("pullOnce should succeed via recovery: %v", err)
+	}
+	if !resolveCalled || !continueCalled {
+		t.Fatalf("expected Resolve+Continue to be called: resolve=%v continue=%v",
+			resolveCalled, continueCalled)
+	}
+	if abortCalled {
+		t.Fatal("RebaseAbort should not be called on the happy recovery path")
+	}
+	if h.IsReadOnly() {
+		t.Fatal("successful recovery should clear readOnly")
+	}
+}
+
+func TestPullOnceAbortsAndSetsReadOnlyOnResolveFailure(t *testing.T) {
+	// ResolveConflicts itself errors (e.g. non-task-file conflict).
+	// pullOnce must call RebaseAbort, set readOnly, and return the
+	// wrapped error.
+	withPullFunc(t, func(string) error { return errors.New("rebase conflict") })
+	abortCalled := false
+	withPullRecovery(t,
+		func(string) (bool, error) { return true, nil },
+		func(string) (int, error) { return 0, errors.New("non-task conflict") },
+		nil, // RebaseContinue should not be called
+		func(string) error { abortCalled = true; return nil },
+	)
+	h, _, _, _ := newTestHandler(t, nil)
+	err := h.pullOnce()
+	if err == nil {
+		t.Fatal("expected error when Resolve fails")
+	}
+	if !strings.Contains(err.Error(), "non-task conflict") {
+		t.Fatalf("expected resolve error wrapped, got %v", err)
+	}
+	if !abortCalled {
+		t.Fatal("expected RebaseAbort on Resolve failure")
+	}
+	if !h.IsReadOnly() {
+		t.Fatal("expected readOnly to be set after unrecoverable conflict")
+	}
+}
+
+func TestCommitAndSyncSetsReadOnlyOnAutoCommitFailure(t *testing.T) {
+	// AutoCommit failure (e.g. stuck rebase from a prior conflicted
+	// pull) used to leave readOnly untouched — users saw a per-write
+	// "sync conflict" toast but no persistent banner, so multiple
+	// failures in a row looked like flaky behavior. Now AutoCommit
+	// failure must flip readOnly so the conflict state is reflected
+	// consistently with syncFunc failures.
+	withSyncFunc(t, noopSync) // sync never reached in this test
+	h, _, _, _ := newTestHandler(t, nil)
+
+	// Trigger AutoCommit failure by pointing it at a nonexistent file:
+	// `git add` errors when the path doesn't exist.
+	err := h.commitAndSync("test message", "missing-file-that-does-not-exist.txt")
+	if err == nil {
+		t.Fatal("expected commitAndSync to fail on missing file")
+	}
+	if !strings.Contains(err.Error(), "auto-commit") {
+		t.Fatalf("expected auto-commit error wrap, got %v", err)
+	}
+	if !h.IsReadOnly() {
+		t.Fatal("expected readOnly=true after AutoCommit failure (matches syncFunc failure behavior)")
+	}
+}
+
+func TestPullOnceAbortsAndSetsReadOnlyOnRebaseContinueFailure(t *testing.T) {
+	withPullFunc(t, func(string) error { return errors.New("rebase conflict") })
+	abortCalled := false
+	withPullRecovery(t,
+		func(string) (bool, error) { return true, nil },
+		func(string) (int, error) { return 1, nil },
+		func(string) error { return errors.New("continue boom") },
+		func(string) error { abortCalled = true; return nil },
+	)
+	h, _, _, _ := newTestHandler(t, nil)
+	err := h.pullOnce()
+	if err == nil {
+		t.Fatal("expected error when RebaseContinue fails")
+	}
+	if !abortCalled {
+		t.Fatal("expected RebaseAbort on RebaseContinue failure")
+	}
+	if !h.IsReadOnly() {
+		t.Fatal("expected readOnly to be set after rebase continue failure")
 	}
 }
 
