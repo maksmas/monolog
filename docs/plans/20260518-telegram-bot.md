@@ -402,14 +402,14 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Create: `cmd/telegram_test.go`
 - Modify: `cmd/root.go`
 
-- [ ] add `cmd/telegram.go` with `newTelegramCmd() *cobra.Command` mirroring `newEmailCmd`; subcommands `serve` and `status`
-- [ ] `newTelegramServeCmd()`: open store via `openStore` (returns store + repoPath); read `config.Telegram()`; if `!Enabled` return error `"telegram integration is disabled — edit config.json to enable"`; resolve token via the precedence chain (flag wins, then env): bind a string flag `--token` (`-t`) to a local var, after parsing use `tokenFlag` if non-empty else `os.Getenv("MONOLOG_TELEGRAM_TOKEN")`, error if both are empty with message `"telegram token required: pass --token or set MONOLOG_TELEGRAM_TOKEN"`; call `telegram.NewClient(token)`; install signal handler bridging SIGINT/SIGTERM → ctx cancel (use `signal.NotifyContext`); call `telegram.Serve(ctx, ServeOptions{...})`; on Serve error return wrapped error
-- [ ] document the `--token` flag in cobra's `Long` help: emphasize that for systemd / long-running deployments, prefer `MONOLOG_TELEGRAM_TOKEN` env (e.g. via `EnvironmentFile=`) because `--token <value>` is visible in `ps aux`
-- [ ] `newTelegramStatusCmd()`: print `enabled`, `allowed_user_ids`, `pull_interval`, `browse_limit`, plus a single line indicating whether `MONOLOG_TELEGRAM_TOKEN` is set or not (NEVER print the token value); mirrors `email status` shape
-- [ ] in `cmd/root.go` add `rootCmd.AddCommand(newTelegramCmd())` after the `newEmailCmd` line
-- [ ] add `telegramServeFactory` and `telegramServeFunc` swappable seams in cmd/telegram.go so `telegram_test.go` can stub `telegram.Serve` and `telegram.NewClient` (mirrors `emailClientFactory` pattern)
-- [ ] write `telegram_test.go`: cobra wiring tests via the stub seam — `monolog telegram serve` exits cleanly when ctx is cancelled, returns error when both `--token` flag and `MONOLOG_TELEGRAM_TOKEN` env are unset, accepts the flag when env is unset, accepts env when flag is unset, returns error when integration is disabled in config; `monolog telegram status` prints expected lines from a fixture config
-- [ ] run `go test ./cmd/...` and `go vet ./...` — must pass before next task
+- [x] add `cmd/telegram.go` with `newTelegramCmd() *cobra.Command` mirroring `newEmailCmd`; subcommands `serve` and `status`
+- [x] `newTelegramServeCmd()`: open store via `openStore` (returns store + repoPath); read `config.Telegram()`; if `!Enabled` return error `"telegram integration is disabled — edit config.json to enable"`; resolve token via the precedence chain (flag wins, then env): bind a string flag `--token` (`-t`) to a local var, after parsing use `tokenFlag` if non-empty else `os.Getenv("MONOLOG_TELEGRAM_TOKEN")`, error if both are empty with message `"telegram token required: pass --token or set MONOLOG_TELEGRAM_TOKEN"`; call `telegram.NewClient(token)`; install signal handler bridging SIGINT/SIGTERM → ctx cancel (use `signal.NotifyContext`); call `telegram.Serve(ctx, ServeOptions{...})`; on Serve error return wrapped error
+- [x] document the `--token` flag in cobra's `Long` help: emphasize that for systemd / long-running deployments, prefer `MONOLOG_TELEGRAM_TOKEN` env (e.g. via `EnvironmentFile=`) because `--token <value>` is visible in `ps aux`
+- [x] `newTelegramStatusCmd()`: print `enabled`, `allowed_user_ids`, `pull_interval`, `browse_limit`, plus a single line indicating whether `MONOLOG_TELEGRAM_TOKEN` is set or not (NEVER print the token value); mirrors `email status` shape
+- [x] in `cmd/root.go` add `rootCmd.AddCommand(newTelegramCmd())` after the `newEmailCmd` line
+- [x] add `telegramServeFactory` and `telegramServeFunc` swappable seams in cmd/telegram.go so `telegram_test.go` can stub `telegram.Serve` and `telegram.NewClient` (mirrors `emailClientFactory` pattern)
+- [x] write `telegram_test.go`: cobra wiring tests via the stub seam — `monolog telegram serve` exits cleanly when ctx is cancelled, returns error when both `--token` flag and `MONOLOG_TELEGRAM_TOKEN` env are unset, accepts the flag when env is unset, accepts env when flag is unset, returns error when integration is disabled in config; `monolog telegram status` prints expected lines from a fixture config
+- [x] run `go test ./cmd/...` and `go vet ./...` — must pass before next task
 
 ### Task 11: Deployment artifacts (Makefile target, systemd unit, deploy docs)
 

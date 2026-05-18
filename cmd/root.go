@@ -48,6 +48,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newNoteCmd())
 	rootCmd.AddCommand(newShowCmd())
 	rootCmd.AddCommand(newEmailCmd())
+	rootCmd.AddCommand(newTelegramCmd())
 
 	return rootCmd
 }
