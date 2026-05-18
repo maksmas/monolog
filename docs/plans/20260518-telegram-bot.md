@@ -299,19 +299,19 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Create: `internal/telegram/handler_test.go`
 - Create: `internal/telegram/sync.go` (write-flow wrapper only — main Serve loop comes in task 10)
 
-- [ ] in `handler.go` define `Handler` struct holding: `bot Bot`, `store *store.Store`, `repoPath string`, `cfg TelegramConfig`, `dateFormat string`, `now func() time.Time`, plus internal `mu sync.Mutex` (write serialization) and `readOnly atomic.Bool`
-- [ ] add `NewHandler(...)` constructor binding all fields; `now` defaults to `time.Now` when nil
-- [ ] add `(*Handler) Handle(ctx context.Context, u Update) error` dispatcher: ignores updates from users not in `cfg.AllowedUserIDs` (silent drop, returns nil); routes by `u.Message != nil` (text path) vs `u.Callback != nil` (callback path — stub for now, implemented in task 7); within message path branches on first character `'/'` for slash command vs plain capture vs `u.Message.ReplyTo != nil` for note-reply (stub for now, implemented in task 8)
-- [ ] add `(*Handler) handleCapture(ctx, m *Message) error`: respects `readOnly` (replies with conflict message, returns); parses via `ParseCapture`; constructs `model.Task` with fresh `model.NewID`, today schedule via `schedule.Parse(schedule.Today, h.now(), "")`, RFC3339 timestamps, `Tags` from `ParseCapture`; calls `model.CollectTags`-aware `store.Create` (passes inline tags + relies on existing `model.ParseTitleTag` auto-tag rule in store.Create — verify exact call site by reading store.Create; if store.Create doesn't apply ParseTitleTag, do it here before calling Create)
-- [ ] in `sync.go` add unexported helper `(*Handler) commitAndSync(message string, file string) error`: calls `git.AutoCommit(h.repoPath, message, file)` then `git.Sync(h.repoPath)`; on Sync error sets `readOnly=true` and returns the error wrapped (caller decides what to reply); on success ensures `readOnly=false`
-- [ ] after a successful `store.Create`, call `commitAndSync("add: "+task.Title, taskRelPath)` (relative path: `.monolog/tasks/<ID>.json`); on success send summary message via `FormatTaskRow` + `BuildSummaryKeyboard`; on commitAndSync failure send conflict message — but the local commit is still on the bot's disk, and the next clean pull will rebase it
-- [ ] write tests: fake Bot, real `store.Store` in `t.TempDir()` git repo (use `git.Init(tmpDir, "")` then construct store via existing helpers in cmd/helpers.go or directly), allowed user captures plain text → assert one message sent with HTML containing escaped title and buttons, store has one task with Source unset (Source=="" since not from email), schedule="today" (resolved ISO), tags from #hashtags
-- [ ] test: non-allowed user → no message sent, no task created (silent drop)
-- [ ] test: multi-line capture → title=first line, body=rest, hashtags in title extracted (not in body)
-- [ ] test: title with HTML metacharacters → store has raw title, sent HTML escapes them
-- [ ] test: `readOnly=true` → capture replies with conflict message, store unchanged
-- [ ] test: git.Sync failure (use a TempDir repo with intentionally broken remote / unreachable origin) → `readOnly` set, conflict reply sent
-- [ ] run `go test ./internal/telegram/...` — must pass before next task
+- [x] in `handler.go` define `Handler` struct holding: `bot Bot`, `store *store.Store`, `repoPath string`, `cfg TelegramConfig`, `dateFormat string`, `now func() time.Time`, plus internal `mu sync.Mutex` (write serialization) and `readOnly atomic.Bool`
+- [x] add `NewHandler(...)` constructor binding all fields; `now` defaults to `time.Now` when nil
+- [x] add `(*Handler) Handle(ctx context.Context, u Update) error` dispatcher: ignores updates from users not in `cfg.AllowedUserIDs` (silent drop, returns nil); routes by `u.Message != nil` (text path) vs `u.Callback != nil` (callback path — stub for now, implemented in task 7); within message path branches on first character `'/'` for slash command vs plain capture vs `u.Message.ReplyTo != nil` for note-reply (stub for now, implemented in task 8)
+- [x] add `(*Handler) handleCapture(ctx, m *Message) error`: respects `readOnly` (replies with conflict message, returns); parses via `ParseCapture`; constructs `model.Task` with fresh `model.NewID`, today schedule via `schedule.Parse(schedule.Today, h.now(), "")`, RFC3339 timestamps, `Tags` from `ParseCapture`; calls `model.CollectTags`-aware `store.Create` (passes inline tags + relies on existing `model.ParseTitleTag` auto-tag rule in store.Create — verify exact call site by reading store.Create; if store.Create doesn't apply ParseTitleTag, do it here before calling Create)
+- [x] in `sync.go` add unexported helper `(*Handler) commitAndSync(message string, file string) error`: calls `git.AutoCommit(h.repoPath, message, file)` then `git.Sync(h.repoPath)`; on Sync error sets `readOnly=true` and returns the error wrapped (caller decides what to reply); on success ensures `readOnly=false`
+- [x] after a successful `store.Create`, call `commitAndSync("add: "+task.Title, taskRelPath)` (relative path: `.monolog/tasks/<ID>.json`); on success send summary message via `FormatTaskRow` + `BuildSummaryKeyboard`; on commitAndSync failure send conflict message — but the local commit is still on the bot's disk, and the next clean pull will rebase it
+- [x] write tests: fake Bot, real `store.Store` in `t.TempDir()` git repo (use `git.Init(tmpDir, "")` then construct store via existing helpers in cmd/helpers.go or directly), allowed user captures plain text → assert one message sent with HTML containing escaped title and buttons, store has one task with Source unset (Source=="" since not from email), schedule="today" (resolved ISO), tags from #hashtags
+- [x] test: non-allowed user → no message sent, no task created (silent drop)
+- [x] test: multi-line capture → title=first line, body=rest, hashtags in title extracted (not in body)
+- [x] test: title with HTML metacharacters → store has raw title, sent HTML escapes them
+- [x] test: `readOnly=true` → capture replies with conflict message, store unchanged
+- [x] test: git.Sync failure (use a TempDir repo with intentionally broken remote / unreachable origin) → `readOnly` set, conflict reply sent
+- [x] run `go test ./internal/telegram/...` — must pass before next task
 
 ### Task 6: Browse commands (`/today`, `/week`, `/active`, `/all`)
 
