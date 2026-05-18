@@ -226,16 +226,16 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `internal/config/config.go`
 - Modify: `internal/config/config_test.go`
 
-- [ ] add `TelegramConfig` struct with `Enabled bool`, `AllowedUserIDs []int64`, `PullInterval time.Duration`, `BrowseLimit int`
-- [ ] add `defaultTelegramConfig()` returning the documented defaults (disabled, nil, 30s, 20)
-- [ ] add package-level `telegramCfg` var initialized from `defaultTelegramConfig()`
-- [ ] add `Telegram() TelegramConfig` accessor (named like `Email()` — function-name collision rule with struct name)
-- [ ] add `telegramBlock` struct with pointer fields: `Enabled *bool`, `AllowedUserIDs *[]int64`, `PullIntervalSeconds *int`, `BrowseLimit *int`
-- [ ] add `resetTelegramCfgToDefaults()` and `applyTelegramBlock(b telegramBlock)` with value-clamps matching `applyEmailBlock` (zero/negative interval and browse_limit silently fall back to defaults; empty AllowedUserIDs is allowed and means "no one allowed, drops all updates")
-- [ ] extend the inline struct in `Load` to include `Telegram *telegramBlock` and call `applyTelegramBlock` when present; call `resetTelegramCfgToDefaults()` at the top of `Load` (matches the email reset)
-- [ ] add `SaveTelegram(monologDir string, tc TelegramConfig) error` — read-modify-write mirroring `SaveEmail`; writes block as `{"enabled":..., "allowed_user_ids":..., "pull_interval_seconds":..., "browse_limit":...}`; updates in-session `telegramCfg`
-- [ ] write tests: `TestTelegramDefaults`, `TestLoadTelegramBlock`, `TestSaveTelegramRoundTrip`, `TestSaveTelegramPreservesForeignKeys` (verifies `email` and `date_format` keys survive), `TestApplyTelegramBlockValueClamps` (zero interval / browse_limit fall back; explicit `enabled:false` stays false)
-- [ ] run `go test ./internal/config/...` and `go vet ./...` — must pass before next task
+- [x] add `TelegramConfig` struct with `Enabled bool`, `AllowedUserIDs []int64`, `PullInterval time.Duration`, `BrowseLimit int`
+- [x] add `defaultTelegramConfig()` returning the documented defaults (disabled, nil, 30s, 20)
+- [x] add package-level `telegramCfg` var initialized from `defaultTelegramConfig()`
+- [x] add `Telegram() TelegramConfig` accessor (named like `Email()` — function-name collision rule with struct name)
+- [x] add `telegramBlock` struct with pointer fields: `Enabled *bool`, `AllowedUserIDs *[]int64`, `PullIntervalSeconds *int`, `BrowseLimit *int`
+- [x] add `resetTelegramCfgToDefaults()` and `applyTelegramBlock(b telegramBlock)` with value-clamps matching `applyEmailBlock` (zero/negative interval and browse_limit silently fall back to defaults; empty AllowedUserIDs is allowed and means "no one allowed, drops all updates")
+- [x] extend the inline struct in `Load` to include `Telegram *telegramBlock` and call `applyTelegramBlock` when present; call `resetTelegramCfgToDefaults()` at the top of `Load` (matches the email reset)
+- [x] add `SaveTelegram(monologDir string, tc TelegramConfig) error` — read-modify-write mirroring `SaveEmail`; writes block as `{"enabled":..., "allowed_user_ids":..., "pull_interval_seconds":..., "browse_limit":...}`; updates in-session `telegramCfg`
+- [x] write tests: `TestTelegramDefaults`, `TestLoadTelegramBlock`, `TestSaveTelegramRoundTrip`, `TestSaveTelegramPreservesForeignKeys` (verifies `email` and `date_format` keys survive), `TestApplyTelegramBlockValueClamps` (zero interval / browse_limit fall back; explicit `enabled:false` stays false)
+- [x] run `go test ./internal/config/...` and `go vet ./...` — must pass before next task
 
 ### Task 2: Pure parsing helpers for capture and callback data
 
