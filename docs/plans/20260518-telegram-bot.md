@@ -338,22 +338,22 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `internal/telegram/handler.go`
 - Modify: `internal/telegram/handler_test.go`
 
-- [ ] add `(*Handler) handleCallback(ctx, cq *CallbackQuery) error` dispatcher: parse via `ParseCallback`; on parse error answer callback with toast `"invalid"`; access-check `cq.UserID` (silent drop unknown users — but for callbacks we DO answer the callback with empty toast to silence the loading spinner)
-- [ ] resolve task by full ULID via `store.Resolve(ulid)` (full ULID is unambiguous; covers task-not-found case if user deletes via laptop between message render and tap)
-- [ ] **Done** (`done:<ULID>`): respect `readOnly`; load task via store.Resolve; if already `Status=="done"` → AnswerCallback toast `"already done"`, no message edit; else call `recurrence.CompleteAndSpawn(h.store, &task, h.now(), io.Discard, h.dateFormat)` (writer set to io.Discard — bot doesn't surface spawn warnings to user; on the rare warning case it's logged via a side `bytes.Buffer` and emitted on stderr); commit with `"done: <title> (recurring, next <date>)"` for recurring or `"done: <title>"` for non-recurring (match cmd/done.go's message); commitAndSync; on success EditMessage with `FormatDoneRow` (passes next-date string if spawn occurred) + empty keyboard
-- [ ] **Active** (`active:<ULID>`): respect `readOnly`; load task; toggle reserved `active` tag (add if absent, remove if present); store.Update; commitAndSync with `"active: <title>"` or `"inactive: <title>"`; EditMessage with refreshed `FormatTaskRow` + same `BuildSummaryKeyboard` (button label stays "Active"; the row's `<i>` line now shows / hides the tag)
-- [ ] **View** (`view:<ULID>`): load task; EditMessage to `FormatDetailView` + `BuildDetailKeyboard`; AnswerCallback empty toast
-- [ ] **Collapse** (`collapse:<ULID>`): load task; EditMessage to `FormatTaskRow` + `BuildSummaryKeyboard`; AnswerCallback empty toast
-- [ ] task-not-found case (ULID resolves to nothing): AnswerCallback `"task not found"`, no message edit
-- [ ] write tests with fake Bot + temp-repo store: Done on non-recurring task → store has Status=done, file committed, message edited to strike-through with no buttons
-- [ ] test: Done on recurring task (set Recurrence="workdays" on test task) → original task done, new task spawned with ULID != original, message edited with `↻ next: <date>` line, both files in single commit
-- [ ] test: Done on already-done task → toast "already done", store unchanged, message unchanged
-- [ ] test: Active toggle add → `active` tag added, message edited; second toggle → tag removed, message edited again
-- [ ] test: View → detail HTML rendered, keyboard has Collapse + Done + Active; Collapse → summary HTML, keyboard has 3 summary buttons
-- [ ] test: invalid callback data → toast "invalid", no store mutation
-- [ ] test: ULID not found → toast "task not found", no store mutation
-- [ ] test: readOnly=true blocks Done and Active but allows View / Collapse (read-only ops)
-- [ ] run `go test ./internal/telegram/...` — must pass before next task
+- [x] add `(*Handler) handleCallback(ctx, cq *CallbackQuery) error` dispatcher: parse via `ParseCallback`; on parse error answer callback with toast `"invalid"`; access-check `cq.UserID` (silent drop unknown users — but for callbacks we DO answer the callback with empty toast to silence the loading spinner)
+- [x] resolve task by full ULID via `store.Resolve(ulid)` (full ULID is unambiguous; covers task-not-found case if user deletes via laptop between message render and tap)
+- [x] **Done** (`done:<ULID>`): respect `readOnly`; load task via store.Resolve; if already `Status=="done"` → AnswerCallback toast `"already done"`, no message edit; else call `recurrence.CompleteAndSpawn(h.store, &task, h.now(), io.Discard, h.dateFormat)` (writer set to io.Discard — bot doesn't surface spawn warnings to user; on the rare warning case it's logged via a side `bytes.Buffer` and emitted on stderr); commit with `"done: <title> (recurring, next <date>)"` for recurring or `"done: <title>"` for non-recurring (match cmd/done.go's message); commitAndSync; on success EditMessage with `FormatDoneRow` (passes next-date string if spawn occurred) + empty keyboard
+- [x] **Active** (`active:<ULID>`): respect `readOnly`; load task; toggle reserved `active` tag (add if absent, remove if present); store.Update; commitAndSync with `"active: <title>"` or `"inactive: <title>"`; EditMessage with refreshed `FormatTaskRow` + same `BuildSummaryKeyboard` (button label stays "Active"; the row's `<i>` line now shows / hides the tag)
+- [x] **View** (`view:<ULID>`): load task; EditMessage to `FormatDetailView` + `BuildDetailKeyboard`; AnswerCallback empty toast
+- [x] **Collapse** (`collapse:<ULID>`): load task; EditMessage to `FormatTaskRow` + `BuildSummaryKeyboard`; AnswerCallback empty toast
+- [x] task-not-found case (ULID resolves to nothing): AnswerCallback `"task not found"`, no message edit
+- [x] write tests with fake Bot + temp-repo store: Done on non-recurring task → store has Status=done, file committed, message edited to strike-through with no buttons
+- [x] test: Done on recurring task (set Recurrence="workdays" on test task) → original task done, new task spawned with ULID != original, message edited with `↻ next: <date>` line, both files in single commit
+- [x] test: Done on already-done task → toast "already done", store unchanged, message unchanged
+- [x] test: Active toggle add → `active` tag added, message edited; second toggle → tag removed, message edited again
+- [x] test: View → detail HTML rendered, keyboard has Collapse + Done + Active; Collapse → summary HTML, keyboard has 3 summary buttons
+- [x] test: invalid callback data → toast "invalid", no store mutation
+- [x] test: ULID not found → toast "task not found", no store mutation
+- [x] test: readOnly=true blocks Done and Active but allows View / Collapse (read-only ops)
+- [x] run `go test ./internal/telegram/...` — must pass before next task
 
 ### Task 8: Reply-to-note + `/help` + `/start` + unknown text fallback
 

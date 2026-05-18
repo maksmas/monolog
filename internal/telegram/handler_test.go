@@ -404,32 +404,24 @@ func TestHandleIgnoresBareUpdates(t *testing.T) {
 	}
 }
 
-func TestHandleCallbackPlaceholderAnswersWithEmptyToast(t *testing.T) {
-	// Task 5 only stubs the callback path: the real dispatcher lands in
-	// task 7. For now we verify allowed users get an empty-toast answer
-	// (spinner stops) and non-allowed users get a silent drop.
+func TestHandleCallbackDroppedForNonAllowedUser(t *testing.T) {
+	// Callbacks from users outside the allow-list are dropped without
+	// any outbound activity — same policy as the message path. This
+	// pins the behavior so a future routing-refactor cannot accidentally
+	// answer untrusted callbacks (which would confirm the bot exists to
+	// drive-by queries).
 	h, bot, _, _ := newTestHandler(t, []int64{100})
 
-	cbAllowed := Update{
-		UpdateID: 1,
-		Callback: &CallbackQuery{ID: "cb1", UserID: 100, ChatID: 5, MessageID: 99, Data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
-	}
-	if err := h.Handle(context.Background(), cbAllowed); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if len(bot.answers) != 1 || bot.answers[0].CallbackID != "cb1" || bot.answers[0].Toast != "" {
-		t.Fatalf("expected one empty-toast answer for allowed user, got %+v", bot.answers)
-	}
-
 	cbDenied := Update{
-		UpdateID: 2,
+		UpdateID: 1,
 		Callback: &CallbackQuery{ID: "cb2", UserID: 999, ChatID: 5, MessageID: 99, Data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
 	}
 	if err := h.Handle(context.Background(), cbDenied); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(bot.answers) != 1 {
-		t.Fatalf("expected denied callback to be silently dropped (still 1 answer), got %d", len(bot.answers))
+	if len(bot.answers) != 0 || len(bot.sent) != 0 || len(bot.edits) != 0 {
+		t.Fatalf("expected silent drop, got answers=%d sent=%d edits=%d",
+			len(bot.answers), len(bot.sent), len(bot.edits))
 	}
 }
 
@@ -867,6 +859,378 @@ func TestHandleSlashHelpAndStartStub(t *testing.T) {
 		if len(bot.sent) != 1 {
 			t.Fatalf("%s: expected 1 reply, got %d", cmd, len(bot.sent))
 		}
+	}
+}
+
+// seedSingleTask is a small helper for the callback tests that need a
+// specific task on disk before issuing a callback against it. The task is
+// open by default; callers tweak fields (Recurrence, Tags, Status) before
+// passing in.
+func seedSingleTask(t *testing.T, s *store.Store, task model.Task) {
+	t.Helper()
+	rfc := handlerTestNow.Format(time.RFC3339)
+	if task.CreatedAt == "" {
+		task.CreatedAt = rfc
+	}
+	if task.UpdatedAt == "" {
+		task.UpdatedAt = rfc
+	}
+	if task.Schedule == "" {
+		task.Schedule = handlerTestNow.Format("2006-01-02")
+	}
+	if task.Status == "" {
+		task.Status = "open"
+	}
+	if task.Position == 0 {
+		task.Position = 1000
+	}
+	if err := s.Create(task); err != nil {
+		t.Fatalf("seedSingleTask Create: %v", err)
+	}
+}
+
+func TestHandleCallbackInvalidDataAnswersInvalid(t *testing.T) {
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "nope"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.answers) != 1 || bot.answers[0].Toast != "invalid" {
+		t.Fatalf("expected single 'invalid' answer, got %+v", bot.answers)
+	}
+	if len(bot.sent) != 0 || len(bot.edits) != 0 {
+		t.Fatalf("expected no message activity, got sent=%d edits=%d", len(bot.sent), len(bot.edits))
+	}
+}
+
+func TestHandleCallbackUnknownULIDAnswersNotFound(t *testing.T) {
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.answers) != 1 || bot.answers[0].Toast != "task not found" {
+		t.Fatalf("expected 'task not found' toast, got %+v", bot.answers)
+	}
+	if len(bot.edits) != 0 {
+		t.Fatalf("expected no edits for unknown ULID, got %d", len(bot.edits))
+	}
+}
+
+func TestHandleCallbackDoneCompletesNonRecurringTask(t *testing.T) {
+	h, bot, s, repoPath := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "ship it",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	got, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != "done" {
+		t.Fatalf("Status=%q want done", got.Status)
+	}
+	if got.CompletedAt == "" {
+		t.Fatalf("CompletedAt should be set")
+	}
+	if len(bot.edits) != 1 {
+		t.Fatalf("expected 1 edit (strike-through), got %d", len(bot.edits))
+	}
+	edit := bot.edits[0]
+	if edit.MsgID != 9 || edit.ChatID != 5 {
+		t.Fatalf("edit target wrong: %+v", edit)
+	}
+	if !strings.Contains(edit.HTML, "<s>") || !strings.Contains(edit.HTML, "ship it") {
+		t.Fatalf("expected strike-through with title, got %q", edit.HTML)
+	}
+	if strings.Contains(edit.HTML, "↻ next") {
+		t.Fatalf("non-recurring task should not include next-date line: %q", edit.HTML)
+	}
+	if len(edit.Keyboard) != 0 {
+		t.Fatalf("done message should have no buttons, got %+v", edit.Keyboard)
+	}
+	if len(bot.answers) != 1 || bot.answers[0].Toast != "" {
+		t.Fatalf("expected silent answer, got %+v", bot.answers)
+	}
+
+	// Single commit with the canonical message.
+	subjects := gitLogSubjects(t, repoPath)
+	if len(subjects) < 2 {
+		t.Fatalf("expected >=2 commits, got %d: %v", len(subjects), subjects)
+	}
+	if subjects[0] != "done: ship it" {
+		t.Fatalf("commit subject=%q want %q", subjects[0], "done: ship it")
+	}
+}
+
+func TestHandleCallbackDoneSpawnsRecurringFollowUp(t *testing.T) {
+	h, bot, s, repoPath := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:         "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:      "water plants",
+		Recurrence: "days:1",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	tasks, err := s.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks (done + spawn), got %d", len(tasks))
+	}
+
+	// One is the original (done), one is the spawn (open, fresh ULID).
+	var orig, spawn model.Task
+	for _, tk := range tasks {
+		if tk.ID == "01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+			orig = tk
+		} else {
+			spawn = tk
+		}
+	}
+	if orig.Status != "done" {
+		t.Fatalf("original Status=%q want done", orig.Status)
+	}
+	if spawn.Status != "open" || spawn.Recurrence != "days:1" {
+		t.Fatalf("spawn unexpected: status=%q recur=%q", spawn.Status, spawn.Recurrence)
+	}
+	if spawn.Title != orig.Title {
+		t.Fatalf("spawn title=%q want %q", spawn.Title, orig.Title)
+	}
+
+	// Edit message includes next-date line (days:1 → tomorrow).
+	if len(bot.edits) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(bot.edits))
+	}
+	if !strings.Contains(bot.edits[0].HTML, "↻ next:") {
+		t.Fatalf("expected next-date line in done message, got %q", bot.edits[0].HTML)
+	}
+	// 2026-05-18 + 1 day = 2026-05-19; default layout DD-MM-YYYY.
+	if !strings.Contains(bot.edits[0].HTML, "19-05-2026") {
+		t.Fatalf("expected formatted next date 19-05-2026 in message, got %q", bot.edits[0].HTML)
+	}
+
+	// Both files are in a single commit (one subject line).
+	subjects := gitLogSubjects(t, repoPath)
+	if len(subjects) < 2 {
+		t.Fatalf("expected >=2 commits, got %d: %v", len(subjects), subjects)
+	}
+	if !strings.HasPrefix(subjects[0], "done: water plants (recurring, next ") {
+		t.Fatalf("expected recurring done commit subject, got %q", subjects[0])
+	}
+}
+
+func TestHandleCallbackDoneAlreadyDoneSurfacesToast(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:     "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:  "stale",
+		Status: "done",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.answers) != 1 || bot.answers[0].Toast != "already done" {
+		t.Fatalf("expected 'already done' toast, got %+v", bot.answers)
+	}
+	if len(bot.edits) != 0 {
+		t.Fatalf("expected no edits for already-done, got %d", len(bot.edits))
+	}
+}
+
+func TestHandleCallbackActiveTogglesTagAndEditsRow(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "draft post",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.IsActive() {
+		t.Fatalf("expected task to be active after first toggle, tags=%v", got.Tags)
+	}
+
+	if len(bot.edits) != 1 {
+		t.Fatalf("expected 1 edit after first toggle, got %d", len(bot.edits))
+	}
+	if len(bot.edits[0].Keyboard) != 1 || len(bot.edits[0].Keyboard[0]) != 3 {
+		t.Fatalf("expected 3-button summary keyboard after toggle, got %+v", bot.edits[0].Keyboard)
+	}
+
+	// Second toggle should clear it.
+	upd2 := Update{
+		UpdateID: 2,
+		Callback: &CallbackQuery{ID: "cb2", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd2); err != nil {
+		t.Fatalf("Handle 2: %v", err)
+	}
+	got2, _ := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if got2.IsActive() {
+		t.Fatalf("expected task to be inactive after second toggle, tags=%v", got2.Tags)
+	}
+	if len(bot.edits) != 2 {
+		t.Fatalf("expected 2 edits total, got %d", len(bot.edits))
+	}
+}
+
+func TestHandleCallbackViewExpandsToDetail(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "the title",
+		Body:  "body content",
+		Tags:  []string{"work"},
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "view:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.edits) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(bot.edits))
+	}
+	html := bot.edits[0].HTML
+	if !strings.Contains(html, "Schedule:") || !strings.Contains(html, "body content") {
+		t.Fatalf("detail view missing expected fields: %q", html)
+	}
+	kb := bot.edits[0].Keyboard
+	if len(kb) != 1 || len(kb[0]) != 3 {
+		t.Fatalf("expected 3-button detail keyboard, got %+v", kb)
+	}
+	// First button is Collapse on the detail keyboard.
+	if !strings.Contains(kb[0][0].Text, "Collapse") {
+		t.Fatalf("expected first button to be Collapse, got %q", kb[0][0].Text)
+	}
+	if len(bot.answers) != 1 || bot.answers[0].Toast != "" {
+		t.Fatalf("expected silent answer, got %+v", bot.answers)
+	}
+}
+
+func TestHandleCallbackCollapseRevertsToSummary(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "the title",
+		Body:  "body content",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "collapse:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.edits) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(bot.edits))
+	}
+	html := bot.edits[0].HTML
+	if strings.Contains(html, "Schedule:") || strings.Contains(html, "body content") {
+		t.Fatalf("collapse should drop detail fields, got %q", html)
+	}
+	if !strings.Contains(html, "the title") {
+		t.Fatalf("expected title in summary, got %q", html)
+	}
+	kb := bot.edits[0].Keyboard
+	if len(kb) != 1 || len(kb[0]) != 3 {
+		t.Fatalf("expected 3-button summary keyboard, got %+v", kb)
+	}
+	// First button on summary keyboard is Done.
+	if !strings.Contains(kb[0][0].Text, "Done") {
+		t.Fatalf("expected first summary button to be Done, got %q", kb[0][0].Text)
+	}
+}
+
+func TestHandleCallbackReadOnlyBlocksDoneAndActiveAllowsView(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "frozen",
+	})
+	h.SetReadOnly(true)
+
+	// Done is blocked.
+	if err := h.Handle(context.Background(), Update{
+		Callback: &CallbackQuery{ID: "cb1", UserID: 100, ChatID: 5, MessageID: 9, Data: "done:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}); err != nil {
+		t.Fatalf("Done Handle: %v", err)
+	}
+	if got, _ := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV"); got.Status != "open" {
+		t.Fatalf("readOnly should leave task open, got status=%q", got.Status)
+	}
+
+	// Active is blocked.
+	if err := h.Handle(context.Background(), Update{
+		Callback: &CallbackQuery{ID: "cb2", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}); err != nil {
+		t.Fatalf("Active Handle: %v", err)
+	}
+	if got, _ := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV"); got.IsActive() {
+		t.Fatalf("readOnly should leave task inactive, tags=%v", got.Tags)
+	}
+
+	// Both write-side answers are present and explain the conflict.
+	if len(bot.answers) < 2 {
+		t.Fatalf("expected at least 2 answers, got %+v", bot.answers)
+	}
+	for _, a := range bot.answers[:2] {
+		if !strings.Contains(a.Toast, "sync conflict") {
+			t.Fatalf("expected sync-conflict toast, got %+v", a)
+		}
+	}
+
+	// View is allowed even in read-only mode.
+	if err := h.Handle(context.Background(), Update{
+		Callback: &CallbackQuery{ID: "cb3", UserID: 100, ChatID: 5, MessageID: 9, Data: "view:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}); err != nil {
+		t.Fatalf("View Handle: %v", err)
+	}
+	if len(bot.edits) != 1 {
+		t.Fatalf("expected View to land 1 edit, got %d", len(bot.edits))
 	}
 }
 

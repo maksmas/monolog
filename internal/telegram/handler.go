@@ -1,9 +1,12 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/mmaksmas/monolog/internal/model"
 	"github.com/mmaksmas/monolog/internal/ordering"
+	"github.com/mmaksmas/monolog/internal/recurrence"
 	"github.com/mmaksmas/monolog/internal/schedule"
 	"github.com/mmaksmas/monolog/internal/store"
 )
@@ -124,9 +128,7 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 		if !h.isAllowed(u.Callback.UserID) {
 			return nil
 		}
-		// Callback dispatcher is implemented in task 7; for now we
-		// answer with an empty toast so the user's spinner stops.
-		return h.bot.AnswerCallback(ctx, u.Callback.ID, "")
+		return h.handleCallback(ctx, u.Callback)
 	}
 	if u.Message == nil {
 		return nil
@@ -412,3 +414,202 @@ func (h *Handler) handleCapture(ctx context.Context, m *Message) error {
 	}
 	return nil
 }
+
+// handleCallback dispatches inline-keyboard button taps to the right
+// action handler. Parse errors and unknown ULIDs surface as user-visible
+// toasts so a stale message (e.g. one rendered before the laptop deleted
+// the task) doesn't silently swallow taps. All branches answer the
+// callback exactly once — the loading spinner must always stop.
+//
+// Routing:
+//   - "done:<ULID>"     → handleCallbackDone (write path)
+//   - "active:<ULID>"   → handleCallbackActive (write path)
+//   - "view:<ULID>"     → handleCallbackView (read path)
+//   - "collapse:<ULID>" → handleCallbackCollapse (read path)
+//
+// View / Collapse intentionally do NOT consult the readOnly flag — they
+// only read the store; surfacing the conflict on a pure read would
+// confuse the user more than help them.
+func (h *Handler) handleCallback(ctx context.Context, cq *CallbackQuery) error {
+	action, ulid, parseErr := ParseCallback(cq.Data)
+	if parseErr != nil {
+		return h.bot.AnswerCallback(ctx, cq.ID, "invalid")
+	}
+
+	// Resolve the task once up-front; every branch needs it. A missing
+	// ULID is converted to a friendly toast — the message itself is left
+	// alone since the user may want to read the strike-through state.
+	task, err := h.store.Resolve(ulid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return h.bot.AnswerCallback(ctx, cq.ID, "task not found")
+		}
+		// Other store errors (I/O, parse) are surfaced as a generic toast.
+		// We deliberately do NOT echo the underlying message — that text
+		// can leak file-system layout or include arbitrary tag content.
+		_ = h.bot.AnswerCallback(ctx, cq.ID, "internal error")
+		return fmt.Errorf("store.Resolve %q: %w", ulid, err)
+	}
+
+	switch action {
+	case "done":
+		return h.handleCallbackDone(ctx, cq, task)
+	case "active":
+		return h.handleCallbackActive(ctx, cq, task)
+	case "view":
+		return h.handleCallbackView(ctx, cq, task)
+	case "collapse":
+		return h.handleCallbackCollapse(ctx, cq, task)
+	default:
+		// ParseCallback already validated the action set; this branch is a
+		// defensive fall-through in case the dispatch list ever drifts
+		// from the parser's allow-list.
+		return h.bot.AnswerCallback(ctx, cq.ID, "invalid")
+	}
+}
+
+// handleCallbackDone marks the task as done (via recurrence.CompleteAndSpawn
+// so recurring tasks get their next occurrence spawned), commits the change
+// plus any spawn in a single git commit, edits the original message to a
+// strike-through summary, and answers the callback. The strike-through row
+// includes a `↻ next: <date>` line when CompleteAndSpawn produced a spawn.
+//
+// readOnly path: when the bot is rejecting writes the message is left as-is
+// and the user sees a toast pointing at the conflict resolution — same
+// language as the capture path.
+//
+// Already-done path: a second tap on a stale message gets a "already done"
+// toast and no further work. The store is unchanged.
+func (h *Handler) handleCallbackDone(ctx context.Context, cq *CallbackQuery, task model.Task) error {
+	if h.readOnly.Load() {
+		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+	}
+	if task.Status == "done" {
+		return h.bot.AnswerCallback(ctx, cq.ID, "already done")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Re-check readOnly under the lock so a concurrent failure flip
+	// doesn't race past the unlocked check above.
+	if h.readOnly.Load() {
+		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+	}
+
+	// Capture spawn warnings to a side buffer so they can surface on
+	// stderr after the user-facing path completes; we deliberately don't
+	// surface them in Telegram (the user can't act on them from phone).
+	var warn bytes.Buffer
+	commitMsg, commitFiles, err := recurrence.CompleteAndSpawn(h.store, &task, h.now(), &warn, h.dateFormat)
+	if err != nil {
+		_ = h.bot.AnswerCallback(ctx, cq.ID, "internal error")
+		return fmt.Errorf("CompleteAndSpawn: %w", err)
+	}
+	if warn.Len() > 0 {
+		fmt.Fprint(os.Stderr, warn.String())
+	}
+
+	if syncErr := h.commitAndSync(commitMsg, commitFiles...); syncErr != nil {
+		_ = h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+		return syncErr
+	}
+
+	// Derive the next-occurrence date string for the strike-through row
+	// from the spawn-side file path (when present). commitFiles is
+	// ordered: [oldTaskFile, optional newTaskFile]. A two-element slice
+	// indicates a spawn happened.
+	var nextDate string
+	if len(commitFiles) > 1 {
+		newID := strings.TrimSuffix(filepath.Base(commitFiles[1]), ".json")
+		if spawned, gErr := h.store.Get(newID); gErr == nil {
+			nextDate = schedule.FormatDisplay(spawned.Schedule, h.dateFormat)
+		}
+	}
+
+	row := FormatDoneRow(task, nextDate)
+	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, row, nil); err != nil {
+		return fmt.Errorf("edit done message: %w", err)
+	}
+	return h.bot.AnswerCallback(ctx, cq.ID, "")
+}
+
+// handleCallbackActive toggles the reserved active tag on the task,
+// commits the change, and edits the message to reflect the new tag
+// state. The button label stays "Active" in both states — the user can
+// tell which way the toggle went from the inline tag list, and a
+// stateful label would make taps from older messages confusing.
+//
+// readOnly path mirrors handleCallbackDone: no mutation, toast points
+// at the conflict, message stays as-is.
+func (h *Handler) handleCallbackActive(ctx context.Context, cq *CallbackQuery, task model.Task) error {
+	if h.readOnly.Load() {
+		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.readOnly.Load() {
+		return h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+	}
+
+	wasActive := task.IsActive()
+	task.SetActive(!wasActive)
+	task.UpdatedAt = h.now().UTC().Format(time.RFC3339)
+
+	if err := h.store.Update(task); err != nil {
+		_ = h.bot.AnswerCallback(ctx, cq.ID, "internal error")
+		return fmt.Errorf("store.Update: %w", err)
+	}
+
+	verb := "active"
+	if wasActive {
+		verb = "inactive"
+	}
+	commitMsg := fmt.Sprintf("%s: %s", verb, task.Title)
+	if syncErr := h.commitAndSync(commitMsg, taskRelPath(task.ID)); syncErr != nil {
+		_ = h.bot.AnswerCallback(ctx, cq.ID, "sync conflict — resolve on laptop")
+		return syncErr
+	}
+
+	// Re-read the task so the rendered summary reflects whatever the
+	// store normalized (NoteCount, tag ordering, etc.).
+	if refreshed, err := h.store.Get(task.ID); err == nil {
+		task = refreshed
+	}
+
+	row := FormatTaskRow(task, h.dateFormat)
+	kb := BuildSummaryKeyboard(task.ID)
+	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, row, kb); err != nil {
+		return fmt.Errorf("edit active message: %w", err)
+	}
+	return h.bot.AnswerCallback(ctx, cq.ID, "")
+}
+
+// handleCallbackView expands a summary message into the full detail
+// view. The expansion is performed entirely via EditMessage so the
+// original message ID is reused — no second message clutters the chat,
+// and Collapse swaps back to the summary on the same ID.
+func (h *Handler) handleCallbackView(ctx context.Context, cq *CallbackQuery, task model.Task) error {
+	body := FormatDetailView(task, h.dateFormat)
+	kb := BuildDetailKeyboard(task.ID)
+	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, body, kb); err != nil {
+		return fmt.Errorf("edit detail view: %w", err)
+	}
+	return h.bot.AnswerCallback(ctx, cq.ID, "")
+}
+
+// handleCallbackCollapse inverts handleCallbackView — the detail message
+// is replaced in place with the compact summary row + summary keyboard.
+// We re-read the task in case anything mutated between view and collapse
+// (e.g. an external `monolog edit` ran on the laptop during the gap).
+func (h *Handler) handleCallbackCollapse(ctx context.Context, cq *CallbackQuery, task model.Task) error {
+	row := FormatTaskRow(task, h.dateFormat)
+	kb := BuildSummaryKeyboard(task.ID)
+	if err := h.bot.EditMessage(ctx, cq.ChatID, cq.MessageID, row, kb); err != nil {
+		return fmt.Errorf("edit collapse message: %w", err)
+	}
+	return h.bot.AnswerCallback(ctx, cq.ID, "")
+}
+

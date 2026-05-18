@@ -39,11 +39,17 @@ var (
 // to surface to Telegram (typically the canned readOnlyMessage).
 //
 // Mutex: callers MUST hold h.mu before calling commitAndSync. This is
-// already true for every current caller (handleCapture and the future
-// Done / Active / note paths), and keeping the lock outside the helper
-// avoids the recursive-lock trap.
-func (h *Handler) commitAndSync(message string, file string) error {
-	if err := git.AutoCommit(h.repoPath, message, file); err != nil {
+// already true for every current caller (handleCapture, the Done /
+// Active / note paths), and keeping the lock outside the helper avoids
+// the recursive-lock trap.
+//
+// The variadic file list lets recurring-done callers commit both the
+// completed task and the freshly spawned follow-up in a single commit
+// — recurrence.CompleteAndSpawn returns the file pair for exactly this
+// reason. Single-file writes (capture, note, active toggle) pass one
+// element.
+func (h *Handler) commitAndSync(message string, files ...string) error {
+	if err := git.AutoCommit(h.repoPath, message, files...); err != nil {
 		return fmt.Errorf("auto-commit: %w", err)
 	}
 	if _, err := syncFunc(h.repoPath); err != nil {
