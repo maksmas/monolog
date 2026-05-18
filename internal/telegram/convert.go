@@ -14,8 +14,14 @@ package telegram
 
 import (
 	"fmt"
+	"html"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/mmaksmas/monolog/internal/display"
+	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/mmaksmas/monolog/internal/schedule"
 )
 
 // inlineTagPattern matches a #hashtag token. Tag characters are
@@ -142,3 +148,270 @@ func ParseCallback(data string) (action, ulid string, err error) {
 	}
 	return action, ulid, nil
 }
+
+// prefixLength is the number of leading ULID characters shown in
+// Telegram-rendered task rows. Chosen to match the user's typical CLI
+// usage where 5 characters is the most common prefix entered for
+// store.Resolve and keeps the inline code chip narrow on phone screens.
+const prefixLength = 5
+
+// telegramMaxMessage is the hard cap Telegram enforces on a single
+// outgoing message (4096 UTF-8 bytes). FormatDetailView truncates the
+// body so the rendered HTML stays under this cap with a small safety
+// margin.
+const telegramMaxMessage = 4096
+
+// truncationMarker is appended to the body when FormatDetailView has to
+// trim oversized content. The wording asks the user to look on the
+// laptop for the full text, consistent with the "+N more" footer used
+// by `/all` browse output.
+const truncationMarker = "… (open laptop for full body)"
+
+// htmlEscape wraps html.EscapeString so call sites read uniformly across
+// the package. The Telegram Bot API HTML parse mode escapes the same
+// metacharacters as the html.EscapeString function: `<`, `>`, `&`, `'`,
+// `"` — keeping our renderer aligned with Telegram's parser prevents
+// the API from rejecting messages with `Bad Request: can't parse entities`.
+func htmlEscape(s string) string {
+	return html.EscapeString(s)
+}
+
+// prefixID returns the first prefixLength chars of id (or the whole id
+// when it is shorter). Matches the shape of display.ShortID but with
+// the Telegram-specific width and no allocation surprises when id is
+// already short.
+func prefixID(id string) string {
+	if len(id) <= prefixLength {
+		return id
+	}
+	return id[:prefixLength]
+}
+
+// FormatTaskRow renders a compact HTML summary row for a task as shown
+// in browse output and after a capture. The layout is:
+//
+//	<code>{prefix5}</code>  {escaped-title}
+//	<i>{tag-list}  ·  {recur-marker}{notes-badge}</i>
+//
+// The second `<i>` line is omitted entirely when the task has no tags,
+// no recurrence rule, and no notes — so simple captures render as a
+// single line. The reserved `active` tag is filtered out via
+// display.VisibleTags so it never appears in the user-visible tag list
+// (the active state is reflected via the ⭐ button instead).
+//
+// dateFormat is accepted for parity with the rest of the format API
+// even though no date appears in the summary row; FormatDetailView is
+// where it matters. Accepting it here keeps the call sites uniform
+// and lets a future change add e.g. a relative-time chip without
+// reworking the signature.
+func FormatTaskRow(t model.Task, dateFormat string) string {
+	_ = dateFormat // reserved for future use, see comment above
+	var b strings.Builder
+	b.WriteString("<code>")
+	b.WriteString(htmlEscape(prefixID(t.ID)))
+	b.WriteString("</code>  ")
+	b.WriteString(htmlEscape(t.Title))
+
+	visibleTags := display.VisibleTags(t.Tags)
+	hasRecur := t.Recurrence != ""
+	hasNotes := t.NoteCount > 0
+	if len(visibleTags) == 0 && !hasRecur && !hasNotes {
+		return b.String()
+	}
+	b.WriteString("\n<i>")
+	var parts []string
+	if len(visibleTags) > 0 {
+		parts = append(parts, htmlEscape(strings.Join(visibleTags, ", ")))
+	}
+	var markers []string
+	if hasRecur {
+		markers = append(markers, "↻")
+	}
+	if hasNotes {
+		markers = append(markers, fmt.Sprintf("[%d]", t.NoteCount))
+	}
+	if len(markers) > 0 {
+		parts = append(parts, strings.Join(markers, " "))
+	}
+	b.WriteString(strings.Join(parts, "  ·  "))
+	b.WriteString("</i>")
+	return b.String()
+}
+
+// formatScheduleLine returns the "Schedule:" body for FormatDetailView.
+// The result is either `{display-date} ({bucket})` when the stored
+// schedule falls into a virtual bucket (today/tomorrow/week/month/
+// someday), or just `{display-date}` when the stored ISO date is the
+// same as its bucket name (e.g. someday legacy tasks).
+//
+// The bucket label is appended in parentheses so the user sees both
+// "when" (the date) and "where it sorts" (the bucket) without having to
+// cross-reference. Mirrors the TUI detail-panel rule.
+func formatScheduleLine(stored string, now time.Time, layout string) string {
+	displayDate := schedule.FormatDisplay(stored, layout)
+	bucket := schedule.Bucket(stored, now)
+	if bucket != stored {
+		return fmt.Sprintf("%s (%s)", displayDate, bucket)
+	}
+	return displayDate
+}
+
+// FormatDetailView renders the full-detail HTML view shown after a
+// `view:<ULID>` callback. Layout mirrors the TUI's detailPanelView:
+//
+//	<code>{prefix5}</code>  {escaped-title}
+//	Schedule: {date} ({bucket})
+//	Tags: tag1, tag2
+//	Recur: <rule>
+//	Created: {rel-date}
+//	Notes: N
+//
+//	<full body with notes, HTML-escaped, newlines preserved>
+//
+// Conditional lines (Tags / Recur / Notes) are omitted entirely when
+// the underlying value is empty/zero. The body is truncated to keep
+// the whole message under Telegram's 4096-byte cap, appending
+// truncationMarker on overflow.
+//
+// HTML escaping is applied to every user-supplied substring before it
+// reaches the template so titles like `<broken & sad>` render safely.
+// Newlines inside the body are preserved — Telegram renders them
+// literally in HTML parse mode, which gives notes their familiar
+// paragraph layout.
+func FormatDetailView(t model.Task, dateFormat string) string {
+	now := time.Now()
+	return formatDetailViewAt(t, dateFormat, now)
+}
+
+// formatDetailViewAt is the testable form of FormatDetailView with an
+// injectable "now" — exported helpers should not take time arguments
+// (they would leak through too many call sites), but the tests need
+// deterministic schedule/relative-date output. Keeping this private
+// keeps the public surface narrow.
+func formatDetailViewAt(t model.Task, dateFormat string, now time.Time) string {
+	var b strings.Builder
+	b.WriteString("<code>")
+	b.WriteString(htmlEscape(prefixID(t.ID)))
+	b.WriteString("</code>  ")
+	b.WriteString(htmlEscape(t.Title))
+	b.WriteString("\n")
+
+	b.WriteString("Schedule: ")
+	b.WriteString(htmlEscape(formatScheduleLine(t.Schedule, now, dateFormat)))
+	b.WriteString("\n")
+
+	if visibleTags := display.VisibleTags(t.Tags); len(visibleTags) > 0 {
+		b.WriteString("Tags: ")
+		b.WriteString(htmlEscape(strings.Join(visibleTags, ", ")))
+		b.WriteString("\n")
+	}
+	if t.Recurrence != "" {
+		b.WriteString("Recur: ")
+		b.WriteString(htmlEscape(t.Recurrence))
+		b.WriteString("\n")
+	}
+	if created := display.FormatRelDate(now, t.CreatedAt, dateFormat); created != "" {
+		b.WriteString("Created: ")
+		b.WriteString(htmlEscape(created))
+		b.WriteString("\n")
+	}
+	if t.NoteCount > 0 {
+		b.WriteString(fmt.Sprintf("Notes: %d\n", t.NoteCount))
+	}
+
+	header := b.String()
+	if t.Body == "" {
+		// Strip the trailing newline so the empty-body case doesn't
+		// leave a dangling blank line at the bottom of the message.
+		return strings.TrimRight(header, "\n")
+	}
+
+	bodyEscaped := htmlEscape(t.Body)
+	separator := "\n"
+	// Available budget for the body fragment = max - header - separator
+	// - the truncation marker (which we may append). We use the marker
+	// length unconditionally as a safe upper bound for the budget so we
+	// don't have to re-check after appending.
+	budget := telegramMaxMessage - len(header) - len(separator) - len(truncationMarker)
+	if budget < 0 {
+		// Header alone exceeds the cap (pathological — would only
+		// happen with an absurdly long title). Return the header
+		// truncated to the cap; there is no body to add.
+		if len(header) > telegramMaxMessage {
+			return header[:telegramMaxMessage]
+		}
+		return strings.TrimRight(header, "\n")
+	}
+	if len(bodyEscaped) <= budget+len(truncationMarker) {
+		// Body fits without truncation; we can use the full slack
+		// because we never have to append the marker.
+		return header + separator + bodyEscaped
+	}
+	return header + separator + bodyEscaped[:budget] + truncationMarker
+}
+
+// BuildSummaryKeyboard returns the inline keyboard shown beneath a
+// task summary row: a single row with [Done] [Active] [Details] buttons.
+// The callback payloads encode the task's full ULID via ParseCallback's
+// reverse so the dispatch layer can resolve the task without keeping any
+// bot-side state. The label texts use emoji so the buttons read clearly
+// at a phone-screen glance.
+func BuildSummaryKeyboard(taskID string) InlineKeyboard {
+	return InlineKeyboard{
+		{
+			{Text: "✅ Done", CallbackData: "done:" + taskID},
+			{Text: "⭐ Active", CallbackData: "active:" + taskID},
+			{Text: "📄 Details", CallbackData: "view:" + taskID},
+		},
+	}
+}
+
+// BuildDetailKeyboard returns the inline keyboard shown beneath the
+// expanded detail view: a single row with [Collapse] [Done] [Active].
+// The Collapse button is placed first (leftmost = back-out gesture),
+// followed by the same two write actions exposed on the summary row.
+// Details is intentionally omitted — the user is already in the detail
+// view, so a second "Details" button would be a no-op.
+func BuildDetailKeyboard(taskID string) InlineKeyboard {
+	return InlineKeyboard{
+		{
+			{Text: "⬆ Collapse", CallbackData: "collapse:" + taskID},
+			{Text: "✅ Done", CallbackData: "done:" + taskID},
+			{Text: "⭐ Active", CallbackData: "active:" + taskID},
+		},
+	}
+}
+
+// FormatDoneRow renders the post-completion message that replaces a
+// task's summary row after the user taps the Done button. Layout:
+//
+//	✅ <s><code>{prefix5}</code>  {escaped-title}</s>
+//	↻ next: {nextDate}        (only when nextDate != "")
+//
+// The strike-through is applied to the prefix + title so the visual
+// difference between "open" and "done" is immediately legible. The
+// optional next-date line is only added when CompleteAndSpawn produced
+// a follow-up task; for non-recurring tasks the second line is omitted.
+// The caller passes the pre-formatted date string in the configured
+// layout — this function does not touch dateFormat — so the rendering
+// stays deterministic across timezone-edge cases.
+func FormatDoneRow(t model.Task, nextDate string) string {
+	row := fmt.Sprintf("✅ <s><code>%s</code>  %s</s>",
+		htmlEscape(prefixID(t.ID)),
+		htmlEscape(t.Title),
+	)
+	if nextDate == "" {
+		return row
+	}
+	return row + "\n↻ next: " + htmlEscape(nextDate)
+}
+
+// FormatEmptyBucket returns the single-line "nothing 🎉" message sent
+// when a browse command finds no matching tasks. The label is the
+// human-readable bucket name (e.g. "Today", "Week") and is shown in
+// bold so the empty-state message visually parallels the per-task rows
+// it would otherwise replace.
+func FormatEmptyBucket(label string) string {
+	return fmt.Sprintf("<b>%s</b> — nothing 🎉", htmlEscape(label))
+}
+

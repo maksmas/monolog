@@ -4,6 +4,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mmaksmas/monolog/internal/model"
 )
 
 func TestParseInlineTags(t *testing.T) {
@@ -234,6 +237,428 @@ func TestParseCallback(t *testing.T) {
 			}
 			if gotULID != tc.wantULID {
 				t.Fatalf("ParseCallback(%q) ulid=%q want %q", tc.in, gotULID, tc.wantULID)
+			}
+		})
+	}
+}
+
+const testDateFormat = "02-01-2006"
+
+// testNow is a fixed reference time used by formatting tests so that
+// schedule-bucket boundaries and relative-date renderings are
+// deterministic regardless of the wall clock at test time.
+//
+//	2026-05-18 12:00 UTC → "today"
+//	2026-05-19 → "tomorrow"
+//	2026-05-25 → within "week" window
+//	2026-06-25 → within "month" window
+//	2027-01-01 → "someday"
+func testNow() time.Time {
+	return time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+}
+
+func TestHTMLEscape(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"hello", "hello"},
+		{"a & b", "a &amp; b"},
+		{"<script>", "&lt;script&gt;"},
+		{"\"quoted\"", "&#34;quoted&#34;"},
+		{"a < b > c & d", "a &lt; b &gt; c &amp; d"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := htmlEscape(tc.in); got != tc.want {
+				t.Fatalf("htmlEscape(%q)=%q want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrefixID(t *testing.T) {
+	if got := prefixID("01J5K7VC9RXMQ8NPZF2W3Y4ABC"); got != "01J5K" {
+		t.Fatalf("prefixID full ULID = %q, want %q", got, "01J5K")
+	}
+	if got := prefixID("ABC"); got != "ABC" {
+		t.Fatalf("prefixID short = %q, want %q", got, "ABC")
+	}
+	if got := prefixID(""); got != "" {
+		t.Fatalf("prefixID empty = %q, want %q", got, "")
+	}
+	// exactly prefixLength chars → unchanged
+	if got := prefixID("01J5K"); got != "01J5K" {
+		t.Fatalf("prefixID exact = %q, want %q", got, "01J5K")
+	}
+}
+
+func TestFormatTaskRow(t *testing.T) {
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	tests := []struct {
+		name string
+		task model.Task
+		want string
+	}{
+		{
+			name: "title only no decorations",
+			task: model.Task{ID: id, Title: "buy milk"},
+			want: "<code>01J5K</code>  buy milk",
+		},
+		{
+			name: "title with HTML metacharacters",
+			task: model.Task{ID: id, Title: "<broken> & sad"},
+			want: "<code>01J5K</code>  &lt;broken&gt; &amp; sad",
+		},
+		{
+			name: "with tags only",
+			task: model.Task{ID: id, Title: "fix login", Tags: []string{"work", "urgent"}},
+			want: "<code>01J5K</code>  fix login\n<i>work, urgent</i>",
+		},
+		{
+			name: "active tag filtered out",
+			task: model.Task{ID: id, Title: "fix login", Tags: []string{"work", model.ActiveTag}},
+			want: "<code>01J5K</code>  fix login\n<i>work</i>",
+		},
+		{
+			name: "only active tag = no <i> line",
+			task: model.Task{ID: id, Title: "fix login", Tags: []string{model.ActiveTag}},
+			want: "<code>01J5K</code>  fix login",
+		},
+		{
+			name: "with recur marker only",
+			task: model.Task{ID: id, Title: "weekly review", Recurrence: "weekly:mon"},
+			want: "<code>01J5K</code>  weekly review\n<i>↻</i>",
+		},
+		{
+			name: "with notes badge only",
+			task: model.Task{ID: id, Title: "long task", NoteCount: 3},
+			want: "<code>01J5K</code>  long task\n<i>[3]</i>",
+		},
+		{
+			name: "tags + recur + notes combined",
+			task: model.Task{ID: id, Title: "weekly", Tags: []string{"work"}, Recurrence: "weekly:mon", NoteCount: 2},
+			want: "<code>01J5K</code>  weekly\n<i>work  ·  ↻ [2]</i>",
+		},
+		{
+			name: "recur + notes no tags",
+			task: model.Task{ID: id, Title: "weekly", Recurrence: "weekly:mon", NoteCount: 2},
+			want: "<code>01J5K</code>  weekly\n<i>↻ [2]</i>",
+		},
+		{
+			name: "tags + notes no recur",
+			task: model.Task{ID: id, Title: "task", Tags: []string{"work"}, NoteCount: 1},
+			want: "<code>01J5K</code>  task\n<i>work  ·  [1]</i>",
+		},
+		{
+			name: "tags with HTML metachars escaped",
+			task: model.Task{ID: id, Title: "task", Tags: []string{"a&b"}},
+			want: "<code>01J5K</code>  task\n<i>a&amp;b</i>",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FormatTaskRow(tc.task, testDateFormat)
+			if got != tc.want {
+				t.Fatalf("FormatTaskRow:\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatDetailView(t *testing.T) {
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	now := testNow()
+	createdAt := now.Add(-3 * 24 * time.Hour).Format(time.RFC3339) // "3d" ago
+
+	t.Run("minimal task no decorations", func(t *testing.T) {
+		task := model.Task{
+			ID:        id,
+			Title:     "buy milk",
+			Schedule:  "2026-05-18", // == today
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		// schedule line: today
+		if !strings.Contains(got, "Schedule: 18-05-2026 (today)") {
+			t.Fatalf("expected Schedule line with bucket; got:\n%s", got)
+		}
+		if !strings.Contains(got, "Created: 3d") {
+			t.Fatalf("expected Created: 3d; got:\n%s", got)
+		}
+		if strings.Contains(got, "Tags:") {
+			t.Fatalf("expected no Tags line; got:\n%s", got)
+		}
+		if strings.Contains(got, "Recur:") {
+			t.Fatalf("expected no Recur line; got:\n%s", got)
+		}
+		if strings.Contains(got, "Notes:") {
+			t.Fatalf("expected no Notes line; got:\n%s", got)
+		}
+		if !strings.HasPrefix(got, "<code>01J5K</code>  buy milk\n") {
+			t.Fatalf("expected ULID+title header; got:\n%s", got)
+		}
+	})
+
+	t.Run("escapes HTML metacharacters", func(t *testing.T) {
+		task := model.Task{
+			ID:        id,
+			Title:     "<title> & stuff",
+			Body:      "body with <html> & chars",
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if !strings.Contains(got, "&lt;title&gt; &amp; stuff") {
+			t.Fatalf("title not escaped; got:\n%s", got)
+		}
+		if !strings.Contains(got, "body with &lt;html&gt; &amp; chars") {
+			t.Fatalf("body not escaped; got:\n%s", got)
+		}
+	})
+
+	t.Run("with tags excludes active", func(t *testing.T) {
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Schedule:  "2026-05-18",
+			Tags:      []string{"work", model.ActiveTag, "urgent"},
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if !strings.Contains(got, "Tags: work, urgent") {
+			t.Fatalf("expected Tags: work, urgent; got:\n%s", got)
+		}
+	})
+
+	t.Run("with recurrence", func(t *testing.T) {
+		task := model.Task{
+			ID:         id,
+			Title:      "weekly review",
+			Schedule:   "2026-05-25",
+			Recurrence: "weekly:mon",
+			CreatedAt:  createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if !strings.Contains(got, "Recur: weekly:mon") {
+			t.Fatalf("expected Recur line; got:\n%s", got)
+		}
+	})
+
+	t.Run("with note count", func(t *testing.T) {
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Schedule:  "2026-05-18",
+			NoteCount: 5,
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if !strings.Contains(got, "Notes: 5") {
+			t.Fatalf("expected Notes: 5; got:\n%s", got)
+		}
+	})
+
+	t.Run("body preserved with newlines", func(t *testing.T) {
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Body:      "line one\nline two\n\nline four",
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if !strings.Contains(got, "line one\nline two\n\nline four") {
+			t.Fatalf("body newlines not preserved; got:\n%s", got)
+		}
+	})
+
+	t.Run("body shorter than cap stays whole", func(t *testing.T) {
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Body:      "short body",
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if strings.Contains(got, truncationMarker) {
+			t.Fatalf("short body should not be truncated; got:\n%s", got)
+		}
+		if !strings.HasSuffix(got, "short body") {
+			t.Fatalf("body missing from output; got:\n%s", got)
+		}
+	})
+
+	t.Run("body longer than cap truncated with marker", func(t *testing.T) {
+		// generate a body that, when escaped, comfortably exceeds the
+		// telegramMaxMessage budget after the header.
+		body := strings.Repeat("a", telegramMaxMessage+200)
+		task := model.Task{
+			ID:        id,
+			Title:     "task",
+			Body:      body,
+			Schedule:  "2026-05-18",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if len(got) > telegramMaxMessage {
+			t.Fatalf("output exceeds Telegram cap: len=%d", len(got))
+		}
+		if !strings.HasSuffix(got, truncationMarker) {
+			t.Fatalf("expected truncation marker at end; got tail %q", got[len(got)-50:])
+		}
+	})
+
+	t.Run("schedule today no bucket parentheses when stored is bucket name", func(t *testing.T) {
+		// legacy task that still has the literal "someday" bucket name as
+		// its schedule value. The bucket and stored value are equal so
+		// no parenthetical is appended.
+		task := model.Task{
+			ID:        id,
+			Title:     "later",
+			Schedule:  "someday",
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if !strings.Contains(got, "Schedule: someday\n") {
+			t.Fatalf("expected legacy bucket without parens; got:\n%s", got)
+		}
+	})
+
+	t.Run("schedule week bucket parens", func(t *testing.T) {
+		task := model.Task{
+			ID:        id,
+			Title:     "weekly thing",
+			Schedule:  "2026-05-25", // 7 days from now → week
+			CreatedAt: createdAt,
+		}
+		got := formatDetailViewAt(task, testDateFormat, now)
+		if !strings.Contains(got, "Schedule: 25-05-2026 (week)") {
+			t.Fatalf("expected (week) bucket label; got:\n%s", got)
+		}
+	})
+}
+
+func TestBuildSummaryKeyboard(t *testing.T) {
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	kb := BuildSummaryKeyboard(id)
+	if len(kb) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(kb))
+	}
+	row := kb[0]
+	if len(row) != 3 {
+		t.Fatalf("expected 3 buttons, got %d", len(row))
+	}
+	wantData := []string{"done:" + id, "active:" + id, "view:" + id}
+	wantText := []string{"✅ Done", "⭐ Active", "📄 Details"}
+	for i, b := range row {
+		if b.CallbackData != wantData[i] {
+			t.Errorf("button %d data=%q want %q", i, b.CallbackData, wantData[i])
+		}
+		if b.Text != wantText[i] {
+			t.Errorf("button %d text=%q want %q", i, b.Text, wantText[i])
+		}
+		// ParseCallback should round-trip the data we generate.
+		action, gotID, err := ParseCallback(b.CallbackData)
+		if err != nil {
+			t.Errorf("ParseCallback(%q) err=%v", b.CallbackData, err)
+		}
+		if gotID != id {
+			t.Errorf("ParseCallback(%q) ulid=%q want %q", b.CallbackData, gotID, id)
+		}
+		if action == "" {
+			t.Errorf("ParseCallback(%q) action empty", b.CallbackData)
+		}
+	}
+}
+
+func TestBuildDetailKeyboard(t *testing.T) {
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	kb := BuildDetailKeyboard(id)
+	if len(kb) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(kb))
+	}
+	row := kb[0]
+	if len(row) != 3 {
+		t.Fatalf("expected 3 buttons, got %d", len(row))
+	}
+	wantData := []string{"collapse:" + id, "done:" + id, "active:" + id}
+	wantText := []string{"⬆ Collapse", "✅ Done", "⭐ Active"}
+	for i, b := range row {
+		if b.CallbackData != wantData[i] {
+			t.Errorf("button %d data=%q want %q", i, b.CallbackData, wantData[i])
+		}
+		if b.Text != wantText[i] {
+			t.Errorf("button %d text=%q want %q", i, b.Text, wantText[i])
+		}
+	}
+}
+
+func TestFormatDoneRow(t *testing.T) {
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	t.Run("non-recurring", func(t *testing.T) {
+		got := FormatDoneRow(model.Task{ID: id, Title: "buy milk"}, "")
+		want := "✅ <s><code>01J5K</code>  buy milk</s>"
+		if got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	})
+	t.Run("recurring with next date", func(t *testing.T) {
+		got := FormatDoneRow(model.Task{ID: id, Title: "weekly review"}, "25-04-2026")
+		want := "✅ <s><code>01J5K</code>  weekly review</s>\n↻ next: 25-04-2026"
+		if got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	})
+	t.Run("escapes HTML in title", func(t *testing.T) {
+		got := FormatDoneRow(model.Task{ID: id, Title: "<x> & y"}, "")
+		want := "✅ <s><code>01J5K</code>  &lt;x&gt; &amp; y</s>"
+		if got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	})
+}
+
+func TestFormatEmptyBucket(t *testing.T) {
+	tests := []struct {
+		label string
+		want  string
+	}{
+		{"Today", "<b>Today</b> — nothing 🎉"},
+		{"Week", "<b>Week</b> — nothing 🎉"},
+		{"<x>", "<b>&lt;x&gt;</b> — nothing 🎉"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.label, func(t *testing.T) {
+			if got := FormatEmptyBucket(tc.label); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatScheduleLine(t *testing.T) {
+	now := testNow()
+	tests := []struct {
+		name   string
+		stored string
+		want   string
+	}{
+		{"today", "2026-05-18", "18-05-2026 (today)"},
+		{"tomorrow", "2026-05-19", "19-05-2026 (tomorrow)"},
+		{"week", "2026-05-25", "25-05-2026 (week)"},
+		{"month", "2026-06-15", "15-06-2026 (month)"},
+		{"someday", "2027-01-01", "01-01-2027 (someday)"},
+		{"legacy bucket name", "someday", "someday"},
+		{"past date = today bucket", "2026-05-10", "10-05-2026 (today)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatScheduleLine(tc.stored, now, testDateFormat)
+			if got != tc.want {
+				t.Fatalf("formatScheduleLine(%q): got %q want %q", tc.stored, got, tc.want)
 			}
 		})
 	}

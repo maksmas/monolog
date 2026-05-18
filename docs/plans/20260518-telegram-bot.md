@@ -258,19 +258,19 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `internal/telegram/convert.go`
 - Modify: `internal/telegram/convert_test.go`
 
-- [ ] add `FormatTaskRow(t model.Task, dateFormat string) string` — HTML-formatted summary row: `<code>{prefix5}</code>  {escaped-title}\n<i>{tag-list}  ·  {recur-marker}{notes-badge}</i>` (omit the `<i>` block entirely if no tags + no recur + no notes; recur marker = `↻` when `t.Recurrence != ""`; notes badge = `[N]` when `t.NoteCount > 0`)
-- [ ] add `FormatDetailView(t model.Task, dateFormat string) string` — HTML-formatted full detail mirroring TUI `detailPanelView`: ID line + Schedule / Tags / Recur (conditional) / Created / Notes lines + blank line + body (HTML-escaped, newlines preserved); apply 4096-char cap on the whole message with `… (open laptop for full body)` truncation on the body only
-- [ ] add `BuildSummaryKeyboard(taskID string) InlineKeyboard` — single row with three buttons: `[✅ Done | done:<ID>]`, `[⭐ Active | active:<ID>]`, `[📄 Details | view:<ID>]`
-- [ ] add `BuildDetailKeyboard(taskID string) InlineKeyboard` — single row: `[⬆ Collapse | collapse:<ID>]`, `[✅ Done | done:<ID>]`, `[⭐ Active | active:<ID>]`
-- [ ] add `FormatDoneRow(t model.Task, nextDate string) string` — strike-through row: `✅ <s><code>{prefix5}</code>  {escaped-title}</s>` plus `\n↻ next: {nextDate}` only when `nextDate != ""`
-- [ ] add `FormatEmptyBucket(label string) string` — `<b>{label}</b> — nothing 🎉`
-- [ ] add `htmlEscape(s string) string` helper using `html.EscapeString` (small wrapper to keep call sites readable)
-- [ ] add `Schedule` rendering helper that maps stored ISO date → display string `"{DD-MM-YYYY} ({bucket})"` when the date matches today/tomorrow/week/month, else just the formatted date; bucket names use existing `schedule` package
-- [ ] write tests for `FormatTaskRow`: title with HTML metacharacters (`<`, `>`, `&`), no tags, with tags, with recur marker, with notes count, all combined, ULID prefix correctness
-- [ ] write tests for `FormatDetailView`: with and without recurrence, with and without notes, body shorter than 4096, body longer than 4096 (truncation triggers), schedule rendering for today/week/specific-date
-- [ ] write tests for `BuildSummaryKeyboard` and `BuildDetailKeyboard`: button count, callback data shape, button text
-- [ ] write tests for `FormatDoneRow` (with and without next date), `FormatEmptyBucket`, `htmlEscape`
-- [ ] run `go test ./internal/telegram/...` — must pass before next task
+- [x] add `FormatTaskRow(t model.Task, dateFormat string) string` — HTML-formatted summary row: `<code>{prefix5}</code>  {escaped-title}\n<i>{tag-list}  ·  {recur-marker}{notes-badge}</i>` (omit the `<i>` block entirely if no tags + no recur + no notes; recur marker = `↻` when `t.Recurrence != ""`; notes badge = `[N]` when `t.NoteCount > 0`)
+- [x] add `FormatDetailView(t model.Task, dateFormat string) string` — HTML-formatted full detail mirroring TUI `detailPanelView`: ID line + Schedule / Tags / Recur (conditional) / Created / Notes lines + blank line + body (HTML-escaped, newlines preserved); apply 4096-char cap on the whole message with `… (open laptop for full body)` truncation on the body only
+- [x] add `BuildSummaryKeyboard(taskID string) InlineKeyboard` — single row with three buttons: `[✅ Done | done:<ID>]`, `[⭐ Active | active:<ID>]`, `[📄 Details | view:<ID>]`
+- [x] add `BuildDetailKeyboard(taskID string) InlineKeyboard` — single row: `[⬆ Collapse | collapse:<ID>]`, `[✅ Done | done:<ID>]`, `[⭐ Active | active:<ID>]`
+- [x] add `FormatDoneRow(t model.Task, nextDate string) string` — strike-through row: `✅ <s><code>{prefix5}</code>  {escaped-title}</s>` plus `\n↻ next: {nextDate}` only when `nextDate != ""`
+- [x] add `FormatEmptyBucket(label string) string` — `<b>{label}</b> — nothing 🎉`
+- [x] add `htmlEscape(s string) string` helper using `html.EscapeString` (small wrapper to keep call sites readable)
+- [x] add `Schedule` rendering helper that maps stored ISO date → display string `"{DD-MM-YYYY} ({bucket})"` when the date matches today/tomorrow/week/month, else just the formatted date; bucket names use existing `schedule` package
+- [x] write tests for `FormatTaskRow`: title with HTML metacharacters (`<`, `>`, `&`), no tags, with tags, with recur marker, with notes count, all combined, ULID prefix correctness
+- [x] write tests for `FormatDetailView`: with and without recurrence, with and without notes, body shorter than 4096, body longer than 4096 (truncation triggers), schedule rendering for today/week/specific-date
+- [x] write tests for `BuildSummaryKeyboard` and `BuildDetailKeyboard`: button count, callback data shape, button text
+- [x] write tests for `FormatDoneRow` (with and without next date), `FormatEmptyBucket`, `htmlEscape`
+- [x] run `go test ./internal/telegram/...` — must pass before next task
 
 ### Task 4: Bot interface + real client wrapping go-telegram-bot-api
 
