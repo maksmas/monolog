@@ -137,10 +137,7 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 		return nil
 	}
 	if u.Message.ReplyTo != nil {
-		// Reply-to-note handler is implemented in task 8; until then we
-		// fall through to ignoring the reply so the user sees no spurious
-		// behavior on the message path that lands here.
-		return nil
+		return h.handleNoteReply(ctx, u.Message)
 	}
 	if len(u.Message.Text) > 0 && u.Message.Text[0] == '/' {
 		return h.handleSlash(ctx, u.Message)
@@ -202,10 +199,7 @@ func (h *Handler) handleSlash(ctx context.Context, m *Message) error {
 	case "all":
 		return h.handleAll(ctx, m)
 	case "help", "start":
-		// Help / start handlers land in task 8; until then we reply with a
-		// terse note so users hitting these commands get *some* feedback.
-		_, err := h.bot.SendMessage(ctx, m.ChatID, "help command coming soon — try /today, /week, /active, /all", nil)
-		return err
+		return h.handleHelp(ctx, m)
 	default:
 		_, err := h.bot.SendMessage(ctx, m.ChatID, "unknown command — try /help", nil)
 		return err
@@ -611,5 +605,144 @@ func (h *Handler) handleCallbackCollapse(ctx context.Context, cq *CallbackQuery,
 		return fmt.Errorf("edit collapse message: %w", err)
 	}
 	return h.bot.AnswerCallback(ctx, cq.ID, "")
+}
+
+// helpText is the static HTML cheatsheet returned for /help and /start.
+// It mirrors the user-facing surface implemented by the Telegram package
+// today: free-text capture (with #hashtag and tagname: prefix), the four
+// browse commands, the inline keyboard buttons, and the reply-to-note flow.
+// The wording is deliberately terse so the message stays under one screen
+// on a phone — discovery in detail still lives in the laptop CLI's `help`.
+const helpText = `<b>monolog bot</b>
+Send any free text to <b>capture</b> a task.
+  • Add <code>#hashtag</code> anywhere on the first line to tag.
+  • Start with <code>tagname:</code> to auto-apply an existing tag.
+
+<b>Browse</b>
+  /today    — today's bucket
+  /week     — the week bucket
+  /active   — tasks tagged active
+  /all      — every open task
+
+<b>Buttons under each task</b>
+  ✅ Done — complete (recurring tasks spawn next occurrence)
+  ⭐ Active — toggle the active tag
+  📄 Details — expand to full body
+
+<b>Notes</b>
+  Reply to any task message to append a timestamped note.`
+
+// handleHelp sends the static help cheatsheet. /start is routed here too
+// so the very first interaction a new chat sees mirrors the on-demand
+// /help reply — no separate "welcome" text to maintain. The handler does
+// NOT touch the store and is safe in read-only mode.
+func (h *Handler) handleHelp(ctx context.Context, m *Message) error {
+	_, err := h.bot.SendMessage(ctx, m.ChatID, helpText, nil)
+	return err
+}
+
+// noteReplyMissingPrefix is the user-facing message sent when a reply
+// does not start with a recognisable task token. The hint points the
+// user at the prefix shape rendered in summary rows.
+const noteReplyMissingPrefix = "could not find a task ID in the replied-to message — reply to a task summary"
+
+// noteReplySuccess is the confirmation sent after a note has been
+// appended and committed. Kept short for phone-screen reading; the
+// updated note count surfaces on the next browse via the [N] badge.
+const noteReplySuccess = "📝 note added"
+
+// handleNoteReply appends a timestamped note to an existing task. The
+// resolution rule is:
+//
+//  1. Extract the first whitespace-bounded token from m.ReplyTo.Text.
+//     The summary rows we send always begin with the 5-char ULID prefix
+//     (rendered inside <code>...</code>); Telegram strips the HTML in
+//     replies, so the plain text begins with the prefix itself.
+//  2. Pass that token to store.Resolve so ambiguous prefixes / initials
+//     matches behave exactly like the CLI's lookup. Resolution errors
+//     are surfaced to the user verbatim (HTML-escaped) so they know
+//     what went wrong without us hand-rolling a separate error catalog.
+//  3. On success build the new body via model.AppendNote, store.Update,
+//     commit + sync, and reply with a short confirmation.
+//
+// readOnly path mirrors the other write handlers — the reply is rejected
+// with the conflict message and the store is untouched.
+func (h *Handler) handleNoteReply(ctx context.Context, m *Message) error {
+	if h.readOnly.Load() {
+		_, err := h.bot.SendMessage(ctx, m.ChatID, readOnlyMessage, nil)
+		return err
+	}
+	if m.ReplyTo == nil {
+		// Defensive: Handle's routing has already checked this, but a
+		// future caller could invoke handleNoteReply directly.
+		return nil
+	}
+
+	prefix := firstToken(m.ReplyTo.Text)
+	if prefix == "" {
+		_, err := h.bot.SendMessage(ctx, m.ChatID, noteReplyMissingPrefix, nil)
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.readOnly.Load() {
+		_, err := h.bot.SendMessage(ctx, m.ChatID, readOnlyMessage, nil)
+		return err
+	}
+
+	task, err := h.store.Resolve(prefix)
+	if err != nil {
+		// Bubble the resolve error verbatim — its wording already covers
+		// the not-found and ambiguous cases. HTML-escape because the
+		// ambiguous case includes user-controlled task titles.
+		reply := "could not resolve task: " + htmlEscape(err.Error())
+		if _, sendErr := h.bot.SendMessage(ctx, m.ChatID, reply, nil); sendErr != nil {
+			return errors.Join(err, sendErr)
+		}
+		return nil
+	}
+
+	now := h.now()
+	task.Body = model.AppendNote(task.Body, m.Text, now, h.dateFormat)
+	task.UpdatedAt = now.UTC().Format(time.RFC3339)
+
+	if err := h.store.Update(task); err != nil {
+		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: store update failed", nil)
+		return errors.Join(fmt.Errorf("store.Update: %w", err), sendErr)
+	}
+
+	if syncErr := h.commitAndSync(fmt.Sprintf("note: %s", task.Title), taskRelPath(task.ID)); syncErr != nil {
+		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, readOnlyMessage, nil)
+		if sendErr != nil {
+			return errors.Join(syncErr, sendErr)
+		}
+		return syncErr
+	}
+
+	if _, err := h.bot.SendMessage(ctx, m.ChatID, noteReplySuccess, nil); err != nil {
+		return fmt.Errorf("send note ack: %w", err)
+	}
+	return nil
+}
+
+// firstToken returns the first whitespace-bounded substring of text, or
+// the empty string when text is all-whitespace. Used by handleNoteReply
+// to peel the ULID prefix off the start of a replied-to summary row.
+func firstToken(text string) string {
+	for i := 0; i < len(text); i++ {
+		if text[i] != ' ' && text[i] != '\t' && text[i] != '\n' && text[i] != '\r' {
+			start := i
+			for j := start; j < len(text); j++ {
+				c := text[j]
+				if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+					return text[start:j]
+				}
+			}
+			return text[start:]
+		}
+	}
+	return ""
 }
 

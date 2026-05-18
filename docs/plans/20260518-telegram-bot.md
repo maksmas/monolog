@@ -361,16 +361,16 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `internal/telegram/handler.go`
 - Modify: `internal/telegram/handler_test.go`
 
-- [ ] in `Handle`, before the slash-vs-capture branch: if `m.ReplyTo != nil` route to `handleNoteReply`
-- [ ] add `(*Handler) handleNoteReply(ctx, m *Message) error`: respect `readOnly`; extract first whitespace-bounded token from `m.ReplyTo.Text` as the task-prefix; call `store.Resolve(prefix)`; on ambiguous match reply with conflict-style message listing the conflicts (matches existing `store.Resolve` behavior — surface its error verbatim with `htmlEscape`); on success load task, call `model.AppendNote(task.Body, m.Text, h.now(), h.dateFormat)` to compute new body, `store.Update` task, `commitAndSync` with `"note: <title>"`, reply with `📝 note added` (single message, no buttons)
-- [ ] add `handleHelp(ctx, m *Message) error` printing a fixed HTML cheatsheet covering: free-text=capture (with `#tags` and `tagname:` prefix), `/today` `/week` `/active` `/all`, inline buttons (Done/Active/Details), reply-to-message=note
-- [ ] route `/help` and `/start` to `handleHelp`
-- [ ] unknown slash command → reply `unknown command — try /help` (already added in task 6, double-check)
-- [ ] write tests: reply with text to a task message whose text starts with `01J5K` → task body has new note appended, commit made
-- [ ] test: reply to a non-task message (e.g. the help message) where first token is not a valid prefix → reply with resolve error, store unchanged
-- [ ] test: `/help` → message contains expected command list
-- [ ] test: `/start` → same message as `/help`
-- [ ] run `go test ./internal/telegram/...` — must pass before next task
+- [x] in `Handle`, before the slash-vs-capture branch: if `m.ReplyTo != nil` route to `handleNoteReply`
+- [x] add `(*Handler) handleNoteReply(ctx, m *Message) error`: respect `readOnly`; extract first whitespace-bounded token from `m.ReplyTo.Text` as the task-prefix; call `store.Resolve(prefix)`; on ambiguous match reply with conflict-style message listing the conflicts (matches existing `store.Resolve` behavior — surface its error verbatim with `htmlEscape`); on success load task, call `model.AppendNote(task.Body, m.Text, h.now(), h.dateFormat)` to compute new body, `store.Update` task, `commitAndSync` with `"note: <title>"`, reply with `📝 note added` (single message, no buttons)
+- [x] add `handleHelp(ctx, m *Message) error` printing a fixed HTML cheatsheet covering: free-text=capture (with `#tags` and `tagname:` prefix), `/today` `/week` `/active` `/all`, inline buttons (Done/Active/Details), reply-to-message=note
+- [x] route `/help` and `/start` to `handleHelp`
+- [x] unknown slash command → reply `unknown command — try /help` (already added in task 6, double-check)
+- [x] write tests: reply with text to a task message whose text starts with `01J5K` → task body has new note appended, commit made
+- [x] test: reply to a non-task message (e.g. the help message) where first token is not a valid prefix → reply with resolve error, store unchanged
+- [x] test: `/help` → message contains expected command list
+- [x] test: `/start` → same message as `/help`
+- [x] run `go test ./internal/telegram/...` — must pass before next task
 
 ### Task 9: `telegram.Serve` main loop (long polling + pull ticker + graceful shutdown)
 

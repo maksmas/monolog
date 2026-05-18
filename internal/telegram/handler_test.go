@@ -425,11 +425,12 @@ func TestHandleCallbackDroppedForNonAllowedUser(t *testing.T) {
 	}
 }
 
-func TestHandleReplyToMessageIsIgnoredUntilTask8(t *testing.T) {
-	// Until task 8 wires up handleNoteReply, a message with ReplyTo set
-	// must NOT fall through to the capture path. This test pins the
-	// boundary so a future refactor that accidentally re-enables the
-	// fall-through gets caught.
+func TestHandleReplyToMessageDoesNotCreateNewTask(t *testing.T) {
+	// A reply with no resolvable task token must NOT fall through to the
+	// capture path — that would create spurious tasks every time the user
+	// replies to anything that doesn't begin with a ULID prefix. The reply
+	// path either appends a note or surfaces a resolve error; it never
+	// captures.
 	h, bot, s, _ := newTestHandler(t, []int64{100})
 
 	upd := Update{
@@ -438,14 +439,18 @@ func TestHandleReplyToMessageIsIgnoredUntilTask8(t *testing.T) {
 			ChatID:  5,
 			UserID:  100,
 			Text:    "this is a note",
-			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "01ARZ original"},
+			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "no-such-prefix original"},
 		},
 	}
 	if err := h.Handle(context.Background(), upd); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(bot.sent) != 0 {
-		t.Fatalf("expected no outbound message, got %d", len(bot.sent))
+	// One reply — the resolve error message — but zero captured tasks.
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 outbound message (resolve error), got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "could not resolve task") {
+		t.Fatalf("expected resolve error reply, got %q", bot.sent[0].HTML)
 	}
 	tasks, _ := s.List(store.ListOptions{})
 	if len(tasks) != 0 {
@@ -841,10 +846,49 @@ func TestHandleSlashCaseInsensitiveAndIgnoresArgs(t *testing.T) {
 	}
 }
 
-func TestHandleSlashHelpAndStartStub(t *testing.T) {
-	// Task 8 lands the real /help and /start replies; for now task 6's
-	// stub should send a one-line placeholder so users hitting these
-	// commands don't see silence.
+func TestHandleSlashHelpListsCommands(t *testing.T) {
+	// /help must surface the cheatsheet covering capture, browse commands,
+	// inline buttons, and the reply-to-note flow. We assert on a handful
+	// of stable substrings rather than the full message so cosmetic edits
+	// don't make the test brittle.
+	h, bot, _, _ := newTestHandler(t, []int64{100})
+
+	upd := Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/help"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(bot.sent))
+	}
+	help := bot.sent[0].HTML
+	for _, needle := range []string{
+		"capture",
+		"#hashtag",
+		"tagname:",
+		"/today",
+		"/week",
+		"/active",
+		"/all",
+		"Done",
+		"Active",
+		"Details",
+		"Reply",
+	} {
+		if !strings.Contains(help, needle) {
+			t.Fatalf("help message missing %q; got %q", needle, help)
+		}
+	}
+	if len(bot.sent[0].Keyboard) != 0 {
+		t.Fatalf("help should have no keyboard, got %+v", bot.sent[0].Keyboard)
+	}
+}
+
+func TestHandleSlashStartReturnsSameAsHelp(t *testing.T) {
+	// /start is an alias for /help — they MUST emit identical bodies so
+	// the first interaction in a chat mirrors the on-demand cheatsheet.
 	h, bot, _, _ := newTestHandler(t, []int64{100})
 
 	for _, cmd := range []string{"/help", "/start"} {
@@ -859,6 +903,27 @@ func TestHandleSlashHelpAndStartStub(t *testing.T) {
 		if len(bot.sent) != 1 {
 			t.Fatalf("%s: expected 1 reply, got %d", cmd, len(bot.sent))
 		}
+	}
+	// /start's body must equal /help's body — re-run /help here so the
+	// assertion is anchored to the helpText constant by behavior, not by
+	// reading the constant in the test.
+	bot.sent = nil
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/help"},
+	}); err != nil {
+		t.Fatalf("Handle /help (anchor): %v", err)
+	}
+	helpHTML := bot.sent[0].HTML
+	bot.sent = nil
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 2,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/start"},
+	}); err != nil {
+		t.Fatalf("Handle /start: %v", err)
+	}
+	if bot.sent[0].HTML != helpHTML {
+		t.Fatalf("/start body must equal /help body\n/help:  %q\n/start: %q", helpHTML, bot.sent[0].HTML)
 	}
 }
 
@@ -1231,6 +1296,244 @@ func TestHandleCallbackReadOnlyBlocksDoneAndActiveAllowsView(t *testing.T) {
 	}
 	if len(bot.edits) != 1 {
 		t.Fatalf("expected View to land 1 edit, got %d", len(bot.edits))
+	}
+}
+
+func TestHandleNoteReplyAppendsNoteAndCommits(t *testing.T) {
+	// Replying with text to a task summary message must append a
+	// timestamped note to the task's body and land a single git commit
+	// with the canonical "note: <title>" subject.
+	h, bot, s, repoPath := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "ship it",
+		Body:  "original body",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID:  5,
+			UserID:  100,
+			Text:    "tested locally, looks good",
+			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "01ARZ  ship it"},
+		},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	got, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !strings.Contains(got.Body, "tested locally, looks good") {
+		t.Fatalf("body should include new note, got %q", got.Body)
+	}
+	if !strings.Contains(got.Body, "original body") {
+		t.Fatalf("body should retain original content, got %q", got.Body)
+	}
+	if got.NoteCount != 1 {
+		t.Fatalf("NoteCount=%d want 1; body=%q", got.NoteCount, got.Body)
+	}
+
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected one ack message, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "note added") {
+		t.Fatalf("expected note-added ack, got %q", bot.sent[0].HTML)
+	}
+	if len(bot.sent[0].Keyboard) != 0 {
+		t.Fatalf("note ack should carry no keyboard, got %+v", bot.sent[0].Keyboard)
+	}
+
+	subjects := gitLogSubjects(t, repoPath)
+	if len(subjects) < 2 {
+		t.Fatalf("expected >=2 commits, got %d: %v", len(subjects), subjects)
+	}
+	if subjects[0] != "note: ship it" {
+		t.Fatalf("commit subject=%q want %q", subjects[0], "note: ship it")
+	}
+}
+
+func TestHandleNoteReplyEmptyFirstTokenReplies(t *testing.T) {
+	// A reply whose replied-to text is all whitespace yields no token at
+	// all — the handler must point the user at the prefix shape rather
+	// than reach the resolver with an empty input.
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+
+	upd := Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID:  5,
+			UserID:  100,
+			Text:    "hi",
+			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "   "},
+		},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 hint reply, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "could not find a task ID") {
+		t.Fatalf("expected missing-prefix hint, got %q", bot.sent[0].HTML)
+	}
+	tasks, _ := s.List(store.ListOptions{})
+	if len(tasks) != 0 {
+		t.Fatalf("expected no store mutation, got %d tasks", len(tasks))
+	}
+}
+
+func TestHandleNoteReplyUnknownPrefixSurfacesResolveError(t *testing.T) {
+	// A reply whose first token does not resolve to any task surfaces the
+	// store's error verbatim — the user sees "task not found" wording so
+	// the hint matches what the laptop CLI would say.
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "ship it",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID:  5,
+			UserID:  100,
+			Text:    "note text",
+			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "ZZZZZ  some other task"},
+		},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "could not resolve task") {
+		t.Fatalf("expected resolve-error reply, got %q", bot.sent[0].HTML)
+	}
+	// Store is unchanged — body of the seed task still empty.
+	got, _ := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if got.NoteCount != 0 {
+		t.Fatalf("expected no notes added, got %d", got.NoteCount)
+	}
+}
+
+func TestHandleNoteReplyAmbiguousPrefixIsEscaped(t *testing.T) {
+	// When the prefix matches multiple tasks by initials, store.Resolve
+	// returns an "ambiguous prefix" error containing user-controlled
+	// task titles. Those titles MUST be HTML-escaped before the reply
+	// goes back to Telegram so the bot doesn't get a parser rejection.
+	//
+	// We use leading-`<` titles so Initials("<x ...") starts with `<`,
+	// making `<x` a valid two-character prefix that matches both tasks
+	// (Initials is the first char of each whitespace-bounded word).
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	rfc := handlerTestNow.Format(time.RFC3339)
+	if err := s.Create(model.Task{
+		ID:        "01ARZ3NDEKTSV4RRFFQ69G5FA1",
+		Title:     "<broken> fix",
+		Status:    "open",
+		Position:  1000,
+		Schedule:  handlerTestNow.Format("2006-01-02"),
+		CreatedAt: rfc,
+		UpdatedAt: rfc,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := s.Create(model.Task{
+		ID:        "01ARZ3NDEKTSV4RRFFQ69G5FA2",
+		Title:     "<broken> feature",
+		Status:    "open",
+		Position:  2000,
+		Schedule:  handlerTestNow.Format("2006-01-02"),
+		CreatedAt: rfc,
+		UpdatedAt: rfc,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Initials("<broken> fix") = "<f"; Initials("<broken> feature") = "<f"
+	// — so `<f` is an ambiguous prefix matching both.
+	upd := Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID:  5,
+			UserID:  100,
+			Text:    "note text",
+			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "<f something"},
+		},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(bot.sent))
+	}
+	got := bot.sent[0].HTML
+	// HTML metacharacters from the user titles must be escaped.
+	if strings.Contains(got, "<broken>") {
+		t.Fatalf("ambiguous-task reply must HTML-escape titles, got %q", got)
+	}
+	if !strings.Contains(got, "&lt;broken&gt;") {
+		t.Fatalf("expected escaped title in reply, got %q", got)
+	}
+}
+
+func TestHandleNoteReplyBlockedWhenReadOnly(t *testing.T) {
+	// Note-append is a write — read-only mode rejects it the same way
+	// capture does, with the canned sync-conflict message and no store
+	// mutation.
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "frozen",
+	})
+	h.SetReadOnly(true)
+
+	upd := Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID:  5,
+			UserID:  100,
+			Text:    "note attempt",
+			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "01ARZ  frozen"},
+		},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(bot.sent))
+	}
+	if !strings.Contains(bot.sent[0].HTML, "sync conflict") {
+		t.Fatalf("expected sync-conflict reply, got %q", bot.sent[0].HTML)
+	}
+	got, _ := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if got.NoteCount != 0 || got.Body != "" {
+		t.Fatalf("expected store unchanged, got body=%q notes=%d", got.Body, got.NoteCount)
+	}
+}
+
+func TestFirstToken(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"   \t\n", ""},
+		{"abc", "abc"},
+		{"abc def", "abc"},
+		{"  abc def", "abc"},
+		{"01ARZ original-text", "01ARZ"},
+		{"\t\nABC123", "ABC123"},
+	}
+	for _, c := range cases {
+		got := firstToken(c.in)
+		if got != c.want {
+			t.Errorf("firstToken(%q) = %q want %q", c.in, got, c.want)
+		}
 	}
 }
 
