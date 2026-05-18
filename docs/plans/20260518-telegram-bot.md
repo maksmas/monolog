@@ -243,14 +243,14 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Create: `internal/telegram/convert.go`
 - Create: `internal/telegram/convert_test.go`
 
-- [ ] create package `telegram` with header comment mirroring `email`'s "MUST NOT import internal/config" rule
-- [ ] add `ParseInlineTags(text string) (cleaned string, tags []string)` — extracts `#word` tokens (regex `#([A-Za-z0-9_-]+)`), returns deduped tag list and text with hashtag tokens removed plus whitespace collapsed
-- [ ] add `ParseCapture(text string) (title, body string, tags []string)` — splits on first `\n`, runs `ParseInlineTags` on the title portion, leaves body untouched (URLs and other content survive)
-- [ ] add `ParseCallback(data string) (action, ulid string, err error)` — splits on first `:`, validates action is one of `done|active|view|collapse`, validates ULID is exactly 26 chars (basic shape check — store layer does the actual lookup)
-- [ ] write tests for `ParseInlineTags`: empty, no hashtags, single hashtag, multiple hashtags, duplicate hashtags (deduped), hashtag-only text (empty result), unicode in body, leading/trailing whitespace, hashtags at start/middle/end of title
-- [ ] write tests for `ParseCapture`: single-line, multi-line, leading newline (empty title), trailing whitespace, tag extracted from title not body (body hashtags survive untouched)
-- [ ] write tests for `ParseCallback`: each valid action, malformed (no colon), unknown action, wrong-length ULID, empty input
-- [ ] run `go test ./internal/telegram/...` — must pass before next task
+- [x] create package `telegram` with header comment mirroring `email`'s "MUST NOT import internal/config" rule
+- [x] add `ParseInlineTags(text string) (cleaned string, tags []string)` — extracts `#word` tokens (regex `#([A-Za-z0-9_-]+)`), returns deduped tag list and text with hashtag tokens removed plus whitespace collapsed
+- [x] add `ParseCapture(text string) (title, body string, tags []string)` — splits on first `\n`, runs `ParseInlineTags` on the title portion, leaves body untouched (URLs and other content survive)
+- [x] add `ParseCallback(data string) (action, ulid string, err error)` — splits on first `:`, validates action is one of `done|active|view|collapse`, validates ULID is exactly 26 chars (basic shape check — store layer does the actual lookup)
+- [x] write tests for `ParseInlineTags`: empty, no hashtags, single hashtag, multiple hashtags, duplicate hashtags (deduped), hashtag-only text (empty result), unicode in body, leading/trailing whitespace, hashtags at start/middle/end of title
+- [x] write tests for `ParseCapture`: single-line, multi-line, leading newline (empty title), trailing whitespace, tag extracted from title not body (body hashtags survive untouched)
+- [x] write tests for `ParseCallback`: each valid action, malformed (no colon), unknown action, wrong-length ULID, empty input
+- [x] run `go test ./internal/telegram/...` — must pass before next task
 
 ### Task 3: Pure formatting helpers (rows, detail view, keyboards)
 
