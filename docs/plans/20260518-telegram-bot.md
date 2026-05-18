@@ -378,22 +378,22 @@ No "last sync time" (use `git log` for that history, same as email status).
 - Modify: `internal/telegram/sync.go`
 - Create: `internal/telegram/sync_test.go`
 
-- [ ] add `ServeOptions` struct: `RepoPath string`, `Bot Bot`, `Store *store.Store`, `Cfg TelegramConfig`, `DateFormat string`, `Now func() time.Time`, `Writer io.Writer` (stderr for warnings)
-- [ ] add `Serve(ctx context.Context, opts ServeOptions) error` main loop:
+- [x] add `ServeOptions` struct: `RepoPath string`, `Bot Bot`, `Store *store.Store`, `Cfg TelegramConfig`, `DateFormat string`, `Now func() time.Time`, `Writer io.Writer` (stderr for warnings)
+- [x] add `Serve(ctx context.Context, opts ServeOptions) error` main loop:
   1. Validate options (non-nil bot/store, RepoPath non-empty); return error on missing required fields
   2. On startup run `git.PullRebase(opts.RepoPath)` once; if it fails, log to opts.Writer and continue (don't fail Serve — bot can still serve stale data)
   3. Construct `Handler` via `NewHandler`
   4. Start pull ticker goroutine: `time.Ticker(cfg.PullInterval)`; on each tick run `PullRebase` and on success clear the handler's `readOnly` flag via an exported `(*Handler) ClearReadOnly()`; on error log via opts.Writer (non-fatal)
   5. Update loop: `offset := int64(0)`; loop while `ctx.Err() == nil`: `updates, err := bot.GetUpdates(ctx, offset, 30*time.Second)`; on ctx-cancellation error return nil; on other error log + small sleep with ctx-respecting backoff (e.g. `select { case <-time.After(2*time.Second): case <-ctx.Done(): return nil }`); for each update: `offset = max(offset, u.UpdateID+1)`, run handler.Handle in a goroutine? — **NO, serialize**: handle inline to keep simple write ordering (the mutex would serialize them anyway; goroutines just add complexity)
   6. On `ctx.Done()` return nil; defer ticker.Stop(); defer the pull-ticker goroutine exit (use a sub-ctx + done channel pattern, or pass the same ctx and have it select on ctx.Done)
-- [ ] expose `(*Handler) ClearReadOnly()` and `(*Handler) IsReadOnly() bool` (the latter for the browse banner — already used internally; just give it a method form)
-- [ ] write tests for `Serve`:
+- [x] expose `(*Handler) ClearReadOnly()` and `(*Handler) IsReadOnly() bool` (the latter for the browse banner — already used internally; just give it a method form)
+- [x] write tests for `Serve`:
   - test: feed fake bot with a queue of one capture update, call `Serve` in a goroutine, cancel ctx after first update processed, assert: store has one task, fake bot.SendMessage was called once, no errors
   - test: pull ticker fires twice during a short Serve run (use a tiny interval like 50ms, ctx with 200ms timeout, count fake `PullRebase` calls — for this we need to make `PullRebase` swappable, or use a real temp git repo with a fake remote → simpler: refactor the sync.go ticker to call an injectable `pullFunc func() error` defaulting to `git.PullRebase`)
   - ➕ if needed: introduce `pullFunc` and `syncFunc` injection points at the `Handler` level so tests don't need real git operations; this matches the `emailAuthorize` swappable-var pattern used by cmd/email.go
-- [ ] test: ctx cancel during getUpdates wait → Serve returns nil cleanly within 100ms
-- [ ] test: getUpdates error → backoff sleeps with ctx respect, retries on next tick
-- [ ] run `go test ./internal/telegram/...` — must pass before next task
+- [x] test: ctx cancel during getUpdates wait → Serve returns nil cleanly within 100ms
+- [x] test: getUpdates error → backoff sleeps with ctx respect, retries on next tick
+- [x] run `go test ./internal/telegram/...` — must pass before next task
 
 ### Task 10: `cmd/telegram.go` (serve + status subcommands)
 
