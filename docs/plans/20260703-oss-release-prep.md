@@ -160,10 +160,10 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 > pre-first-release). This task only produces the reproducible source (`.tape`) and
 > the make target; the gif path is referenced as a placeholder by Task 7.
 
-- [ ] write `docs/demo.tape` driving the TUI through a representative flow (launch, add a task, tag/schedule view, fuzzy search, mark done) with readable `Set FontSize` / `Sleep` pacing and `Output docs/img/demo.gif`
-- [ ] point the tape at an isolated `MONOLOG_DIR` (temp/demo dir) so the author's real backlog is never recorded
-- [ ] add Makefile `demo` target (`vhs docs/demo.tape`)
-- [ ] verify: `docs/demo.tape` is syntactically well-formed (a dry `vhs docs/demo.tape` run succeeds if vhs is installed; otherwise deferred to Post-Completion)
+- [x] write `docs/demo.tape` driving the TUI through a representative flow (launch, add a task, tag/schedule view, fuzzy search, mark done) with readable `Set FontSize` / `Sleep` pacing and `Output docs/img/demo.gif`
+- [x] point the tape at an isolated `MONOLOG_DIR` (temp/demo dir) so the author's real backlog is never recorded
+- [x] add Makefile `demo` target (`vhs docs/demo.tape`)
+- [x] verify: (vhs not installed — tape written and reviewed; `vhs validate` + gif render deferred to Post-Completion)
 
 ### Task 7: README rewrite (value-first)
 

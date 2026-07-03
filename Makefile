@@ -27,7 +27,7 @@ SVC_NAME ?= monolog-bot
 # Make swallows the include error when the file is absent.
 -include .env.deploy
 
-.PHONY: build test vet build-bot-linux-arm64 deploy-bot
+.PHONY: build test vet demo build-bot-linux-arm64 deploy-bot
 
 build:
 	go build $(LDFLAGS) -o monolog .
@@ -37,6 +37,12 @@ test:
 
 vet:
 	go vet ./...
+
+# Render the README demo gif (docs/img/demo.gif) from docs/demo.tape.
+# Requires vhs (`brew install vhs`) and `monolog` on PATH — see the header of
+# docs/demo.tape (`make build && export PATH=$PWD:$PATH`).
+demo:
+	vhs docs/demo.tape
 
 # Build the bot binary for the EC2 t4g.nano target (Linux ARM64). Output goes
 # to dist/ so `deploy-bot` has a stable path to scp. The dist/ directory is
