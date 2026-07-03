@@ -132,12 +132,12 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 **Files:**
 - Create: `.goreleaser.yaml`
 
-- [ ] start `.goreleaser.yaml` with an explicit top-level `version: 2` key (required by the v2 schema; without it `goreleaser check` warns)
-- [ ] create `builds` for `darwin,linux` × `amd64,arm64`, `binary: monolog`, `main: .`, `env: [CGO_ENABLED=0]`, ldflags injecting `cmd.Version`
-- [ ] add `archives` (tar.gz) and `checksum` (`checksums.txt`) blocks
-- [ ] add `brews` block targeting `mmaksmas/homebrew-tap` with `HOMEBREW_TAP_GITHUB_TOKEN`, homepage, description, and a `test do` stanza running `#{bin}/monolog --version`
-- [ ] add `changelog` block (git-based, sensible filters)
-- [ ] verify: `goreleaser check` passes; `goreleaser release --snapshot --clean` builds `dist/` locally without publishing (skip if goreleaser not installed — note as manual)
+- [x] start `.goreleaser.yaml` with an explicit top-level `version: 2` key (required by the v2 schema; without it `goreleaser check` warns)
+- [x] create `builds` for `darwin,linux` × `amd64,arm64`, `binary: monolog`, `main: .`, `env: [CGO_ENABLED=0]`, ldflags injecting `cmd.Version`
+- [x] add `archives` (tar.gz) and `checksum` (`checksums.txt`) blocks
+- [x] add `brews` block targeting `mmaksmas/homebrew-tap` with `HOMEBREW_TAP_GITHUB_TOKEN`, homepage, description, and a `test do` stanza running `#{bin}/monolog --version`
+- [x] add `changelog` block (git-based, sensible filters)
+- [x] verify: (goreleaser not installed — YAML validated with python yaml.safe_load, `goreleaser check` + snapshot build deferred to Post-Completion)
 
 ### Task 5: GitHub Actions — CI + release workflows
 
