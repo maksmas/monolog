@@ -40,3 +40,28 @@ func TestVersionFlagOutput(t *testing.T) {
 		t.Errorf("version output should contain %q, got: %s", Version, output)
 	}
 }
+
+// TestVersionOverrideInjection simulates a release build's ldflags override
+// (-X 'github.com/mmaksmas/monolog/cmd.Version=vX.Y.Z') by mutating the Version
+// package var, then asserts NewRootCmd() reads it dynamically and --version
+// reflects the injected value. This fails if the command hardcodes a literal
+// (e.g. Version: "dev") instead of Version: Version.
+func TestVersionOverrideInjection(t *testing.T) {
+	const sentinel = "v9.9.9-test"
+	orig := Version
+	t.Cleanup(func() { Version = orig })
+	Version = sentinel
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetArgs([]string{"--version"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("--version should succeed, got %v", err)
+	}
+
+	if !bytes.Contains(buf.Bytes(), []byte(sentinel)) {
+		t.Errorf("version output should contain injected %q, got: %s", sentinel, buf.String())
+	}
+}

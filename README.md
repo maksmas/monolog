@@ -14,11 +14,13 @@ A keyboard-driven personal backlog that lives in a git repo you own — no cloud
 
 ## Install
 
-### Homebrew
+### Homebrew (macOS)
 
 ```bash
 brew install mmaksmas/tap/monolog
 ```
+
+This is a Homebrew cask and is macOS-only. On Linux, use the prebuilt binary or `go install` below.
 
 ### Prebuilt binary
 
