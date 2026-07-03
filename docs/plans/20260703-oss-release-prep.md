@@ -145,9 +145,9 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - Create: `.github/workflows/ci.yml`
 - Create: `.github/workflows/release.yml`
 
-- [ ] create `ci.yml`: on push + pull_request, `setup-go` with `go-version-file: go.mod`, run `go build ./...`, `go test ./...`, `go vet ./...`
-- [ ] create `release.yml`: on `push: tags: ['v*']`, `permissions: contents: write` on the job, checkout with `fetch-depth: 0`, `setup-go` (`go-version-file: go.mod`), `goreleaser-action` (`args: release --clean`), env `GITHUB_TOKEN` + `HOMEBREW_TAP_GITHUB_TOKEN`
-- [ ] verify: `actionlint .github/workflows/*.yml` passes (or YAML parse + manual review if actionlint absent)
+- [x] create `ci.yml`: on push + pull_request, `setup-go` with `go-version-file: go.mod`, run `go build ./...`, `go test ./...`, `go vet ./...`
+- [x] create `release.yml`: on `push: tags: ['v*']`, `permissions: contents: write` on the job, checkout with `fetch-depth: 0`, `setup-go` (`go-version-file: go.mod`), `goreleaser-action` (`args: release --clean`), env `GITHUB_TOKEN` + `HOMEBREW_TAP_GITHUB_TOKEN`
+- [x] verify: (actionlint not installed — YAML validated + manual review; actionlint deferred to Post-Completion)
 
 ### Task 6: vhs demo script + Makefile target
 
