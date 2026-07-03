@@ -170,11 +170,11 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 **Files:**
 - Modify: `README.md`
 
-- [ ] restructure to: (1) title + one-line tagline, (2) hero image referencing `docs/img/demo.gif` (path committed now; the gif itself lands during Post-Completion), (3) "Why monolog" differentiation bullets, (4) Install (brew → binary download → `go install`), (5) 60-second Quick start, (6) Highlights bullets (tag view, fuzzy search, recurrence, themes, Gmail, Telegram), (7) condensed Concepts (schedules/buckets, tags & reserved `active`, storage+sync), (8) full command reference below the fold, (9) Configuration → Contributing → License
-- [ ] preserve the accurate existing reference/flag content — restructure and add top sections, do not rewrite correct docs
-- [ ] add the `brew install mmaksmas/tap/monolog` instruction and a binary-download pointer to GitHub Releases
-- [ ] add a License section linking `LICENSE`; link `CONTRIBUTING.md`
-- [ ] verify: markdown renders sensibly (headings/anchors/links resolve); LICENSE/CONTRIBUTING links resolve, and the `docs/img/demo.gif` path is correct (the gif file itself is added during Post-Completion first-release)
+- [x] restructure to: (1) title + one-line tagline, (2) hero image referencing `docs/img/demo.gif` (path committed now; the gif itself lands during Post-Completion), (3) "Why monolog" differentiation bullets, (4) Install (brew → binary download → `go install`), (5) 60-second Quick start, (6) Highlights bullets (tag view, fuzzy search, recurrence, themes, Gmail, Telegram), (7) condensed Concepts (schedules/buckets, tags & reserved `active`, storage+sync), (8) full command reference below the fold, (9) Configuration → Contributing → License
+- [x] preserve the accurate existing reference/flag content — restructure and add top sections, do not rewrite correct docs
+- [x] add the `brew install mmaksmas/tap/monolog` instruction and a binary-download pointer to GitHub Releases
+- [x] add a License section linking `LICENSE`; link `CONTRIBUTING.md`
+- [x] verify: markdown renders sensibly (headings/anchors/links resolve); LICENSE/CONTRIBUTING links resolve, and the `docs/img/demo.gif` path is correct (the gif file itself is added during Post-Completion first-release)
 
 ### Task 8: CONTRIBUTING.md
 

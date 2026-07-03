@@ -1,8 +1,30 @@
 # Monolog
 
-A CLI personal backlog tool. Tasks are stored as individual JSON files in a git repo for conflict-free cross-device sync.
+A keyboard-driven personal backlog that lives in a git repo you own — no cloud, no account, plain-text data.
+
+<!-- Hero demo generated via `make demo` (vhs docs/demo.tape); the GIF lands during the first release. -->
+![monolog TUI demo](docs/img/demo.gif)
+
+## Why monolog
+
+- **Git-backed, conflict-free sync.** One JSON file per task means two devices editing different tasks rebase cleanly — no merge conflicts, no sync server.
+- **Plain-text data you fully own.** Your backlog is just JSON files in a git repo on your disk. Grep it, script it, back it up, or walk away with it any time.
+- **Fast, keyboard-driven TUI.** The whole tool is built for the keyboard: switch tabs, reschedule, retag, search, and complete tasks without ever reaching for the mouse.
+- **No cloud, no account, no subscription.** Nothing phones home. There is no service to sign up for and nothing to pay.
 
 ## Install
+
+### Homebrew
+
+```bash
+brew install mmaksmas/tap/monolog
+```
+
+### Prebuilt binary
+
+Download a release archive from the [GitHub Releases page](https://github.com/mmaksmas/monolog/releases). Builds are available for macOS (darwin) and Linux, on both amd64 and arm64.
+
+### From source
 
 ```bash
 go install github.com/mmaksmas/monolog@latest
@@ -23,7 +45,25 @@ monolog sync                        # push/pull with a git remote
 monolog                             # launch the interactive TUI
 ```
 
-Set `MONOLOG_DIR` to store data somewhere other than `~/.monolog`. Set `MONOLOG_THEME` to `dracula` (or `default`) to switch TUI color themes; the same value can be persisted in `<MONOLOG_DIR>/.monolog/config.json` as the `"theme"` key. Drop JSON files into `<MONOLOG_DIR>/.monolog/themes/` to add your own — see [Themes](#themes).
+## Highlights
+
+- **Interactive TUI** — the default when you run `monolog` with no subcommand; tabs for each schedule bucket, an add modal, reschedule/retag/edit, and grab-to-reorder.
+- **Tag view** — press `v` (or launch with `--tags`/`-T`) to pivot tabs from schedule buckets to tags.
+- **Fuzzy search** — `/` fuzzy-matches across titles and bodies of all tasks and jumps you straight to a match.
+- **Recurring tasks** — completing a task with a recurrence rule auto-spawns the next occurrence (`monthly:N`, `weekly:<day>`, `workdays`, `days:N`).
+- **Color themes** — two built-in themes plus drop-in user themes from `<MONOLOG_DIR>/.monolog/themes/*.json`.
+- **Gmail import** — opt-in import of labeled emails as tasks, with archive-on-done.
+- **Telegram bot** — opt-in long-polling bot to capture, browse, and complete tasks from your phone.
+- **Clickable URLs** — the TUI wraps URLs in OSC 8 hyperlinks so Cmd/Ctrl-click opens the browser.
+- **Notes** — append timestamped notes to any task from the CLI or the TUI detail panel.
+
+## Concepts
+
+**Schedules / buckets.** Every task has a schedule: `today` (the default), `tomorrow`, `week`, `month`, `someday`, or a specific date. Buckets become the tabs in the TUI and the default filters on the CLI. Dates are entered and displayed in a configurable format (default `DD-MM-YYYY`); see [Date format](#date-format).
+
+**Tags & the reserved `active` tag.** Tasks carry comma-separated tags. The reserved `active` tag marks a task as part of your current working set — active tasks render in green and get their own panel in the TUI. See [Active tasks](#active-tasks).
+
+**Storage & git sync.** Each task is a single JSON file at `<repo>/.monolog/tasks/<ULID>.json`. IDs are [ULIDs](https://github.com/oklog/ulid) — time-sortable and globally unique, so you can address a task by typing just a prefix. Every mutation auto-commits to git, and because each task is its own file, two devices editing different tasks rebase without conflicts. Ordering uses fractional positions with automatic rebalancing. The default data directory is `~/.monolog` (override with `MONOLOG_DIR`).
 
 ## Commands
 
@@ -37,6 +77,7 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 |------|-------------|
 | `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or a date (default format `DD-MM-YYYY`; legacy ISO `YYYY-MM-DD` is still accepted) |
 | `-t, --tags` | Comma-separated tags |
+| `-b, --body` | Body text for the task |
 | `--recur` | Recurrence rule: `monthly:N` \| `weekly:<day>` \| `workdays` \| `days:N` (e.g. `monthly:1`, `weekly:mon`, `workdays`, `days:7` — see [Recurring tasks](#recurring-tasks)) |
 
 If the title starts with `tag: ...` and that tag already exists on another task, it is automatically added as a tag. For example, if a task already has the tag `jean`, running `monolog add "jean: create integration"` will auto-tag the new task with `jean`. The title is kept as-is. Duplicate tags are not created if the same tag is also passed via `--tags`.
@@ -183,11 +224,37 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
 | `x` | Delete task (with confirmation) |
 | `s` | Sync (commit, pull --rebase, push). When [email integration](#email-integration) is enabled, also runs `email sync` in parallel via `tea.Batch`; the bottom-bar hint widens to `sync (git+email)`. |
+| `u` / `Ctrl+z` | Undo the last mutation (multi-level, backed by `git revert`) |
+| `Ctrl+y` | Redo the last undone action |
 | `,` | Settings modal (date format, theme) |
 | `h` | Help modal |
 | `q` | Quit |
 
 Active tasks render in green in the list and appear in a dedicated panel above the tab bar. The panel auto-hides when no tasks are active.
+
+The running TUI also auto-refreshes when another process mutates the store — a Raycast capture, a second terminal running `monolog add`, or an external `git pull`. Set `MONOLOG_NO_WATCH=1` to disable the file watcher.
+
+## Configuration
+
+Monolog reads runtime settings from environment variables and an optional `config.json`.
+
+| Variable | Purpose |
+|----------|---------|
+| `MONOLOG_DIR` | Data directory (default `~/.monolog`) |
+| `MONOLOG_THEME` | TUI color theme (`default`, `dracula`, or a user theme name); takes precedence over `config.json` |
+| `MONOLOG_NO_LINKS` | Set to `1` to disable OSC 8 clickable URLs in the TUI |
+| `MONOLOG_NO_WATCH` | Set to `1` to disable the external-change file watcher |
+
+Persistent settings live in `<MONOLOG_DIR>/.monolog/config.json`:
+
+```json
+{
+  "theme": "default",
+  "date_format": "02-01-2006"
+}
+```
+
+The TUI settings modal (`,`) writes `theme` and `date_format`; the optional `email` and `telegram` blocks (documented below) are hand-edited or written by their respective `auth`/`serve` flows. Unknown keys are preserved on save.
 
 ## Themes
 
@@ -383,17 +450,13 @@ make deploy-bot EC2_HOST=ec2-user@<elastic-ip>    # scp + restart systemd unit
 
 The bot loses long-poll position briefly during restart; Telegram queues updates by `update_id` so nothing is dropped.
 
-## How it works
-
-Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-commits to git. Ordering uses fractional positions with automatic rebalancing.
-
 ## Date format
 
 User-facing dates default to `DD-MM-YYYY` — this covers CLI `--schedule` input, TUI reschedule/YAML-edit input, the task-list date column, the detail panel, recurrence commit messages and cross-reference notes, note separators inside task bodies, and error messages. Legacy ISO input (`YYYY-MM-DD`) is still accepted silently so older scripts keep working. The TUI reschedule modal's custom date input also accepts relative shorthands (`Nd`, `Nw`, `Nm` — e.g. `3d` = 3 days, `2w` = 2 weeks, `1m` = 1 month from today) regardless of the configured date format.
 
 On-disk storage always stays ISO (`"schedule": "2026-04-15"` in the JSON) regardless of the display format — this keeps `.monolog/` repos portable and sync-safe.
 
-The format is a compile-time default today, owned by `internal/config`. A future release will expose it as a configurable setting; at that point adding e.g. `YYYY-MM-DD` or `MM/DD/YYYY` will only touch the config package.
+The format is selectable from the TUI settings modal (`,`) and persisted as the `date_format` key in `config.json`.
 
 ## Task lookup
 
@@ -410,3 +473,11 @@ monolog done FL      # case-insensitive
 ```
 
 If multiple tasks share the same initials prefix, monolog reports the ambiguity and lists the conflicting titles.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test commands, the testing rule (every change ships tests; all tests pass before merge), and the planning workflow.
+
+## License
+
+Monolog is released under the MIT License. See [LICENSE](LICENSE).
