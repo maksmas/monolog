@@ -24,7 +24,7 @@ archives:
 checksum:
   name_template: checksums.txt
 
-brews:
+homebrew_casks:
   - name: monolog
     repository:
       owner: mmaksmas
@@ -32,11 +32,12 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/mmaksmas/monolog"
     description: "A CLI personal backlog tool with a git-backed, conflict-free store and an interactive TUI"
-    license: "MIT"
-    test: |
-      system "#{bin}/monolog --version"
-    install: |
-      bin.install "monolog"
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/monolog"]
+          end
 
 changelog:
   sort: asc
