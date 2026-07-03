@@ -100,9 +100,9 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 **Files:**
 - Create: `LICENSE`
 
-- [ ] create `LICENSE` with standard MIT text, `Copyright (c) 2026 <legal name>`
-- [ ] leave an inline note / confirm the exact copyright holder name (handle: mmaksmas)
-- [ ] verify: `go build -o monolog .` still succeeds (sanity, no code touched)
+- [x] create `LICENSE` with standard MIT text, `Copyright (c) 2026 <legal name>`
+- [x] leave an inline note / confirm the exact copyright holder name (handle: mmaksmas) — used `Copyright (c) 2026 mmaksmas`; legal name must be confirmed before publishing
+- [x] verify: `go build -o monolog .` still succeeds (sanity, no code touched)
 
 ### Task 2: Repo hygiene — untrack stray artifacts
 
