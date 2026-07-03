@@ -181,9 +181,9 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 **Files:**
 - Create: `CONTRIBUTING.md`
 
-- [ ] write a brief guide: build/test/vet commands (from CLAUDE.md), the "every change needs tests / all tests pass before merge" rule, and the `docs/plans/` planning workflow
-- [ ] note the Go version requirement and how to run the TUI locally
-- [ ] verify: links and commands are accurate against the current Makefile
+- [x] write a brief guide: build/test/vet commands (from CLAUDE.md), the "every change needs tests / all tests pass before merge" rule, and the `docs/plans/` planning workflow
+- [x] note the Go version requirement and how to run the TUI locally
+- [x] verify: links and commands are accurate against the current Makefile
 
 ### Task 9: Verify acceptance criteria
 - [ ] LICENSE present, MIT, correct copyright holder confirmed
