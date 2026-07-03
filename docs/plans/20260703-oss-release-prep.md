@@ -137,7 +137,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - [x] add `archives` (tar.gz) and `checksum` (`checksums.txt`) blocks
 - [x] add `brews` block targeting `mmaksmas/homebrew-tap` with `HOMEBREW_TAP_GITHUB_TOKEN`, homepage, description, and a `test do` stanza running `#{bin}/monolog --version`
 - [x] add `changelog` block (git-based, sensible filters)
-- [x] verify: (goreleaser not installed — YAML validated with python yaml.safe_load, `goreleaser check` + snapshot build deferred to Post-Completion)
+- [x] verify: (Task 9) `goreleaser 2.16.0` snapshot release builds all 4 targets + archives + `checksums.txt` + Homebrew formula cleanly; however `goreleaser check` flags the `brews:` block as DEPRECATED (use `homebrew_casks:` — https://goreleaser.com/deprecations#brews). Config remains valid on 2.16; migrating `brews:` → `homebrew_casks:` is a follow-up for a fixer.
 
 ### Task 5: GitHub Actions — CI + release workflows
 
@@ -147,7 +147,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 
 - [x] create `ci.yml`: on push + pull_request, `setup-go` with `go-version-file: go.mod`, run `go build ./...`, `go test ./...`, `go vet ./...`
 - [x] create `release.yml`: on `push: tags: ['v*']`, `permissions: contents: write` on the job, checkout with `fetch-depth: 0`, `setup-go` (`go-version-file: go.mod`), `goreleaser-action` (`args: release --clean`), env `GITHUB_TOKEN` + `HOMEBREW_TAP_GITHUB_TOKEN`
-- [x] verify: (actionlint not installed — YAML validated + manual review; actionlint deferred to Post-Completion)
+- [x] verify: `actionlint 1.7.12` ran clean on both workflows (Task 9) — no findings
 
 ### Task 6: vhs demo script + Makefile target
 
@@ -186,13 +186,13 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - [x] verify: links and commands are accurate against the current Makefile
 
 ### Task 9: Verify acceptance criteria
-- [ ] LICENSE present, MIT, correct copyright holder confirmed
-- [ ] `tasks.txt` no longer tracked; tree clean
-- [ ] `.goreleaser.yaml` passes `goreleaser check`; snapshot build produces darwin+linux/amd64+arm64 archives + checksums
-- [ ] both workflows lint clean; `ci.yml` mirrors `go build/test/vet`
-- [ ] README leads with value + demo gif; install order is brew → binary → go install
-- [ ] CONTRIBUTING present and accurate
-- [ ] run full suite: `go test ./...` and `go vet ./...` — all green
+- [x] LICENSE present, MIT, correct copyright holder confirmed — MIT text, `Copyright (c) 2026 mmaksmas`; legal-name confirmation remains a Post-Completion item (acceptable)
+- [x] `tasks.txt` no longer tracked; tree clean — `git ls-files | grep tasks.txt` returns nothing
+- [ ] `.goreleaser.yaml` passes `goreleaser check`; snapshot build produces darwin+linux/amd64+arm64 archives + checksums — snapshot build PASSES (all 4 archives + `checksums.txt` + Homebrew formula produced via `goreleaser release --snapshot --clean`), but `goreleaser check` (v2.16.0) exits non-zero: `DEPRECATED: brews should not be used anymore` (https://goreleaser.com/deprecations#brews — replace `brews:` with `homebrew_casks:`). Config is still valid and the release fully succeeds on 2.16; left for a fixer per the release-de-risk instruction. Also noted: local git remote is `maksmas/monolog` (module/config use `mmaksmas`), so the snapshot formula download URL renders `github.com/maksmas/...` — a local-remote mismatch, not a `.goreleaser.yaml` defect.
+- [x] both workflows lint clean; `ci.yml` mirrors `go build/test/vet` — `actionlint 1.7.12` ran clean on both workflows; `ci.yml` runs `go build/test/vet` with `go-version-file: go.mod`
+- [x] README leads with value + demo gif; install order is brew → binary → go install — verified
+- [x] CONTRIBUTING present and accurate — verified against Makefile/go.mod
+- [x] run full suite: `go test ./...` and `go vet ./...` — all green — build/vet/test all pass
 
 ### Task 10: Update documentation
 - [ ] update `CLAUDE.md` if any new patterns/conventions emerged (e.g. release/versioning workflow, demo regeneration)
