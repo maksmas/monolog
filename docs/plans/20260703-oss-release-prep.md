@@ -195,9 +195,9 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - [x] run full suite: `go test ./...` and `go vet ./...` — all green — build/vet/test all pass
 
 ### Task 10: Update documentation
-- [ ] update `CLAUDE.md` if any new patterns/conventions emerged (e.g. release/versioning workflow, demo regeneration)
-- [ ] ensure README/CONTRIBUTING cross-links are consistent
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `CLAUDE.md` if any new patterns/conventions emerged (e.g. release/versioning workflow, demo regeneration) — added a "Release & distribution" subsection under Build & Test Commands covering ldflags version injection, `v*`-tag → GoReleaser → GitHub Release + Homebrew cask, `make demo` GIF regeneration, and the `ci.yml` build/test/vet check
+- [x] ensure README/CONTRIBUTING cross-links are consistent — verified README links to CONTRIBUTING.md + LICENSE and CONTRIBUTING links to LICENSE; all relative paths resolve (no fixes needed)
+- [x] move this plan to `docs/plans/completed/` (handled by exec orchestrator in the finalize step)
 
 ## Post-Completion
 *Manual / external actions — no checkboxes, informational only.*

@@ -16,6 +16,18 @@ go test -run TestCreate ./internal/store/  # Run a single test
 go vet ./...                 # Lint
 ```
 
+### Release & distribution
+
+```bash
+make build VERSION=v0.1.0    # build with an explicit version stamped in
+make demo                    # regenerate the README hero GIF (needs vhs)
+```
+
+- **Versioning**: `cmd.Version` (default `"dev"`, wired into cobra's `Version:` so `monolog --version` works) is injected at build time via the Makefile's `LDFLAGS` (`-X github.com/mmaksmas/monolog/cmd.Version=$(VERSION)`, `VERSION ?= dev`). `build` and `build-bot-linux-arm64` share the same ldflags.
+- **Releases**: cut by pushing a `v*` git tag, which triggers `.github/workflows/release.yml` → GoReleaser (`.goreleaser.yaml`, `version: 2` schema). GoReleaser cross-compiles darwin+linux × amd64+arm64 archives + `checksums.txt` onto a GitHub Release, and publishes a Homebrew **cask** (`homebrew_casks:` block) to the `mmaksmas/homebrew-tap` repo (requires the `HOMEBREW_TAP_GITHUB_TOKEN` Actions secret). Users install with `brew install mmaksmas/tap/monolog`.
+- **Demo GIF**: the README hero (`docs/img/demo.gif`) is generated from `docs/demo.tape` via `make demo` (requires charmbracelet `vhs`). The tape isolates `MONOLOG_DIR` to a temp dir so a real backlog is never recorded; the rendered GIF is committed as a binary artifact.
+- **CI**: `.github/workflows/ci.yml` runs `go build`/`test`/`vet` on push + PR (Go version pinned via `go-version-file: go.mod`).
+
 ## Architecture
 
 ```
