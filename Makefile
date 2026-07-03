@@ -14,6 +14,11 @@
 # Example:
 #   make deploy-bot EC2_HOST=ec2-user@1.2.3.4
 
+# Version injected into cmd.Version at build time via ldflags. Override on the
+# command line (e.g. `make build VERSION=v0.1.0`); defaults to "dev".
+VERSION ?= dev
+LDFLAGS  = -ldflags "-X github.com/mmaksmas/monolog/cmd.Version=$(VERSION)"
+
 EC2_USER ?= ec2-user
 BIN_DIR  ?= /opt/monolog-bot
 SVC_NAME ?= monolog-bot
@@ -25,7 +30,7 @@ SVC_NAME ?= monolog-bot
 .PHONY: build test vet build-bot-linux-arm64 deploy-bot
 
 build:
-	go build -o monolog .
+	go build $(LDFLAGS) -o monolog .
 
 test:
 	go test ./...
@@ -38,7 +43,7 @@ vet:
 # gitignored; it is created on demand here.
 build-bot-linux-arm64:
 	mkdir -p dist
-	GOOS=linux GOARCH=arm64 go build -o dist/monolog-linux-arm64 .
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/monolog-linux-arm64 .
 
 # Push the freshly built bot binary to the EC2 host and restart the systemd
 # unit. Depends on build-bot-linux-arm64 so the artifact is always current.

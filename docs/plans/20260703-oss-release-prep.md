@@ -120,12 +120,12 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - Modify: `Makefile`
 - Modify: `cmd/root_test.go` (or create `cmd/version_test.go`)
 
-- [ ] add ldflags to the Makefile `build` target: `-ldflags "-X github.com/mmaksmas/monolog/cmd.Version=$(VERSION)"` with a `VERSION ?= dev` default (git-describe optional)
-- [ ] apply the same ldflags to the `build-bot-linux-arm64` target (or add a note in the Makefile that the bot binary intentionally stays `dev`) so the deployed bot doesn't silently report `Version=dev`
-- [ ] confirm `cmd/root.go` `Version` var + cobra `Version:` field remain the injection point (no code change needed there)
-- [ ] write test asserting `NewRootCmd().Version` is non-empty and defaults to `"dev"` when unset
-- [ ] write test asserting `--version` produces output containing the version string
-- [ ] run tests: `go test ./cmd/...` — must pass before next task
+- [x] add ldflags to the Makefile `build` target: `-ldflags "-X github.com/mmaksmas/monolog/cmd.Version=$(VERSION)"` with a `VERSION ?= dev` default (git-describe optional)
+- [x] apply the same ldflags to the `build-bot-linux-arm64` target (or add a note in the Makefile that the bot binary intentionally stays `dev`) so the deployed bot doesn't silently report `Version=dev`
+- [x] confirm `cmd/root.go` `Version` var + cobra `Version:` field remain the injection point (no code change needed there)
+- [x] write test asserting `NewRootCmd().Version` is non-empty and defaults to `"dev"` when unset
+- [x] write test asserting `--version` produces output containing the version string
+- [x] run tests: `go test ./cmd/...` — must pass before next task
 
 ### Task 4: goreleaser configuration
 
