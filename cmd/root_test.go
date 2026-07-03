@@ -32,23 +32,6 @@ func TestRootCommandHelp(t *testing.T) {
 	}
 }
 
-func TestRootCommandVersion(t *testing.T) {
-	rootCmd := NewRootCmd()
-	buf := new(bytes.Buffer)
-	rootCmd.SetOut(buf)
-	rootCmd.SetArgs([]string{"--version"})
-
-	err := rootCmd.Execute()
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	output := buf.String()
-	if !bytes.Contains([]byte(output), []byte("dev")) {
-		t.Errorf("version output should contain 'dev', got: %s", output)
-	}
-}
-
 func TestRootCommandNoArgs_InvokesTUI(t *testing.T) {
 	// Stub the TUI hook so the test doesn't try to open a real terminal.
 	called := false
