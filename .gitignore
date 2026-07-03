@@ -6,3 +6,4 @@ monolog
 /.monolog/
 /dist/
 /.env.deploy
+tasks.txt

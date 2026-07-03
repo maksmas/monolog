@@ -110,9 +110,9 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - Delete (from git): `tasks.txt`
 - Modify (verify only): `.gitignore`
 
-- [ ] `git rm --cached tasks.txt` (drop from tracking; also delete working copy if it is a stray)
-- [ ] confirm `.gitignore` already covers `monolog`, `.DS_Store`, `.idea`, `.claude`, `dist/` (it does — add anything missing); add `tasks.txt` to `.gitignore` so it can't creep back in
-- [ ] verify: `git status` shows a clean tree except intended changes; `git ls-files | grep tasks.txt` returns nothing
+- [x] `git rm --cached tasks.txt` (drop from tracking; also delete working copy if it is a stray)
+- [x] confirm `.gitignore` already covers `monolog`, `.DS_Store`, `.idea`, `.claude`, `dist/` (it does — add anything missing); add `tasks.txt` to `.gitignore` so it can't creep back in
+- [x] verify: `git status` shows a clean tree except intended changes; `git ls-files | grep tasks.txt` returns nothing
 
 ### Task 3: Inject build version via ldflags
 
