@@ -4,3 +4,6 @@ monolog
 .DS_Store
 /docs/.DS_Store
 /.monolog/
+/dist/
+/.env.deploy
+tasks.txt

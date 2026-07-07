@@ -157,7 +157,7 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 
 ## Context
 
-- **Project directory:** `/Users/mmaksmas/IdeaProjects/monolog` (empty, greenfield)
+- **Project directory:** `/Users/maksmas/IdeaProjects/monolog` (empty, greenfield)
 - **No existing code or dependencies**
 - **Target:** single Go binary, installable via `go install`
 
@@ -185,7 +185,7 @@ Environment variable `MONOLOG_DIR` overrides the default `~/.monolog` path.
 - Create: `main.go`
 - Create: `cmd/root.go`
 
-- [x] Run `go mod init github.com/mmaksmas/monolog`
+- [x] Run `go mod init github.com/maksmas/monolog`
 - [x] Create `main.go` with entrypoint calling cobra root command
 - [x] Create `cmd/root.go` with root cobra command (version flag, help text)
 - [x] Add cobra dependency
@@ -397,5 +397,5 @@ with suggestions.
 - **Phase 4 — TUI:** Interactive terminal UI with real-time reordering (bubbletea)
 
 **Distribution:**
-- `go install github.com/mmaksmas/monolog@latest`
+- `go install github.com/maksmas/monolog@latest`
 - Homebrew tap (later)

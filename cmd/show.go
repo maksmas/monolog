@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/display"
-	"github.com/mmaksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/display"
+	"github.com/maksmas/monolog/internal/schedule"
 	"github.com/spf13/cobra"
 )
 

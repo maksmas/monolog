@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // initSyncRepo creates a fresh monolog git repo via git.Init and returns the

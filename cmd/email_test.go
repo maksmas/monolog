@@ -16,8 +16,8 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/email"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/email"
 )
 
 // fakeEmailGmail is a recording stub used by every cmd-level email test.

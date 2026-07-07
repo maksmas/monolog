@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // watchDebounce is the coalescing window for filesystem events on the

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/schedule"
 )
 
 // expectSchedule returns the ISO date a bucket name resolves to right now.

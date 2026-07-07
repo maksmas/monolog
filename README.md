@@ -1,11 +1,35 @@
 # Monolog
 
-A CLI personal backlog tool. Tasks are stored as individual JSON files in a git repo for conflict-free cross-device sync.
+A keyboard-driven personal backlog that lives in a git repo you own — no cloud, no account, plain-text data.
+
+<!-- Hero demo generated via `make demo` (vhs docs/demo.tape); the GIF lands during the first release. -->
+![monolog TUI demo](docs/img/demo.gif)
+
+## Why monolog
+
+- **Git-backed, conflict-free sync.** One JSON file per task means two devices editing different tasks rebase cleanly — no merge conflicts, no sync server.
+- **Plain-text data you fully own.** Your backlog is just JSON files in a git repo on your disk. Grep it, script it, back it up, or walk away with it any time.
+- **Fast, keyboard-driven TUI.** The whole tool is built for the keyboard: switch tabs, reschedule, retag, search, and complete tasks without ever reaching for the mouse.
+- **No cloud, no account, no subscription.** Nothing phones home. There is no service to sign up for and nothing to pay.
 
 ## Install
 
+### Homebrew (macOS)
+
 ```bash
-go install github.com/mmaksmas/monolog@latest
+brew install maksmas/tap/monolog
+```
+
+This is a Homebrew cask and is macOS-only. On Linux, use the prebuilt binary or `go install` below.
+
+### Prebuilt binary
+
+Download a release archive from the [GitHub Releases page](https://github.com/maksmas/monolog/releases). Builds are available for macOS (darwin) and Linux, on both amd64 and arm64.
+
+### From source
+
+```bash
+go install github.com/maksmas/monolog@latest
 ```
 
 Requires Go 1.26+.
@@ -23,7 +47,25 @@ monolog sync                        # push/pull with a git remote
 monolog                             # launch the interactive TUI
 ```
 
-Set `MONOLOG_DIR` to store data somewhere other than `~/.monolog`. Set `MONOLOG_THEME` to `dracula` (or `default`) to switch TUI color themes; the same value can be persisted in `<MONOLOG_DIR>/.monolog/config.json` as the `"theme"` key. Drop JSON files into `<MONOLOG_DIR>/.monolog/themes/` to add your own — see [Themes](#themes).
+## Highlights
+
+- **Interactive TUI** — the default when you run `monolog` with no subcommand; tabs for each schedule bucket, an add modal, reschedule/retag/edit, and grab-to-reorder.
+- **Tag view** — press `v` (or launch with `--tags`/`-T`) to pivot tabs from schedule buckets to tags.
+- **Fuzzy search** — `/` fuzzy-matches across titles and bodies of all tasks and jumps you straight to a match.
+- **Recurring tasks** — completing a task with a recurrence rule auto-spawns the next occurrence (`monthly:N`, `weekly:<day>`, `workdays`, `days:N`).
+- **Color themes** — two built-in themes plus drop-in user themes from `<MONOLOG_DIR>/.monolog/themes/*.json`.
+- **Gmail import** — opt-in import of labeled emails as tasks, with archive-on-done.
+- **Telegram bot** — opt-in long-polling bot to capture, browse, and complete tasks from your phone.
+- **Clickable URLs** — the TUI wraps URLs in OSC 8 hyperlinks so Cmd/Ctrl-click opens the browser.
+- **Notes** — append timestamped notes to any task from the CLI or the TUI detail panel.
+
+## Concepts
+
+**Schedules / buckets.** Every task has a schedule: `today` (the default), `tomorrow`, `week`, `month`, `someday`, or a specific date. Buckets become the tabs in the TUI and the default filters on the CLI. Dates are entered and displayed in a configurable format (default `DD-MM-YYYY`); see [Date format](#date-format).
+
+**Tags & the reserved `active` tag.** Tasks carry comma-separated tags. The reserved `active` tag marks a task as part of your current working set — active tasks render in green and get their own panel in the TUI. See [Active tasks](#active-tasks).
+
+**Storage & git sync.** Each task is a single JSON file at `<repo>/.monolog/tasks/<ULID>.json`. IDs are [ULIDs](https://github.com/oklog/ulid) — time-sortable and globally unique, so you can address a task by typing just a prefix. Every mutation auto-commits to git, and because each task is its own file, two devices editing different tasks rebase without conflicts. Ordering uses fractional positions with automatic rebalancing. The default data directory is `~/.monolog` (override with `MONOLOG_DIR`).
 
 ## Commands
 
@@ -37,6 +79,7 @@ Initialize a monolog repo. Optionally set a git remote for sync.
 |------|-------------|
 | `-s, --schedule` | `today` (default), `tomorrow`, `week`, `month`, `someday`, or a date (default format `DD-MM-YYYY`; legacy ISO `YYYY-MM-DD` is still accepted) |
 | `-t, --tags` | Comma-separated tags |
+| `-b, --body` | Body text for the task |
 | `--recur` | Recurrence rule: `monthly:N` \| `weekly:<day>` \| `workdays` \| `days:N` (e.g. `monthly:1`, `weekly:mon`, `workdays`, `days:7` — see [Recurring tasks](#recurring-tasks)) |
 
 If the title starts with `tag: ...` and that tag already exists on another task, it is automatically added as a tag. For example, if a task already has the tag `jean`, running `monolog add "jean: create integration"` will auto-tag the new task with `jean`. The title is kept as-is. Duplicate tags are not created if the same tag is also passed via `--tags`.
@@ -112,6 +155,15 @@ Gmail integration subcommands — see [Email integration](#email-integration).
 | `monolog email sync` | Fetch all messages carrying the configured label, import new ones as tasks, and commit them in a single batch. Prints `created N task(s)`. |
 | `monolog email status` | Show auth state (token expiry or "not authorized"), `enabled` flag, label, sync interval, max-per-sync cap, and the resolved client-secrets / token paths. |
 
+### `monolog telegram`
+
+Telegram bot integration subcommands — see [Telegram integration](#telegram-integration).
+
+| Subcommand | Description |
+|------------|-------------|
+| `monolog telegram serve` | Run the long-poll loop that lets allow-listed Telegram users capture, browse, and complete tasks from their phone. Intended to run as a systemd service on an always-on host. |
+| `monolog telegram status` | Print the configured `enabled` flag, allow-list, pull interval, browse cap, and whether `MONOLOG_TELEGRAM_TOKEN` is set in the env. The token VALUE is never printed. |
+
 ### `monolog --version`
 
 Print the monolog version.
@@ -174,11 +226,37 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
 | `x` | Delete task (with confirmation) |
 | `s` | Sync (commit, pull --rebase, push). When [email integration](#email-integration) is enabled, also runs `email sync` in parallel via `tea.Batch`; the bottom-bar hint widens to `sync (git+email)`. |
+| `u` / `Ctrl+z` | Undo the last mutation (multi-level, backed by `git revert`) |
+| `Ctrl+y` | Redo the last undone action |
 | `,` | Settings modal (date format, theme) |
 | `h` | Help modal |
 | `q` | Quit |
 
 Active tasks render in green in the list and appear in a dedicated panel above the tab bar. The panel auto-hides when no tasks are active.
+
+The running TUI also auto-refreshes when another process mutates the store — a Raycast capture, a second terminal running `monolog add`, or an external `git pull`. Set `MONOLOG_NO_WATCH=1` to disable the file watcher.
+
+## Configuration
+
+Monolog reads runtime settings from environment variables and an optional `config.json`.
+
+| Variable | Purpose |
+|----------|---------|
+| `MONOLOG_DIR` | Data directory (default `~/.monolog`) |
+| `MONOLOG_THEME` | TUI color theme (`default`, `dracula`, or a user theme name); takes precedence over `config.json` |
+| `MONOLOG_NO_LINKS` | Set to `1` to disable OSC 8 clickable URLs in the TUI |
+| `MONOLOG_NO_WATCH` | Set to `1` to disable the external-change file watcher |
+
+Persistent settings live in `<MONOLOG_DIR>/.monolog/config.json`:
+
+```json
+{
+  "theme": "default",
+  "date_format": "02-01-2006"
+}
+```
+
+The TUI settings modal (`,`) writes `theme` and `date_format`; the optional `email` and `telegram` blocks (documented below) are hand-edited or written by their respective `auth`/`serve` flows. Unknown keys are preserved on save.
 
 ## Themes
 
@@ -297,9 +375,82 @@ The TUI settings modal (`,`) does NOT yet expose email config — edit `config.j
 
 Tokens auto-refresh transparently. The refreshed `access_token` is written back to `$XDG_CONFIG_HOME/monolog/gmail_token.json` (mode `0600`) so subsequent processes (CLI invocations, TUI launches) pick up the new value without re-authorizing. If the refresh token itself is revoked, `monolog email status` reports the error and you can re-run `monolog email auth`.
 
-## How it works
+## Telegram integration
 
-Each task is a JSON file in `.monolog/tasks/<ULID>.json`. Every mutation auto-commits to git. Ordering uses fractional positions with automatic rebalancing.
+Monolog ships a long-polling Telegram bot that lets you capture, browse, and complete tasks from your phone. The bot is a normal monolog client — it owns a clone of the tasks git repo and uses the same `store` + `git` paths as the CLI. The feature is opt-in: until you populate the `"telegram"` block in `config.json` and run `monolog telegram serve`, no token, listener, or extra git activity exists.
+
+### One-time BotFather setup
+
+1. DM [@BotFather](https://t.me/BotFather) on Telegram and send `/newbot`. Pick a name and unique username; BotFather replies with an HTTP API token.
+2. DM [@userinfobot](https://t.me/userinfobot) and note your numeric Telegram user ID — the allow-list is keyed on IDs, not usernames.
+3. Edit `<MONOLOG_DIR>/.monolog/config.json` and add the `"telegram"` block:
+
+   ```json
+   {
+     "telegram": {
+       "enabled": true,
+       "allowed_user_ids": [12345678],
+       "pull_interval_seconds": 30,
+       "browse_limit": 20
+     }
+   }
+   ```
+
+   Defaults if omitted: `enabled=false`, `allowed_user_ids=[]` (rejects everyone — explicit allow-list is the only auth), `pull_interval_seconds=30`, `browse_limit=20`.
+
+4. Run `monolog telegram serve --token <token>` for an ad-hoc local run, or follow the systemd deployment below for an always-on bot.
+
+### Interaction model
+
+Send any free text to **capture** a task scheduled for today. Hashtags anywhere on the first line become tags (`buy milk #shopping #urgent`). A leading `tagname: ...` auto-applies an existing tag (same rule as the CLI). Multi-line messages put the first line as the title and the rest as the body — hashtags inside the body survive untouched.
+
+Each captured task replies with a summary card carrying three inline buttons:
+
+- **Done** — complete the task. If it carries a recurrence rule the next occurrence spawns automatically with a `↻ next: <date>` line on the strike-through reply.
+- **Active** — toggle the reserved `active` tag.
+- **Details** — expand to the full body + metadata. The expanded view swaps `Details` for **Collapse** so you can fold it back without cluttering the chat.
+
+Slash commands cover the read-only side:
+
+| Command | Action |
+|---------|--------|
+| `/today` | Today's bucket |
+| `/week` | The week bucket (strictly after tomorrow through +7 days) |
+| `/active` | All tasks tagged `active` |
+| `/all` | Every open task, capped at `browse_limit` with a `+N more — open laptop` footer when over the cap |
+| `/help`, `/start` | Static cheatsheet covering capture, browse, buttons, and reply-to-note |
+
+**Notes via reply**: reply to any task summary message with text and the bot appends a timestamped note to that task. The reply path uses the same `store.Resolve` lookup as the CLI (ULID prefix or title-initials), so ambiguous prefixes surface the usual conflict error.
+
+### Access control
+
+The `allowed_user_ids` array is the only authentication layer. Updates from any user ID not in the list are silently dropped — the bot does not reply, does not log, and does not reveal its existence to drive-by queries. Callback queries from non-allowed users get a silent `AnswerCallback` so Telegram stops the loading spinner on their button, but no message or edit is sent.
+
+Rotating: edit the array in `config.json`, commit, and either restart the bot or wait for the next pull tick to pick up the change.
+
+### Read-only mode on sync conflict
+
+Every write path (capture, Done, Active, note-reply) ends with `git sync` (commit → pull --rebase → push). When the rebase fails the bot flips into read-only mode: subsequent writes reply with `⚠️ sync conflict, change not saved — resolve on laptop` and browse output prepends a `⚠️ read-only — sync conflict pending` banner. The state heals automatically on the next clean pull (every `pull_interval_seconds`), or you can restart the bot after resolving the conflict on the laptop.
+
+### Token precedence
+
+- `--token <value>` flag wins when non-empty (intended for ad-hoc local runs).
+- `MONOLOG_TELEGRAM_TOKEN` environment variable is the fallback.
+
+For systemd / long-running deployments prefer the env var: a flag value is visible to any user with `ps aux` on the host. The bot empty-token guards at startup so a misconfigured `EnvironmentFile=` fails loudly instead of silently spinning on 401s.
+
+### Deployment
+
+See [`docs/deploy/README.md`](docs/deploy/README.md) for the full one-time EC2 setup checklist: bot user creation, SSH deploy key, systemd unit, env file with `MONOLOG_TELEGRAM_TOKEN` / `GIT_SSH_COMMAND` / `MONOLOG_DIR`, and the smoke-test sequence.
+
+Build and ship from the laptop with:
+
+```sh
+make build-bot-linux-arm64                        # cross-compile to dist/monolog-linux-arm64
+make deploy-bot EC2_HOST=ec2-user@<elastic-ip>    # scp + restart systemd unit
+```
+
+The bot loses long-poll position briefly during restart; Telegram queues updates by `update_id` so nothing is dropped.
 
 ## Date format
 
@@ -307,7 +458,7 @@ User-facing dates default to `DD-MM-YYYY` — this covers CLI `--schedule` input
 
 On-disk storage always stays ISO (`"schedule": "2026-04-15"` in the JSON) regardless of the display format — this keeps `.monolog/` repos portable and sync-safe.
 
-The format is a compile-time default today, owned by `internal/config`. A future release will expose it as a configurable setting; at that point adding e.g. `YYYY-MM-DD` or `MM/DD/YYYY` will only touch the config package.
+The format is selectable from the TUI settings modal (`,`) and persisted as the `date_format` key in `config.json`.
 
 ## Task lookup
 
@@ -324,3 +475,11 @@ monolog done FL      # case-insensitive
 ```
 
 If multiple tasks share the same initials prefix, monolog reports the ambiguity and lists the conflicting titles.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test commands, the testing rule (every change ships tests; all tests pass before merge), and the planning workflow.
+
+## License
+
+Monolog is released under the MIT License. See [LICENSE](LICENSE).

@@ -9,11 +9,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/email"
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/email"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // fakeGmail is a recording stub used by the tui-level email tests.

@@ -8,8 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/schedule"
 )
 
 // separatorLine is the horizontal rule printed after each task block in full mode.

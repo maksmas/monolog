@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 var (

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/mmaksmas/monolog/internal/display"
-	"github.com/mmaksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/display"
+	"github.com/maksmas/monolog/internal/git"
 	"github.com/spf13/cobra"
 )
 

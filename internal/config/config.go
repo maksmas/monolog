@@ -82,6 +82,46 @@ func defaultEmailConfig() EmailConfig {
 // emailCfg holds the in-session email config populated by Load.
 var emailCfg = defaultEmailConfig()
 
+// TelegramConfig captures the configurable telegram-bot settings stored
+// under the optional "telegram" block in config.json. The zero value
+// represents the "feature disabled" state.
+//
+// Callers (cmd/telegram) read this struct once via Telegram() and pass
+// values into the telegram package — internal/telegram/ MUST NOT import
+// internal/config so it stays as testable as schedule/display/model.
+type TelegramConfig struct {
+	Enabled        bool
+	AllowedUserIDs []int64
+	PullInterval   time.Duration
+	BrowseLimit    int
+}
+
+// defaultTelegramConfig returns the documented defaults for the in-session
+// telegram config: feature disabled, no allowed user IDs, 30s pull
+// interval, browse cap of 20 tasks.
+func defaultTelegramConfig() TelegramConfig {
+	return TelegramConfig{
+		Enabled:        false,
+		AllowedUserIDs: nil,
+		PullInterval:   30 * time.Second,
+		BrowseLimit:    20,
+	}
+}
+
+// telegramCfg holds the in-session telegram config populated by Load.
+var telegramCfg = defaultTelegramConfig()
+
+// Telegram returns the current telegram-integration settings. Defaults
+// are applied for any keys missing from the file: enabled=false,
+// allowed_user_ids=nil, pull_interval_seconds=30, browse_limit=20.
+//
+// Named Telegram rather than TelegramConfig because Go does not permit a
+// function to share its name with the type it returns; callers spell this
+// as config.Telegram() and bind into a TelegramConfig value.
+func Telegram() TelegramConfig {
+	return telegramCfg
+}
+
 // defaultClientSecretsPath returns the default path for the OAuth client
 // secrets JSON: $XDG_CONFIG_HOME/monolog/gmail_credentials.json, falling
 // back to $HOME/.config/monolog/gmail_credentials.json. Returns an empty
@@ -229,11 +269,51 @@ func applyEmailBlock(b emailBlock) {
 	}
 }
 
+// telegramBlock mirrors the on-disk JSON shape for the optional "telegram"
+// block. Pointer fields distinguish "absent" from "explicit zero" so we
+// can apply defaults only for missing keys.
+type telegramBlock struct {
+	Enabled             *bool    `json:"enabled,omitempty"`
+	AllowedUserIDs      *[]int64 `json:"allowed_user_ids,omitempty"`
+	PullIntervalSeconds *int     `json:"pull_interval_seconds,omitempty"`
+	BrowseLimit         *int     `json:"browse_limit,omitempty"`
+}
+
+// resetTelegramCfgToDefaults sets telegramCfg back to the documented
+// defaults. Called by Load before applying any "telegram" block from disk
+// so a previously-loaded value is not preserved across configurations.
+func resetTelegramCfgToDefaults() {
+	telegramCfg = defaultTelegramConfig()
+}
+
+// applyTelegramBlock overlays a parsed JSON block onto telegramCfg,
+// applying defaults for omitted fields.
+//
+// Value-guards on PullIntervalSeconds and BrowseLimit are INTENTIONAL
+// clamps: zero or negative values silently fall back to defaults rather
+// than activating a degenerate configuration. An empty AllowedUserIDs
+// slice IS valid and means "no one allowed, drops all updates".
+func applyTelegramBlock(b telegramBlock) {
+	if b.Enabled != nil {
+		telegramCfg.Enabled = *b.Enabled
+	}
+	if b.AllowedUserIDs != nil {
+		telegramCfg.AllowedUserIDs = *b.AllowedUserIDs
+	}
+	if b.PullIntervalSeconds != nil && *b.PullIntervalSeconds > 0 {
+		telegramCfg.PullInterval = time.Duration(*b.PullIntervalSeconds) * time.Second
+	}
+	if b.BrowseLimit != nil && *b.BrowseLimit > 0 {
+		telegramCfg.BrowseLimit = *b.BrowseLimit
+	}
+}
+
 // Load reads config.json from monologDir and applies stored settings to
 // package-level vars. A missing file or unknown field values are silently
 // ignored; malformed JSON falls back to defaults. Call once at startup.
 func Load(monologDir string) error {
 	resetEmailCfgToDefaults()
+	resetTelegramCfgToDefaults()
 
 	data, err := os.ReadFile(configPath(monologDir))
 	if os.IsNotExist(err) {
@@ -243,8 +323,9 @@ func Load(monologDir string) error {
 		return err
 	}
 	var cfg struct {
-		DateFormat string      `json:"date_format"`
-		Email      *emailBlock `json:"email,omitempty"`
+		DateFormat string         `json:"date_format"`
+		Email      *emailBlock    `json:"email,omitempty"`
+		Telegram   *telegramBlock `json:"telegram,omitempty"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil // malformed JSON, keep defaults
@@ -256,6 +337,9 @@ func Load(monologDir string) error {
 	}
 	if cfg.Email != nil {
 		applyEmailBlock(*cfg.Email)
+	}
+	if cfg.Telegram != nil {
+		applyTelegramBlock(*cfg.Telegram)
 	}
 	return nil
 }
@@ -327,6 +411,57 @@ func SaveEmail(monologDir string, ec EmailConfig) error {
 	}
 
 	emailCfg = ec
+	return nil
+}
+
+// SaveTelegram writes the given TelegramConfig as the "telegram" block in
+// config.json at monologDir, preserving any keys it does not own
+// (read-modify-write pattern, mirroring SaveEmail). The block is written
+// even when tc is the zero value so callers can explicitly persist the
+// disabled state.
+//
+// The on-disk schema is:
+//
+//	{
+//	  "telegram": {
+//	    "enabled": true,
+//	    "allowed_user_ids": [123456789],
+//	    "pull_interval_seconds": 30,
+//	    "browse_limit": 20
+//	  }
+//	}
+//
+// SaveTelegram also updates the in-session telegramCfg so subsequent
+// Telegram() calls reflect the persisted state without requiring a Load.
+func SaveTelegram(monologDir string, tc TelegramConfig) error {
+	p := configPath(monologDir)
+
+	existing := make(map[string]any)
+	if data, err := os.ReadFile(p); err == nil {
+		_ = json.Unmarshal(data, &existing) // ignore parse errors, overwrite anyway
+	}
+
+	ids := tc.AllowedUserIDs
+	if ids == nil {
+		ids = []int64{}
+	}
+	block := map[string]any{
+		"enabled":               tc.Enabled,
+		"allowed_user_ids":      ids,
+		"pull_interval_seconds": int(tc.PullInterval / time.Second),
+		"browse_limit":          tc.BrowseLimit,
+	}
+	existing["telegram"] = block
+
+	out, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(p, append(out, '\n'), 0o644); err != nil {
+		return err
+	}
+
+	telegramCfg = tc
 	return nil
 }
 

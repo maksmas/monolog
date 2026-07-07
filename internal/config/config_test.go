@@ -674,6 +674,271 @@ func TestSavePreservesEmailBlock(t *testing.T) {
 	}
 }
 
+// --- TelegramConfig ---
+
+// resetTelegramCfg restores the package-level telegramCfg to its defaults
+// at test cleanup. Always call this when a test modifies telegramCfg
+// directly or via Load/SaveTelegram.
+func resetTelegramCfg(t *testing.T) {
+	t.Helper()
+	prev := telegramCfg
+	t.Cleanup(func() { telegramCfg = prev })
+}
+
+func TestTelegramDefaults(t *testing.T) {
+	resetTelegramCfg(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	// Write a config.json with no "telegram" block at all.
+	writeConfigJSON(t, tmpDir, map[string]string{"theme": "default"})
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Telegram()
+	if got.Enabled {
+		t.Errorf("Enabled = true, want false (default)")
+	}
+	if got.AllowedUserIDs != nil {
+		t.Errorf("AllowedUserIDs = %v, want nil", got.AllowedUserIDs)
+	}
+	if got.PullInterval != 30*time.Second {
+		t.Errorf("PullInterval = %v, want %v", got.PullInterval, 30*time.Second)
+	}
+	if got.BrowseLimit != 20 {
+		t.Errorf("BrowseLimit = %d, want 20", got.BrowseLimit)
+	}
+}
+
+func TestLoadTelegramBlock(t *testing.T) {
+	resetTelegramCfg(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := map[string]any{
+		"telegram": map[string]any{
+			"enabled":               true,
+			"allowed_user_ids":      []int64{123, 456},
+			"pull_interval_seconds": 45,
+			"browse_limit":          50,
+		},
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := Telegram()
+	if !got.Enabled {
+		t.Errorf("Enabled = false, want true")
+	}
+	if len(got.AllowedUserIDs) != 2 || got.AllowedUserIDs[0] != 123 || got.AllowedUserIDs[1] != 456 {
+		t.Errorf("AllowedUserIDs = %v, want [123 456]", got.AllowedUserIDs)
+	}
+	if got.PullInterval != 45*time.Second {
+		t.Errorf("PullInterval = %v, want %v", got.PullInterval, 45*time.Second)
+	}
+	if got.BrowseLimit != 50 {
+		t.Errorf("BrowseLimit = %d, want 50", got.BrowseLimit)
+	}
+}
+
+func TestSaveTelegramRoundTrip(t *testing.T) {
+	resetTelegramCfg(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	want := TelegramConfig{
+		Enabled:        true,
+		AllowedUserIDs: []int64{789},
+		PullInterval:   60 * time.Second,
+		BrowseLimit:    15,
+	}
+	if err := SaveTelegram(tmpDir, want); err != nil {
+		t.Fatalf("SaveTelegram: %v", err)
+	}
+
+	// In-session value reflects the save without needing Load.
+	got := Telegram()
+	if got.Enabled != want.Enabled || got.PullInterval != want.PullInterval || got.BrowseLimit != want.BrowseLimit {
+		t.Errorf("Telegram() after SaveTelegram = %+v, want %+v", got, want)
+	}
+	if len(got.AllowedUserIDs) != 1 || got.AllowedUserIDs[0] != 789 {
+		t.Errorf("AllowedUserIDs = %v, want [789]", got.AllowedUserIDs)
+	}
+
+	// Reset and Load to verify on-disk representation roundtrips.
+	resetTelegramCfgToDefaults()
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got = Telegram()
+	if got.Enabled != want.Enabled || got.PullInterval != want.PullInterval || got.BrowseLimit != want.BrowseLimit {
+		t.Errorf("Telegram() after Load = %+v, want %+v", got, want)
+	}
+	if len(got.AllowedUserIDs) != 1 || got.AllowedUserIDs[0] != 789 {
+		t.Errorf("AllowedUserIDs after Load = %v, want [789]", got.AllowedUserIDs)
+	}
+}
+
+func TestSaveTelegramPreservesForeignKeys(t *testing.T) {
+	resetTelegramCfg(t)
+	resetEmailCfg(t)
+	tmpDir := t.TempDir()
+	writeConfigJSON(t, tmpDir, map[string]string{
+		"default_schedule": "today",
+		"editor":           "$EDITOR",
+		"theme":            "dracula",
+		"date_format":      "2006-01-02",
+	})
+	// First add an email block so we verify both email and date_format survive.
+	if err := SaveEmail(tmpDir, EmailConfig{
+		Enabled:           true,
+		Label:             "monolog",
+		SyncInterval:      5 * time.Minute,
+		MaxPerSync:        100,
+		ClientSecretsPath: "/tmp/x.json",
+	}); err != nil {
+		t.Fatalf("SaveEmail: %v", err)
+	}
+
+	tc := TelegramConfig{
+		Enabled:        true,
+		AllowedUserIDs: []int64{1},
+		PullInterval:   30 * time.Second,
+		BrowseLimit:    20,
+	}
+	if err := SaveTelegram(tmpDir, tc); err != nil {
+		t.Fatalf("SaveTelegram: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".monolog", "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg["default_schedule"] != "today" {
+		t.Errorf("default_schedule lost, got %v", cfg["default_schedule"])
+	}
+	if cfg["editor"] != "$EDITOR" {
+		t.Errorf("editor lost, got %v", cfg["editor"])
+	}
+	if cfg["theme"] != "dracula" {
+		t.Errorf("theme lost, got %v", cfg["theme"])
+	}
+	if cfg["date_format"] != "2006-01-02" {
+		t.Errorf("date_format lost, got %v", cfg["date_format"])
+	}
+	if _, ok := cfg["email"]; !ok {
+		t.Errorf("email block lost after SaveTelegram")
+	}
+	telegramMap, ok := cfg["telegram"].(map[string]any)
+	if !ok {
+		t.Fatalf("telegram block missing or wrong type: %T %v", cfg["telegram"], cfg["telegram"])
+	}
+	if telegramMap["enabled"] != true {
+		t.Errorf("telegram.enabled = %v, want true", telegramMap["enabled"])
+	}
+}
+
+func TestApplyTelegramBlockValueClamps(t *testing.T) {
+	resetTelegramCfg(t)
+
+	// Zero pull_interval_seconds and browse_limit fall back to defaults;
+	// explicit enabled:false stays false; nil AllowedUserIDs preserved.
+	resetTelegramCfgToDefaults()
+	zero := 0
+	enabled := false
+	applyTelegramBlock(telegramBlock{
+		Enabled:             &enabled,
+		PullIntervalSeconds: &zero,
+		BrowseLimit:         &zero,
+	})
+	got := Telegram()
+	if got.Enabled {
+		t.Errorf("Enabled = true after explicit false, want false")
+	}
+	if got.PullInterval != 30*time.Second {
+		t.Errorf("PullInterval = %v after zero clamp, want default %v", got.PullInterval, 30*time.Second)
+	}
+	if got.BrowseLimit != 20 {
+		t.Errorf("BrowseLimit = %d after zero clamp, want default 20", got.BrowseLimit)
+	}
+
+	// Negative values also fall back.
+	resetTelegramCfgToDefaults()
+	neg := -5
+	applyTelegramBlock(telegramBlock{
+		PullIntervalSeconds: &neg,
+		BrowseLimit:         &neg,
+	})
+	got = Telegram()
+	if got.PullInterval != 30*time.Second {
+		t.Errorf("PullInterval = %v after negative clamp, want default %v", got.PullInterval, 30*time.Second)
+	}
+	if got.BrowseLimit != 20 {
+		t.Errorf("BrowseLimit = %d after negative clamp, want default 20", got.BrowseLimit)
+	}
+
+	// Empty AllowedUserIDs is preserved (means "no one allowed").
+	resetTelegramCfgToDefaults()
+	empty := []int64{}
+	applyTelegramBlock(telegramBlock{AllowedUserIDs: &empty})
+	got = Telegram()
+	if got.AllowedUserIDs == nil || len(got.AllowedUserIDs) != 0 {
+		t.Errorf("AllowedUserIDs = %v, want empty slice", got.AllowedUserIDs)
+	}
+}
+
+func TestLoadResetsTelegramBlockBetweenCalls(t *testing.T) {
+	// First call loads enabled=true; second call points at a directory
+	// with no telegram block at all and must NOT carry the previous value
+	// forward.
+	resetTelegramCfg(t)
+	resetDateFormat(t)
+
+	enabledDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(enabledDir, ".monolog"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := map[string]any{"telegram": map[string]any{"enabled": true}}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(enabledDir, ".monolog", "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(enabledDir); err != nil {
+		t.Fatalf("Load (enabled): %v", err)
+	}
+	if !Telegram().Enabled {
+		t.Fatalf("expected Enabled=true after first Load")
+	}
+
+	emptyDir := t.TempDir()
+	writeConfigJSON(t, emptyDir, map[string]string{"theme": "default"})
+	if err := Load(emptyDir); err != nil {
+		t.Fatalf("Load (empty): %v", err)
+	}
+	if Telegram().Enabled {
+		t.Errorf("Enabled = true after Load with no telegram block, want false (carry-over leak)")
+	}
+}
+
 // --- AllFormats ---
 
 func TestAllFormatsReturnsThreeEntries(t *testing.T) {

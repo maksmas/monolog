@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // seedRecurringTask seeds a task with the given recurrence on disk and
