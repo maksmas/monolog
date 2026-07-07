@@ -227,6 +227,12 @@ type Model struct {
 	emailLabel      string
 	emailMaxPerSync int
 	emailInterval   time.Duration
+
+	// watcher observes the tasks directory for changes made outside this
+	// process so the TUI can auto-refresh. nil when MONOLOG_NO_WATCH=1 is
+	// set, when fsnotify fails to start, or in tests that build a Model
+	// without going through tui.Run.
+	watcher *taskWatcher
 }
 
 // item wraps a model.Task for display in a bubbles/list.
@@ -258,6 +264,9 @@ func (i item) Description() string {
 	parts := []string{display.ShortID(i.task.ID)}
 	if i.task.NoteCount > 0 {
 		parts = append(parts, fmt.Sprintf("[%d]", i.task.NoteCount))
+	}
+	if i.task.Recurrence != "" {
+		parts = append(parts, "[↻]")
 	}
 	if i.task.Schedule != "" && schedule.Bucket(i.task.Schedule, i.now) != schedule.Today {
 		// Render stored ISO schedule in the configured user-facing layout
@@ -930,17 +939,43 @@ func (m *Model) skipSeparator(dir int) {
 	m.lists[m.activeTab].SkipSeparator(dir)
 }
 
-// Init is the Bubble Tea Init hook. When email integration is enabled it
-// kicks off an immediate sync (so newly-labeled emails are pulled at launch)
-// and arms the periodic ticker so subsequent syncs keep firing while the TUI
-// runs. When email is disabled both calls return nil and tea.Batch drops them.
+// Init is the Bubble Tea Init hook. It arms the filesystem watcher (when
+// available) and, when email integration is enabled, kicks off an immediate
+// email sync plus the periodic ticker. tea.Batch silently drops nil entries
+// so each cmd is added unconditionally; missing pieces just no-op.
 func (m *Model) Init() tea.Cmd {
-	if !m.emailEnabled {
+	cmds := []tea.Cmd{m.watchCmd()}
+	if m.emailEnabled {
+		m.emailSyncing = true
+		cmds = append(cmds, m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
+	}
+	return tea.Batch(cmds...)
+}
+
+// watchCmd returns a tea.Cmd that blocks on the watcher's signal channel
+// and returns externalChangeMsg when a debounced burst of filesystem
+// changes arrives. Returns nil when the watcher is not running so callers
+// can include it in a tea.Batch unconditionally. A closed channel (Stop
+// was called) also returns nil so the read loop terminates quietly.
+func (m *Model) watchCmd() tea.Cmd {
+	if m.watcher == nil {
 		return nil
 	}
-	m.emailSyncing = true
-	return tea.Batch(m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
+	ch := m.watcher.ch
+	return func() tea.Msg {
+		_, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return externalChangeMsg{}
+	}
 }
+
+// externalChangeMsg is dispatched when the watcher detects a debounced
+// burst of changes in the tasks directory — i.e. another process (Raycast
+// capture, a second `monolog add`, an external `git pull`) mutated the
+// store and the TUI needs to reload to surface them.
+type externalChangeMsg struct{}
 
 // Update routes a tea.Msg through the model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1042,6 +1077,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Email integration is disabled; nothing to do. The cmd exists so
 		// tea.Batch callers can dispatch unconditionally without a check.
 		return m, nil
+
+	case externalChangeMsg:
+		// Another process mutated the tasks directory (Raycast capture,
+		// second terminal, external git pull). Reload to pick up the
+		// changes, then re-arm the watch loop. We do not flash a status
+		// message — the user already sees the new tasks appear.
+		if err := m.reloadAll(); err != nil {
+			m.err = err
+		}
+		m.recomputeLayout()
+		if m.viewMode == viewTag {
+			m.skipSeparator(0)
+		}
+		return m, m.watchCmd()
 
 	case emailTickMsg:
 		// Self-rescheduling tick: fire a sync and re-arm the next tick. If
@@ -2932,6 +2981,10 @@ func (m *Model) detailPanelView() string {
 		header = append(header, fmt.Sprintf("Schedule: %s (%s)", bucket, displayDate))
 	} else {
 		header = append(header, "Schedule: "+displayDate)
+	}
+
+	if task.Recurrence != "" {
+		header = append(header, "Recur: "+task.Recurrence)
 	}
 
 	if vt := display.VisibleTags(task.Tags); len(vt) > 0 {

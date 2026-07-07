@@ -6,12 +6,20 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mmaksmas/monolog/internal/store"
 )
+
+// watchDebounce is the coalescing window for filesystem events on the
+// tasks directory. 250ms is short enough to feel instant after an external
+// `monolog add` and long enough to fold a Create+Write event pair into a
+// single reload.
+const watchDebounce = 250 * time.Millisecond
 
 // Options configures how the TUI is launched.
 type Options struct {
@@ -35,6 +43,19 @@ func Run(s *store.Store, repoPath string, opts Options) error {
 	if err != nil {
 		return err
 	}
+
+	// Best-effort filesystem watcher so external mutations (Raycast,
+	// a second terminal, an external git pull) auto-refresh the TUI.
+	// A failure here is non-fatal — the TUI runs without auto-refresh
+	// instead of refusing to launch.
+	tasksDir := filepath.Join(repoPath, ".monolog", "tasks")
+	w, werr := newTaskWatcher(tasksDir, watchDebounce)
+	if werr != nil {
+		fmt.Fprintf(os.Stderr, "monolog: watcher: %v\n", werr)
+	}
+	m.watcher = w
+	defer func() { _ = w.Stop() }()
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	return err

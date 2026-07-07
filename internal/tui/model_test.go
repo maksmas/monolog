@@ -1550,6 +1550,67 @@ func TestItemDescription_NoteCountWithOtherMetadata(t *testing.T) {
 	}
 }
 
+// --- recurrence badge tests --------------------------------------------------
+
+func TestItemDescription_RecurrenceBadge(t *testing.T) {
+	fixedNow := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:         "01ABCDEF",
+			Title:      "recurring task",
+			Status:     "open",
+			Schedule:   "today",
+			Recurrence: "weekly:mon",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if !strings.Contains(desc, "[↻]") {
+		t.Errorf("Description() = %q, want to contain recurrence marker [↻]", desc)
+	}
+}
+
+func TestItemDescription_NoRecurrenceNoBadge(t *testing.T) {
+	fixedNow := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:       "01ABCDEF",
+			Title:    "non-recurring task",
+			Status:   "open",
+			Schedule: "today",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	if strings.Contains(desc, "[↻]") {
+		t.Errorf("Description() = %q, should not contain [↻] when Recurrence is empty", desc)
+	}
+}
+
+func TestItemDescription_NoteAndRecurrenceOrder(t *testing.T) {
+	fixedNow := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	it := item{
+		task: model.Task{
+			ID:         "01ABCDEF",
+			Title:      "noted recurring task",
+			Status:     "open",
+			Schedule:   "today",
+			NoteCount:  2,
+			Recurrence: "weekly:mon",
+		},
+		now: fixedNow,
+	}
+	desc := it.Description()
+	idxNote := strings.Index(desc, "[2]")
+	idxRecur := strings.Index(desc, "[↻]")
+	if idxNote < 0 || idxRecur < 0 {
+		t.Fatalf("Description() = %q, expected both [2] and [↻] markers", desc)
+	}
+	if idxNote > idxRecur {
+		t.Errorf("Description() = %q, [2] should appear before [↻]", desc)
+	}
+}
+
 // --- active panel tests ------------------------------------------------------
 
 func TestActivePanel_HiddenWhenNoActiveTasks(t *testing.T) {
@@ -7283,6 +7344,67 @@ func TestDetailPanelView_ShowsTaskMetadata(t *testing.T) {
 	}
 }
 
+func TestDetailPanelView_ShowsRecurrence(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01RECUR", Title: "recurring task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Recurrence: "weekly:mon",
+			CreatedAt:  "2026-04-15T10:00:00Z",
+			UpdatedAt:  "2026-04-15T10:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+	if !strings.Contains(panel, "Recur: weekly:mon") {
+		t.Errorf("panel should contain 'Recur: weekly:mon'; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_NoRecurrenceLine(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01PLAIN", Title: "non-recurring task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			CreatedAt: "2026-04-15T10:00:00Z",
+			UpdatedAt: "2026-04-15T10:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+	if strings.Contains(panel, "Recur:") {
+		t.Errorf("panel should not contain 'Recur:' when Recurrence is empty; got %q", panel)
+	}
+}
+
+func TestDetailPanelView_RecurrenceOrderBetweenScheduleAndTags(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01ORDER", Title: "ordered task", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			Tags:       []string{"work"},
+			Recurrence: "workdays",
+			CreatedAt:  "2026-04-15T10:00:00Z",
+			UpdatedAt:  "2026-04-15T10:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "enter")
+	panel := m.detailPanelView()
+	idxSched := strings.Index(panel, "Schedule:")
+	idxRecur := strings.Index(panel, "Recur:")
+	idxTags := strings.Index(panel, "Tags:")
+	if idxSched < 0 || idxRecur < 0 || idxTags < 0 {
+		t.Fatalf("panel should contain Schedule:, Recur:, and Tags: lines; got %q", panel)
+	}
+	if !(idxSched < idxRecur && idxRecur < idxTags) {
+		t.Errorf("expected Schedule < Recur < Tags ordering; got idxSched=%d idxRecur=%d idxTags=%d in %q",
+			idxSched, idxRecur, idxTags, panel)
+	}
+}
+
 func TestDetailPanelView_ShowsCompletedDate(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01DONE", Title: "done task", Status: "done",
@@ -10258,6 +10380,71 @@ func TestRedoStack_StatusStripsRevertPrefix(t *testing.T) {
 	}
 	if strings.Contains(m.statusMsg, `Revert "`) {
 		t.Errorf("after second redo: statusMsg = %q, should not contain %q", m.statusMsg, `Revert "`)
+	}
+}
+
+// TestExternalChangeMsg_TriggersReload verifies the watcher message handler
+// rereads the store and surfaces externally-added tasks. We do not start a
+// real fsnotify watcher — the message dispatch path is what we need to
+// cover, and the watcher's own behavior is covered in watcher_test.go.
+func TestExternalChangeMsg_TriggersReload(t *testing.T) {
+	today := expectSchedule(t, schedule.Today)
+	m := newTestModel(t,
+		model.Task{ID: "01EXT1", Title: "first", Status: "open",
+			Schedule: today, Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+
+	todayTab := findTabByLabel(t, m, "Today")
+	if got := len(m.lists[todayTab].Items()); got != 1 {
+		t.Fatalf("seed: Today tab items = %d, want 1", got)
+	}
+
+	// Simulate an external mutation: write a task directly through the
+	// store, bypassing the TUI's reload path.
+	external := model.Task{
+		ID: "01EXT2", Title: "external add", Status: "open",
+		Schedule: today, Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z",
+	}
+	if err := m.store.Create(external); err != nil {
+		t.Fatalf("external Create: %v", err)
+	}
+
+	// Before the message fires, the TUI list still shows just the seed.
+	if got := len(m.lists[todayTab].Items()); got != 1 {
+		t.Fatalf("pre-msg: Today tab items = %d, want 1", got)
+	}
+
+	next, _ := m.Update(externalChangeMsg{})
+	m = next.(*Model)
+
+	if got := len(m.lists[todayTab].Items()); got != 2 {
+		t.Fatalf("post-msg: Today tab items = %d, want 2", got)
+	}
+	titles := []string{
+		m.lists[todayTab].Items()[0].(item).task.Title,
+		m.lists[todayTab].Items()[1].(item).task.Title,
+	}
+	found := false
+	for _, title := range titles {
+		if title == "external add" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("post-msg titles = %v, want one to be %q", titles, "external add")
+	}
+}
+
+// TestWatchCmd_NilWatcherReturnsNil ensures Init can include watchCmd in a
+// tea.Batch unconditionally — the cmd must be nil (which tea.Batch silently
+// drops) when no watcher is attached.
+func TestWatchCmd_NilWatcherReturnsNil(t *testing.T) {
+	m := newTestModel(t)
+	if m.watcher != nil {
+		t.Fatal("test model should have no watcher attached")
+	}
+	if cmd := m.watchCmd(); cmd != nil {
+		t.Errorf("watchCmd() with nil watcher = %T, want nil", cmd)
 	}
 }
 
