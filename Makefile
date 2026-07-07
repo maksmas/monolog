@@ -17,7 +17,7 @@
 # Version injected into cmd.Version at build time via ldflags. Override on the
 # command line (e.g. `make build VERSION=v0.1.0`); defaults to "dev".
 VERSION ?= dev
-LDFLAGS  = -ldflags "-X github.com/mmaksmas/monolog/cmd.Version=$(VERSION)"
+LDFLAGS  = -ldflags "-X github.com/maksmas/monolog/cmd.Version=$(VERSION)"
 
 EC2_USER ?= ec2-user
 BIN_DIR  ?= /opt/monolog-bot

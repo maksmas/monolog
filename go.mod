@@ -1,4 +1,4 @@
-module github.com/mmaksmas/monolog
+module github.com/maksmas/monolog
 
 go 1.26.2
 

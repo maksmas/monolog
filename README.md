@@ -17,19 +17,19 @@ A keyboard-driven personal backlog that lives in a git repo you own — no cloud
 ### Homebrew (macOS)
 
 ```bash
-brew install mmaksmas/tap/monolog
+brew install maksmas/tap/monolog
 ```
 
 This is a Homebrew cask and is macOS-only. On Linux, use the prebuilt binary or `go install` below.
 
 ### Prebuilt binary
 
-Download a release archive from the [GitHub Releases page](https://github.com/mmaksmas/monolog/releases). Builds are available for macOS (darwin) and Linux, on both amd64 and arm64.
+Download a release archive from the [GitHub Releases page](https://github.com/maksmas/monolog/releases). Builds are available for macOS (darwin) and Linux, on both amd64 and arm64.
 
 ### From source
 
 ```bash
-go install github.com/mmaksmas/monolog@latest
+go install github.com/maksmas/monolog@latest
 ```
 
 Requires Go 1.26+.

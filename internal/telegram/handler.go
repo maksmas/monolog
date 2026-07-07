@@ -12,11 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/ordering"
-	"github.com/mmaksmas/monolog/internal/recurrence"
-	"github.com/mmaksmas/monolog/internal/schedule"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/ordering"
+	"github.com/maksmas/monolog/internal/recurrence"
+	"github.com/maksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // readOnlyMessage is the user-facing reply sent when a write request hits the

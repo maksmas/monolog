@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/mmaksmas/monolog/internal/tui"
+	"github.com/maksmas/monolog/internal/tui"
 )
 
 func TestRootCommandHelp(t *testing.T) {

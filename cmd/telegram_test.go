@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/telegram"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/telegram"
 )
 
 // fakeTelegramBot is a minimal Bot stand-in for cmd-level tests. The cobra

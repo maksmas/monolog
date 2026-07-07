@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // ddmmyyyy is the default user-facing layout (DD-MM-YYYY).

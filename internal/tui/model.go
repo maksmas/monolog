@@ -18,14 +18,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"gopkg.in/yaml.v3"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/display"
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/ordering"
-	"github.com/mmaksmas/monolog/internal/recurrence"
-	"github.com/mmaksmas/monolog/internal/schedule"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/display"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/ordering"
+	"github.com/maksmas/monolog/internal/recurrence"
+	"github.com/maksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // mode tracks whether the TUI is in normal navigation or inside a modal.

@@ -6,7 +6,7 @@
 # PREREQUISITE: the `monolog` binary must be on PATH for the recording.
 # Before running, from the repo root:
 #     make build && export PATH=$PWD:$PATH
-# (or `go install github.com/mmaksmas/monolog@latest`). The gif render itself is
+# (or `go install github.com/maksmas/monolog@latest`). The gif render itself is
 # a manual Post-Completion step in the OSS release plan.
 #
 # The tape isolates MONOLOG_DIR to a throwaway temp dir so the author's real

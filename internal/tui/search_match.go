@@ -3,7 +3,7 @@ package tui
 import (
 	"sort"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 	"github.com/sahilm/fuzzy"
 )
 

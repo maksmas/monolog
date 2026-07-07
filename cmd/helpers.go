@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // openStore resolves the monolog data directory, loads user config, and opens

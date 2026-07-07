@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/ordering"
-	"github.com/mmaksmas/monolog/internal/schedule"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/ordering"
+	"github.com/maksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // spawnResult describes the outcome of a recurring-task spawn.

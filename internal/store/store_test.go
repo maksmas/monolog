@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // helper to create a temp store

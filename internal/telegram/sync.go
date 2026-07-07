@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // taskRelPath returns the repo-relative path of a task JSON file for the

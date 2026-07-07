@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/display"
-	"github.com/mmaksmas/monolog/internal/email"
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/recurrence"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/display"
+	"github.com/maksmas/monolog/internal/email"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/recurrence"
 	"github.com/spf13/cobra"
 )
 

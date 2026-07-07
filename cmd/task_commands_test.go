@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // addTestTask adds a task via the CLI and returns its ID.

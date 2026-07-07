@@ -21,7 +21,7 @@ Out of scope (feature gaps — captured separately as `someday` tasks in the
 author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 
 ## Context (from discovery)
-- **Module**: `github.com/mmaksmas/monolog`, Go 1.26.2. Entry `main.go` → `cmd.Execute()`.
+- **Module**: `github.com/maksmas/monolog`, Go 1.26.2. Entry `main.go` → `cmd.Execute()`.
 - **Version surface already exists**: `cmd/root.go` has `var Version = "dev"` wired
   into cobra's `Version:` field, so `monolog --version` already works. Only ldflags
   injection is missing.
@@ -61,8 +61,8 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - **License**: standard MIT text at repo root; README gains a License section.
 - **Distribution**: one `.goreleaser.yaml` produces darwin+linux / amd64+arm64
   archives + `checksums.txt` on every `v*` tag, and publishes a Homebrew formula to a
-  separate tap repo (`mmaksmas/homebrew-tap`) → users `brew install
-  mmaksmas/tap/monolog`. Version injected into `cmd.Version` via ldflags.
+  separate tap repo (`maksmas/homebrew-tap`) → users `brew install
+  maksmas/tap/monolog`. Version injected into `cmd.Version` via ldflags.
 - **CI**: a light `ci.yml` (build + test + vet on push/PR) for the green check;
   `release.yml` runs goreleaser on tags.
 - **README**: restructured value-first / visual-early / reference-last, fronted by a
@@ -70,10 +70,10 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - **Docs/hygiene**: CONTRIBUTING.md; remove tracked `tasks.txt`.
 
 ## Technical Details
-- **ldflags target**: `-X github.com/mmaksmas/monolog/cmd.Version={{.Version}}`.
+- **ldflags target**: `-X github.com/maksmas/monolog/cmd.Version={{.Version}}`.
 - **goreleaser build**: `main: .`, `binary: monolog`, `env: CGO_ENABLED=0`,
   `goos: [darwin, linux]`, `goarch: [amd64, arm64]`.
-- **brews block**: `repository: {owner: mmaksmas, name: homebrew-tap}`, token from
+- **brews block**: `repository: {owner: maksmas, name: homebrew-tap}`, token from
   `HOMEBREW_TAP_GITHUB_TOKEN`, homepage/description/install/test stanza.
 - **release.yml**: trigger `push: tags: ['v*']`, `goreleaser/goreleaser-action`,
   `permissions: contents: write` (the default `GITHUB_TOKEN` is read-only; goreleaser
@@ -83,7 +83,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
   `go-version-file: go.mod` (single source of truth, no drift); run
   `go build ./...`, `go test ./...`, `go vet ./...`.
 - **.goreleaser.yaml** must start with an explicit `version: 2` key (v2 schema).
-- **Copyright holder**: git handle `mmaksmas` / `maksims@metisjean.com`.
+- **Copyright holder**: git handle `maksmas` / `maksims@metisjean.com`.
   ⚠️ Confirm the legal name to appear in the MIT copyright line before publishing.
 
 ## What Goes Where
@@ -101,7 +101,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - Create: `LICENSE`
 
 - [x] create `LICENSE` with standard MIT text, `Copyright (c) 2026 <legal name>`
-- [x] leave an inline note / confirm the exact copyright holder name (handle: mmaksmas) — used `Copyright (c) 2026 mmaksmas`; legal name must be confirmed before publishing
+- [x] leave an inline note / confirm the exact copyright holder name (handle: maksmas) — used `Copyright (c) 2026 maksmas`; legal name must be confirmed before publishing
 - [x] verify: `go build -o monolog .` still succeeds (sanity, no code touched)
 
 ### Task 2: Repo hygiene — untrack stray artifacts
@@ -120,7 +120,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - Modify: `Makefile`
 - Modify: `cmd/root_test.go` (or create `cmd/version_test.go`)
 
-- [x] add ldflags to the Makefile `build` target: `-ldflags "-X github.com/mmaksmas/monolog/cmd.Version=$(VERSION)"` with a `VERSION ?= dev` default (git-describe optional)
+- [x] add ldflags to the Makefile `build` target: `-ldflags "-X github.com/maksmas/monolog/cmd.Version=$(VERSION)"` with a `VERSION ?= dev` default (git-describe optional)
 - [x] apply the same ldflags to the `build-bot-linux-arm64` target (or add a note in the Makefile that the bot binary intentionally stays `dev`) so the deployed bot doesn't silently report `Version=dev`
 - [x] confirm `cmd/root.go` `Version` var + cobra `Version:` field remain the injection point (no code change needed there)
 - [x] write test asserting `NewRootCmd().Version` is non-empty and defaults to `"dev"` when unset
@@ -135,7 +135,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - [x] start `.goreleaser.yaml` with an explicit top-level `version: 2` key (required by the v2 schema; without it `goreleaser check` warns)
 - [x] create `builds` for `darwin,linux` × `amd64,arm64`, `binary: monolog`, `main: .`, `env: [CGO_ENABLED=0]`, ldflags injecting `cmd.Version`
 - [x] add `archives` (tar.gz) and `checksum` (`checksums.txt`) blocks
-- [x] add `homebrew_casks` block targeting `mmaksmas/homebrew-tap` with `HOMEBREW_TAP_GITHUB_TOKEN`, homepage, description, and a quarantine-removal postflight hook (migrated from the deprecated `brews:` block — `goreleaser check` on v2.16.0 rejects both `brews:` and `homebrew_casks.binary`; the cask auto-detects the binary)
+- [x] add `homebrew_casks` block targeting `maksmas/homebrew-tap` with `HOMEBREW_TAP_GITHUB_TOKEN`, homepage, description, and a quarantine-removal postflight hook (migrated from the deprecated `brews:` block — `goreleaser check` on v2.16.0 rejects both `brews:` and `homebrew_casks.binary`; the cask auto-detects the binary)
 - [x] add `changelog` block (git-based, sensible filters)
 - [x] verify: (Task 9) `goreleaser 2.16.0` snapshot release builds all 4 targets + archives + `checksums.txt` + the generated Homebrew cask cleanly; `goreleaser check` now PASSES clean (exit 0, no deprecation warnings) after migrating `brews:` → `homebrew_casks:`.
 
@@ -172,7 +172,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 
 - [x] restructure to: (1) title + one-line tagline, (2) hero image referencing `docs/img/demo.gif` (path committed now; the gif itself lands during Post-Completion), (3) "Why monolog" differentiation bullets, (4) Install (brew → binary download → `go install`), (5) 60-second Quick start, (6) Highlights bullets (tag view, fuzzy search, recurrence, themes, Gmail, Telegram), (7) condensed Concepts (schedules/buckets, tags & reserved `active`, storage+sync), (8) full command reference below the fold, (9) Configuration → Contributing → License
 - [x] preserve the accurate existing reference/flag content — restructure and add top sections, do not rewrite correct docs
-- [x] add the `brew install mmaksmas/tap/monolog` instruction and a binary-download pointer to GitHub Releases
+- [x] add the `brew install maksmas/tap/monolog` instruction and a binary-download pointer to GitHub Releases
 - [x] add a License section linking `LICENSE`; link `CONTRIBUTING.md`
 - [x] verify: markdown renders sensibly (headings/anchors/links resolve); LICENSE/CONTRIBUTING links resolve, and the `docs/img/demo.gif` path is correct (the gif file itself is added during Post-Completion first-release)
 
@@ -186,9 +186,9 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 - [x] verify: links and commands are accurate against the current Makefile
 
 ### Task 9: Verify acceptance criteria
-- [x] LICENSE present, MIT, correct copyright holder confirmed — MIT text, `Copyright (c) 2026 mmaksmas`; legal-name confirmation remains a Post-Completion item (acceptable)
+- [x] LICENSE present, MIT, correct copyright holder confirmed — MIT text, `Copyright (c) 2026 maksmas`; legal-name confirmation remains a Post-Completion item (acceptable)
 - [x] `tasks.txt` no longer tracked; tree clean — `git ls-files | grep tasks.txt` returns nothing
-- [x] `.goreleaser.yaml` passes `goreleaser check`; snapshot build produces darwin+linux/amd64+arm64 archives + checksums — `goreleaser check` (v2.16.0) now exits 0 clean with NO deprecation warnings after migrating `brews:` → `homebrew_casks:`. Snapshot build PASSES (all 4 archives + `checksums.txt` + generated cask `dist/homebrew/Casks/monolog.rb` produced via `goreleaser release --snapshot --clean`). Still noted: local git remote is `maksmas/monolog` (module/config use `mmaksmas`), so the snapshot cask download URL renders `github.com/maksmas/...` — a local-remote mismatch, not a `.goreleaser.yaml` defect (human to resolve the maksmas vs mmaksmas owner question).
+- [x] `.goreleaser.yaml` passes `goreleaser check`; snapshot build produces darwin+linux/amd64+arm64 archives + checksums — `goreleaser check` (v2.16.0) now exits 0 clean with NO deprecation warnings after migrating `brews:` → `homebrew_casks:`. Snapshot build PASSES (all 4 archives + `checksums.txt` + generated cask `dist/homebrew/Casks/monolog.rb` produced via `goreleaser release --snapshot --clean`). Still noted: local git remote is `maksmas/monolog` (module/config use `maksmas`), so the snapshot cask download URL renders `github.com/maksmas/...` — a local-remote mismatch, not a `.goreleaser.yaml` defect (human to resolve the maksmas vs maksmas owner question).
 - [x] both workflows lint clean; `ci.yml` mirrors `go build/test/vet` — `actionlint 1.7.12` ran clean on both workflows; `ci.yml` runs `go build/test/vet` with `go-version-file: go.mod`
 - [x] README leads with value + demo gif; install order is brew → binary → go install — verified
 - [x] CONTRIBUTING present and accurate — verified against Makefile/go.mod
@@ -203,7 +203,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
 *Manual / external actions — no checkboxes, informational only.*
 
 **Manual GitHub setup (author, one-time, cannot be automated here):**
-- Create the tap repo `github.com/mmaksmas/homebrew-tap` (public, empty).
+- Create the tap repo `github.com/maksmas/homebrew-tap` (public, empty).
 - Create a PAT with `repo` scope on the tap repo; add it as Actions secret
   `HOMEBREW_TAP_GITHUB_TOKEN` on the monolog repo.
 - Confirm the legal name for the MIT copyright line before publishing.
@@ -215,7 +215,7 @@ author's own monolog backlog, IDs `01KWME0W…`): bulk operations and export.
   before the first real tag.
 - Tag `v0.1.0` and push the tag to trigger `release.yml`; verify the GitHub Release
   archives + checksums and that the formula lands in the tap.
-- Smoke-test `brew install mmaksmas/tap/monolog` on a clean machine (darwin + linux).
+- Smoke-test `brew install maksmas/tap/monolog` on a clean machine (darwin + linux).
 
 **Deferred (already captured as `someday` tasks in the author's backlog):**
 - Bulk operations (archive / purge / clear completed, multi-select).

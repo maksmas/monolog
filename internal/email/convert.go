@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/schedule"
 )
 
 // snippetMaxLen is the hard cap on the snippet portion of the body. When a

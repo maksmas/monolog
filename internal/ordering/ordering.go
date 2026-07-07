@@ -3,7 +3,7 @@ package ordering
 import (
 	"sort"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // DefaultSpacing is the gap between positions when creating or rebalancing tasks.

@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/mmaksmas/monolog/internal/tui"
+	"github.com/maksmas/monolog/internal/tui"
 )
 
 // Version is set at build time or defaults to "dev".

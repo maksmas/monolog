@@ -14,12 +14,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/display"
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/schedule"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/display"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // bogusSHA is a syntactically valid but non-existent 40-char commit SHA used

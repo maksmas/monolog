@@ -20,9 +20,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mmaksmas/monolog/internal/display"
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/display"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/schedule"
 )
 
 // inlineTagPattern matches a #hashtag token. Tag characters are

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/config"
-	"github.com/mmaksmas/monolog/internal/email"
+	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/email"
 	"github.com/spf13/cobra"
 )
 

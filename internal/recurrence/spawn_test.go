@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 func TestTagsWithoutActive(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // shortDate renders t in a compact form derived from layout:

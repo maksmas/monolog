@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // Options configures how the TUI is launched.

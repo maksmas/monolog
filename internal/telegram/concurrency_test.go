@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // writeTaskFile writes a task JSON directly under <repoPath>/.monolog/tasks

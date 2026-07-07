@@ -3,7 +3,7 @@ package ordering
 import (
 	"testing"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 func makeTasks(positions ...float64) []model.Task {

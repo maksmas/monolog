@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // SyncOptions controls the behavior of one Sync run. Callers populate it from

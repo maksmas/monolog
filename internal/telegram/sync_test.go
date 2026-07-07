@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/git"
 )
 
 // withPullFunc swaps the package-level pullFunc seam for the duration of a

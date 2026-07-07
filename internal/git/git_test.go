@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmaksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/model"
 )
 
 func TestInit_CreatesDirectoryStructure(t *testing.T) {

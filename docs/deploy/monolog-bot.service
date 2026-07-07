@@ -1,6 +1,6 @@
 [Unit]
 Description=Monolog Telegram bot (long-poll)
-Documentation=https://github.com/mmaksmas/monolog
+Documentation=https://github.com/maksmas/monolog
 After=network-online.target
 Wants=network-online.target
 

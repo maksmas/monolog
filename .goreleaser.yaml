@@ -15,7 +15,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/mmaksmas/monolog/cmd.Version={{.Version}}
+      - -s -w -X github.com/maksmas/monolog/cmd.Version={{.Version}}
 
 archives:
   - formats: [tar.gz]
@@ -27,10 +27,10 @@ checksum:
 homebrew_casks:
   - name: monolog
     repository:
-      owner: mmaksmas
+      owner: maksmas
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/mmaksmas/monolog"
+    homepage: "https://github.com/maksmas/monolog"
     description: "A CLI personal backlog tool with a git-backed, conflict-free store and an interactive TUI"
     hooks:
       post:

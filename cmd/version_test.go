@@ -42,7 +42,7 @@ func TestVersionFlagOutput(t *testing.T) {
 }
 
 // TestVersionOverrideInjection simulates a release build's ldflags override
-// (-X 'github.com/mmaksmas/monolog/cmd.Version=vX.Y.Z') by mutating the Version
+// (-X 'github.com/maksmas/monolog/cmd.Version=vX.Y.Z') by mutating the Version
 // package var, then asserts NewRootCmd() reads it dynamically and --version
 // reflects the injected value. This fails if the command hardcodes a literal
 // (e.g. Version: "dev") instead of Version: Version.

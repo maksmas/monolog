@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmaksmas/monolog/internal/git"
-	"github.com/mmaksmas/monolog/internal/model"
-	"github.com/mmaksmas/monolog/internal/store"
+	"github.com/maksmas/monolog/internal/git"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // handlerTestNow is the fixed clock value the handler tests inject so the
