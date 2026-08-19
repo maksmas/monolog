@@ -498,3 +498,49 @@ func TestEmailCmdHasSubcommands(t *testing.T) {
 		}
 	}
 }
+
+// TestEmailStatusCommand_LoadsConfigFromDisk is the email-side twin of
+// TestTelegramStatusCommand_LoadsConfigFromDisk: status skips openStore, so it
+// must call loadConfig itself or it reports built-in defaults. SaveEmail also
+// assigns the package state, so the reset must come after the save.
+func TestEmailStatusCommand_LoadsConfigFromDisk(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	reset := filepath.Join(t.TempDir(), "reset")
+	initTestRepo(t, reset)
+
+	if err := config.SaveEmail(dir, config.EmailConfig{
+		Enabled:           true,
+		Label:             "inbox-label",
+		SyncInterval:      11 * time.Minute,
+		MaxPerSync:        13,
+		ClientSecretsPath: filepath.Join(dir, "secrets.json"),
+	}); err != nil {
+		t.Fatalf("SaveEmail: %v", err)
+	}
+
+	if err := config.Load(reset); err != nil {
+		t.Fatalf("config.Load(reset): %v", err)
+	}
+	if config.Email().Enabled {
+		t.Fatal("precondition: in-memory email config should be disabled after reset")
+	}
+	t.Setenv("MONOLOG_DIR", dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"email", "status"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("email status error = %v\noutput: %s", err, buf.String())
+	}
+
+	out := buf.String()
+	for _, w := range []string{"enabled: true", "label: inbox-label", "interval: 11m0s", "max_per_sync: 13"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("expected %q in status output (config.json not loaded?), got:\n%s", w, out)
+		}
+	}
+}

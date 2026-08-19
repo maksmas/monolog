@@ -411,3 +411,56 @@ func TestTelegramCmdHasSubcommands(t *testing.T) {
 		}
 	}
 }
+
+// TestTelegramStatusCommand_LoadsConfigFromDisk guards a regression where
+// `telegram status` printed built-in defaults instead of the user's
+// config.json. Only config.Load populates the config package's state, and it
+// is reached solely through cmd helpers; status skips openStore, so it must
+// call loadConfig itself or it reports enabled=false for a configured user.
+//
+// Ordering matters: SaveTelegram writes the file AND assigns telegramCfg as a
+// side effect, so the in-memory state must be reset to defaults AFTER the
+// save. Otherwise the command reads the value SaveTelegram left behind and
+// the test passes whether or not it ever touches disk.
+func TestTelegramStatusCommand_LoadsConfigFromDisk(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	reset := filepath.Join(t.TempDir(), "reset")
+	initTestRepo(t, reset) // a repo whose config.json has no telegram block
+
+	if err := config.SaveTelegram(dir, config.TelegramConfig{
+		Enabled:        true,
+		AllowedUserIDs: []int64{99},
+		PullInterval:   45 * time.Second,
+		BrowseLimit:    7,
+	}); err != nil {
+		t.Fatalf("SaveTelegram: %v", err)
+	}
+
+	// Drop the in-memory state back to defaults, then point the command at
+	// the configured repo. Only a disk read can now produce the values.
+	if err := config.Load(reset); err != nil {
+		t.Fatalf("config.Load(reset): %v", err)
+	}
+	if config.Telegram().Enabled {
+		t.Fatal("precondition: in-memory telegram config should be disabled after reset")
+	}
+	t.Setenv("MONOLOG_DIR", dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"telegram", "status"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("telegram status error = %v\noutput: %s", err, buf.String())
+	}
+
+	out := buf.String()
+	for _, w := range []string{"enabled: true", "allowed_user_ids: [99]", "pull_interval: 45s", "browse_limit: 7"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("expected %q in status output (config.json not loaded?), got:\n%s", w, out)
+		}
+	}
+}

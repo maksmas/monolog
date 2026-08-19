@@ -122,10 +122,12 @@ func newTelegramStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show Telegram bot integration status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Mirrors `monolog email status`: read the in-memory config
-			// directly without going through openStore. Status is a
-			// read-only "print what you would observe" command — we don't
-			// need the git checks or store handle that openStore performs.
+			// Mirrors `monolog email status`: load config without going
+			// through openStore. Status is a read-only "print what you
+			// would observe" command — we don't need the store handle
+			// openStore builds, but we DO need loadConfig, because the
+			// config package reports built-in defaults until Load runs.
+			loadConfig()
 			tc := config.Telegram()
 			out := cmd.OutOrStdout()
 

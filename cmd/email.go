@@ -144,6 +144,10 @@ func newEmailStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show email integration status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// loadConfig, not openStore: status needs the persisted values
+			// but not a store handle. Without this the config package still
+			// holds its built-in defaults and status misreports them.
+			loadConfig()
 			ec := config.Email()
 			out := cmd.OutOrStdout()
 
