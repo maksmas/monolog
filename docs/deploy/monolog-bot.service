@@ -19,7 +19,7 @@ EnvironmentFile=/etc/monolog-bot/env
 # is misconfigured.
 WorkingDirectory=/home/monolog-bot/tasks-repo
 
-ExecStart=/opt/monolog-bot/monolog-linux-arm64 telegram serve
+ExecStart=/opt/monolog-bot/monolog telegram serve
 
 # Restart on crash but back off if it keeps failing so a broken deploy
 # doesn't busy-loop.
