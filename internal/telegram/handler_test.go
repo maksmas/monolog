@@ -1530,6 +1530,97 @@ func TestHandleNoteReplyAppendsNoteAndCommits(t *testing.T) {
 	}
 }
 
+// TestHandleNoteReplyOnActiveTaskAppendsNote is the regression guard for
+// the ⭐-shadows-the-ULID bug: FormatTaskRow prepends "⭐ " for active
+// tasks, so the quoted reply text a Telegram client hands back starts
+// with the marker, not the prefix. Peeling the first token blindly fed
+// "⭐" to store.Resolve — below the 2-char minimum — and the note was
+// silently dropped. The row is rendered through FormatTaskRow (rather
+// than hand-written) so a future marker change is caught here too.
+func TestHandleNoteReplyOnActiveTaskAppendsNote(t *testing.T) {
+	h, bot, s, repoPath := newTestHandler(t, []int64{100})
+	task := model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "ship it",
+		Body:  "original body",
+		Tags:  []string{model.ActiveTag},
+	}
+	seedSingleTask(t, s, task)
+
+	upd := Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID: 5,
+			UserID: 100,
+			Text:   "tested locally, looks good",
+			ReplyTo: &Message{
+				ChatID: 5, UserID: 100, MessageID: 7,
+				Text: stripHTMLTags(FormatTaskRow(task)),
+			},
+		},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	got, err := s.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !strings.Contains(got.Body, "tested locally, looks good") {
+		t.Fatalf("body should include new note, got %q", got.Body)
+	}
+	if got.NoteCount != 1 {
+		t.Fatalf("NoteCount=%d want 1; body=%q", got.NoteCount, got.Body)
+	}
+	if len(bot.sent) != 1 || !strings.Contains(bot.sent[0].HTML, "note added") {
+		t.Fatalf("expected note-added ack, got %+v", bot.sent)
+	}
+	if subjects := gitLogSubjects(t, repoPath); subjects[0] != "note: ship it" {
+		t.Fatalf("commit subject=%q want %q", subjects[0], "note: ship it")
+	}
+}
+
+// TestHandleNoteReplyOnDoneRowAppendsNote covers the sibling marker:
+// after a ✅ tap the summary message is edited into FormatDoneRow, and a
+// reply to that edited message must still resolve the task.
+func TestHandleNoteReplyOnDoneRowAppendsNote(t *testing.T) {
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	task := model.Task{
+		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title: "ship it",
+		Body:  "original body",
+	}
+	seedSingleTask(t, s, task)
+
+	upd := Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID: 5,
+			UserID: 100,
+			Text:   "shipped at 4pm",
+			ReplyTo: &Message{
+				ChatID: 5, UserID: 100, MessageID: 7,
+				Text: stripHTMLTags(FormatDoneRow(task, "")),
+			},
+		},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	got, err := s.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !strings.Contains(got.Body, "shipped at 4pm") {
+		t.Fatalf("body should include new note, got %q", got.Body)
+	}
+	if len(bot.sent) != 1 || !strings.Contains(bot.sent[0].HTML, "note added") {
+		t.Fatalf("expected note-added ack, got %+v", bot.sent)
+	}
+}
+
 func TestHandleNoteReplyEmptyFirstTokenReplies(t *testing.T) {
 	// A reply whose replied-to text is all whitespace yields no token at
 	// all — the handler must point the user at the prefix shape rather
@@ -1694,7 +1785,7 @@ func TestHandleNoteReplyBlockedWhenReadOnly(t *testing.T) {
 // TestPrefixIDRoundTripsThroughStoreResolve enforces the contract that
 // couples the rendering path (FormatTaskRow, which surfaces prefixID(t.ID)
 // as the first whitespace-bounded token) and the reply-resolver path
-// (handleNoteReply, which firstToken's the user's quoted reply text and
+// (handleNoteReply, which peels the prefix off the user's quoted reply and
 // passes the result to store.Resolve). If prefixLength were ever bumped or
 // FormatTaskRow's layout reshuffled to hide the ID in the middle of the
 // line, this test would fail and force a re-validation of the coupling.
@@ -1708,26 +1799,40 @@ func TestPrefixIDRoundTripsThroughStoreResolve(t *testing.T) {
 	task := model.Task{ID: id, Title: "buy milk", Tags: []string{"shopping"}}
 	seedSingleTask(t, s, task)
 
-	rendered := FormatTaskRow(task)
-	// Strip HTML tags the way a Telegram client would when quoting the
-	// message in a reply. Naive but sufficient: no nested tags, no
-	// attributes besides what FormatTaskRow emits today.
-	stripped := stripHTMLTags(rendered)
-
-	prefix := firstToken(stripped)
-	if prefix == "" {
-		t.Fatalf("firstToken of rendered row %q returned empty", stripped)
-	}
-	if len(prefix) != prefixLength {
-		t.Fatalf("firstToken returned %d chars, want exactly prefixLength=%d (rendered=%q)", len(prefix), prefixLength, stripped)
+	// Every row variant a user can reply to must round-trip: the plain
+	// row, the active row (⭐ marker), and the done row (✅ marker).
+	active := task
+	active.Tags = []string{"shopping", model.ActiveTag}
+	rows := map[string]string{
+		"plain":  FormatTaskRow(task),
+		"active": FormatTaskRow(active),
+		"done":   FormatDoneRow(task, ""),
 	}
 
-	resolved, err := s.Resolve(prefix)
-	if err != nil {
-		t.Fatalf("store.Resolve(%q) error = %v (rendered=%q)", prefix, err, stripped)
-	}
-	if resolved.ID != id {
-		t.Fatalf("store.Resolve(%q) = %q, want %q", prefix, resolved.ID, id)
+	for name, rendered := range rows {
+		t.Run(name, func(t *testing.T) {
+			// Strip HTML tags the way a Telegram client would when
+			// quoting the message in a reply. Naive but sufficient: no
+			// nested tags, no attributes besides what the formatters
+			// emit today.
+			stripped := stripHTMLTags(rendered)
+
+			prefix := taskPrefixFromRow(stripped)
+			if prefix == "" {
+				t.Fatalf("taskPrefixFromRow of rendered row %q returned empty", stripped)
+			}
+			if len(prefix) != prefixLength {
+				t.Fatalf("taskPrefixFromRow returned %d chars, want exactly prefixLength=%d (rendered=%q)", len(prefix), prefixLength, stripped)
+			}
+
+			resolved, err := s.Resolve(prefix)
+			if err != nil {
+				t.Fatalf("store.Resolve(%q) error = %v (rendered=%q)", prefix, err, stripped)
+			}
+			if resolved.ID != id {
+				t.Fatalf("store.Resolve(%q) = %q, want %q", prefix, resolved.ID, id)
+			}
+		})
 	}
 }
 
@@ -1751,7 +1856,7 @@ func stripHTMLTags(s string) string {
 	return b.String()
 }
 
-func TestFirstToken(t *testing.T) {
+func TestTaskPrefixFromRow(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
@@ -1762,11 +1867,19 @@ func TestFirstToken(t *testing.T) {
 		{"  abc def", "abc"},
 		{"01ARZ original-text", "01ARZ"},
 		{"\t\nABC123", "ABC123"},
+		// Row markers are stepped over, not treated as the prefix.
+		{"⭐ 01ARZ buy milk", "01ARZ"},
+		{"✅ 01ARZ buy milk", "01ARZ"},
+		{"  ⭐   01ARZ  buy milk", "01ARZ"},
+		{"⭐", ""},
+		{"⭐ ✅ 01ARZ", "01ARZ"},
+		// A marker mid-row is not leading, so it never shadows a prefix.
+		{"01ARZ ⭐ starred", "01ARZ"},
 	}
 	for _, c := range cases {
-		got := firstToken(c.in)
+		got := taskPrefixFromRow(c.in)
 		if got != c.want {
-			t.Errorf("firstToken(%q) = %q want %q", c.in, got, c.want)
+			t.Errorf("taskPrefixFromRow(%q) = %q want %q", c.in, got, c.want)
 		}
 	}
 }

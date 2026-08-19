@@ -866,10 +866,11 @@ const noteReplySuccess = "📝 note added"
 // handleNoteReply appends a timestamped note to an existing task. The
 // resolution rule is:
 //
-//  1. Extract the first whitespace-bounded token from m.ReplyTo.Text.
-//     The summary rows we send always begin with the 5-char ULID prefix
-//     (rendered inside <code>...</code>); Telegram strips the HTML in
-//     replies, so the plain text begins with the prefix itself.
+//  1. Extract the first whitespace-bounded token from m.ReplyTo.Text
+//     that is not a row marker. The summary rows we send lead with the
+//     5-char ULID prefix (rendered inside <code>...</code>) once any
+//     state marker (⭐ active, ✅ done) is stepped over; Telegram strips
+//     the HTML in replies, so the plain text carries prefix + markers.
 //  2. Pass that token to store.Resolve so ambiguous prefixes / initials
 //     matches behave exactly like the CLI's lookup. Resolution errors
 //     are surfaced to the user verbatim (HTML-escaped) so they know
@@ -890,7 +891,7 @@ func (h *Handler) handleNoteReply(ctx context.Context, m *Message) error {
 		return nil
 	}
 
-	prefix := firstToken(m.ReplyTo.Text)
+	prefix := taskPrefixFromRow(m.ReplyTo.Text)
 	if prefix == "" {
 		_, err := h.bot.SendMessage(ctx, m.ChatID, noteReplyMissingPrefix, nil)
 		return err
@@ -976,16 +977,33 @@ func (h *Handler) handleNoteReply(ctx context.Context, m *Message) error {
 	return nil
 }
 
-// firstToken returns the first whitespace-bounded substring of text, or
-// the empty string when text is all-whitespace. Used by handleNoteReply
-// to peel the ULID prefix off the start of a replied-to summary row.
-// strings.Fields handles every Unicode whitespace category (space, tab,
-// newline, CR, NBSP, …) which matches what Telegram clients may insert.
-func firstToken(text string) string {
-	fields := strings.Fields(text)
-	if len(fields) == 0 {
-		return ""
+// rowMarkers are the decorative tokens a rendered row may carry ahead of
+// the ULID prefix. They encode task state, not identity:
+//
+//	⭐  FormatTaskRow, prepended when t.IsActive()
+//	✅  FormatDoneRow, the post-completion edit of a summary row
+//
+// taskPrefixFromRow steps over them so a reply to an active or just-
+// completed task resolves the same as a reply to a plain one. Anything
+// added to a row ahead of the <code> prefix must be registered here.
+var rowMarkers = map[string]bool{
+	"⭐": true,
+	"✅": true,
+}
+
+// taskPrefixFromRow returns the first whitespace-bounded substring of
+// text that is not a row marker, or the empty string when text holds
+// nothing else. Used by handleNoteReply to peel the ULID prefix off the
+// start of a replied-to summary row. strings.Fields handles every
+// Unicode whitespace category (space, tab, newline, CR, NBSP, …) which
+// matches what Telegram clients may insert.
+func taskPrefixFromRow(text string) string {
+	for _, f := range strings.Fields(text) {
+		if rowMarkers[f] {
+			continue
+		}
+		return f
 	}
-	return fields[0]
+	return ""
 }
 
