@@ -809,3 +809,259 @@ func TestFormatTasksFull_SingleTask_CreatedLine(t *testing.T) {
 		t.Errorf("output should always contain 'Created:' metadata line, got:\n%s", output)
 	}
 }
+
+// searchLines renders tasks through FormatSearchResults and splits the output
+// into its (newline-free) rows.
+func searchLines(t *testing.T, tasks []model.Task, layout string) []string {
+	t.Helper()
+	var buf bytes.Buffer
+	FormatSearchResults(&buf, tasks, fixedNow, layout)
+	out := strings.TrimSuffix(buf.String(), "\n")
+	if out == "" {
+		return nil
+	}
+	return strings.Split(out, "\n")
+}
+
+func TestFormatSearchResults_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	FormatSearchResults(&buf, nil, fixedNow, ddmmyyyy)
+	if got := buf.String(); got != "No matches.\n" {
+		t.Errorf("expected %q, got %q", "No matches.\n", got)
+	}
+
+	buf.Reset()
+	FormatSearchResults(&buf, []model.Task{}, fixedNow, ddmmyyyy)
+	if got := buf.String(); got != "No matches.\n" {
+		t.Errorf("empty slice: expected %q, got %q", "No matches.\n", got)
+	}
+}
+
+// TestFormatSearchResults_LongTitleNotTruncated is the whole point of the
+// formatter: `ls` cuts titles at titleColWidth (40) runes, which makes it unfit
+// for dedupe. Search output must show the title in full.
+func TestFormatSearchResults_LongTitleNotTruncated(t *testing.T) {
+	long := "Implement the date impact assessment migration for the reporting pipeline"
+	if utf8.RuneCountInString(long) <= titleColWidth {
+		t.Fatalf("fixture must be longer than %d runes, got %d", titleColWidth, utf8.RuneCountInString(long))
+	}
+
+	tasks := []model.Task{
+		{ID: "01ABCDEFGHIJKLMNOPQRSTUVWX", Title: long, Schedule: "today", Status: "open"},
+	}
+
+	var buf bytes.Buffer
+	FormatSearchResults(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+	if !strings.Contains(output, long) {
+		t.Errorf("output should contain the full untruncated title, got:\n%s", output)
+	}
+	if strings.Contains(output, "…") {
+		t.Errorf("output should not contain a truncation ellipsis, got:\n%s", output)
+	}
+}
+
+// TestFormatSearchResults_OverCapTitleDoesNotWidenOtherRows pins the
+// searchTitleCapWidth pad cap: an over-long title pushes only its own trailing
+// columns right, it does not tax every other row in the set.
+func TestFormatSearchResults_OverCapTitleDoesNotWidenOtherRows(t *testing.T) {
+	long := strings.Repeat("x", 150)
+	tasks := []model.Task{
+		{ID: "01AAAAAAAAAAAAAAAAAAAAAAAA", Title: long, Schedule: "today", Status: "open"},
+		{ID: "01BBBBBBBBBBBBBBBBBBBBBBBB", Title: "Short one", Schedule: "week", Status: "open"},
+	}
+
+	lines := searchLines(t, tasks, ddmmyyyy)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %q", len(lines), lines)
+	}
+
+	// The long title is still printed in full.
+	if !strings.Contains(lines[0], long) {
+		t.Errorf("row 0 should contain the full 150-rune title, got: %q", lines[0])
+	}
+	// The short row's schedule sits at the capped offset, not 150 runes out.
+	idx := strings.Index(lines[1], "week")
+	if idx < 0 {
+		t.Fatalf("row 1 should contain schedule 'week', got: %q", lines[1])
+	}
+	if maxCol := len("  01BBBBBB  ") + searchTitleCapWidth + 1; idx > maxCol {
+		t.Errorf("row 1 schedule at column %d (max %d) — the over-long title widened every row: %q", idx, maxCol, lines[1])
+	}
+}
+
+// TestFormatSearchResults_ColumnsAlignAcrossMixedTitles verifies titles shorter
+// than the cap are padded to the widest title in the set, so the schedule
+// column starts at the same offset on every row.
+func TestFormatSearchResults_ColumnsAlignAcrossMixedTitles(t *testing.T) {
+	widest := "A somewhat longer title here"
+	tasks := []model.Task{
+		{ID: "01AAAAAAAAAAAAAAAAAAAAAAAA", Title: "Tiny", Schedule: "today", Status: "open"},
+		{ID: "01BBBBBBBBBBBBBBBBBBBBBBBB", Title: widest, Schedule: "today", Status: "open"},
+		{ID: "01CCCCCCCCCCCCCCCCCCCCCCCC", Title: "Mid length", Schedule: "today", Status: "open"},
+	}
+
+	lines := searchLines(t, tasks, ddmmyyyy)
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(lines))
+	}
+
+	want := strings.Index(lines[0], "today")
+	if want < 0 {
+		t.Fatalf("row 0 missing schedule cell: %q", lines[0])
+	}
+	for i, line := range lines[1:] {
+		if got := strings.Index(line, "today"); got != want {
+			t.Errorf("row %d schedule column at %d, want %d (misaligned):\n%q\n%q", i+1, got, want, lines[0], line)
+		}
+	}
+
+	// Padding tracks the widest title in the set, not a fixed width.
+	if wantCol := len("  01AAAAAA  ") + utf8.RuneCountInString(widest) + 1; want != wantCol {
+		t.Errorf("schedule column at %d, want %d (pad should equal the widest title)", want, wantCol)
+	}
+}
+
+// TestFormatSearchResults_StatusCell covers the 2-char status cell, including
+// done-beats-active precedence (done auto-deactivates, so both should never
+// hold at once — pin the precedence anyway).
+func TestFormatSearchResults_StatusCell(t *testing.T) {
+	tests := []struct {
+		name   string
+		task   model.Task
+		prefix string
+	}{
+		{"open", model.Task{ID: "01AAAAAAAA", Title: "T", Schedule: "today", Status: "open"}, "  "},
+		{"active", model.Task{ID: "01AAAAAAAA", Title: "T", Schedule: "today", Status: "open", Tags: []string{model.ActiveTag}}, "* "},
+		{"done", model.Task{ID: "01AAAAAAAA", Title: "T", Schedule: "today", Status: "done"}, "x "},
+		{"done beats active", model.Task{ID: "01AAAAAAAA", Title: "T", Schedule: "today", Status: "done", Tags: []string{model.ActiveTag}}, "x "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := searchLines(t, []model.Task{tt.task}, ddmmyyyy)
+			if len(lines) != 1 {
+				t.Fatalf("expected 1 row, got %d", len(lines))
+			}
+			if !strings.HasPrefix(lines[0], tt.prefix) {
+				t.Errorf("row should start with %q, got %q", tt.prefix, lines[0])
+			}
+			// The status cell is exactly 2 chars wide, so the ID must start at
+			// offset 2 — no marker glyph may follow.
+			if rest := lines[0][2:]; strings.HasPrefix(rest, "x") || strings.HasPrefix(rest, "*") {
+				t.Errorf("status cell must be exactly 2 chars wide, got %q", lines[0])
+			}
+		})
+	}
+}
+
+// TestFormatSearchResults_TagsFilterActive verifies the reserved active tag is
+// filtered out of the tag cell (it is rendered as the status marker instead).
+func TestFormatSearchResults_TagsFilterActive(t *testing.T) {
+	tasks := []model.Task{
+		{
+			ID:       "01ABCDEFGHIJKLMNOPQRSTUVWX",
+			Title:    "Tagged task",
+			Schedule: "today",
+			Status:   "open",
+			Tags:     []string{model.ActiveTag, "work", "urgent"},
+		},
+	}
+
+	lines := searchLines(t, tasks, ddmmyyyy)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "[work, urgent]") {
+		t.Errorf("row should contain visible tags '[work, urgent]', got %q", lines[0])
+	}
+	if strings.Contains(lines[0], model.ActiveTag) {
+		t.Errorf("row should not contain the reserved %q tag in the tag cell, got %q", model.ActiveTag, lines[0])
+	}
+	// Active still shows as the status marker.
+	if !strings.HasPrefix(lines[0], "* ") {
+		t.Errorf("active task row should start with '* ', got %q", lines[0])
+	}
+}
+
+// TestFormatSearchResults_ShortIDColumn verifies the ID cell holds the 8-char
+// short ID, not the full ULID.
+func TestFormatSearchResults_ShortIDColumn(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01ABCDEFGHIJKLMNOPQRSTUVWX", Title: "Buy milk", Schedule: "today", Status: "open"},
+	}
+
+	lines := searchLines(t, tasks, ddmmyyyy)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "01ABCDEF") {
+		t.Errorf("row should contain short ID '01ABCDEF', got %q", lines[0])
+	}
+	if strings.Contains(lines[0], "01ABCDEFGHIJ") {
+		t.Errorf("row should not contain the full ULID, got %q", lines[0])
+	}
+}
+
+// TestFormatSearchResults_ISOScheduleRendersInConfiguredLayout mirrors
+// TestFormatTasks_ISOScheduleRendersInConfiguredLayout: stored ISO schedules
+// must render through schedule.FormatDisplay in the configured layout, and the
+// layout parameter must be wired through rather than hardcoded.
+func TestFormatSearchResults_ISOScheduleRendersInConfiguredLayout(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01ABCDEFGHIJKLMNOPQRSTUVWX", Title: "Dated task", Schedule: "2030-04-15", Status: "open"},
+	}
+
+	var buf bytes.Buffer
+	FormatSearchResults(&buf, tasks, fixedNow, ddmmyyyy)
+	output := buf.String()
+	if !strings.Contains(output, "15-04-2030") {
+		t.Errorf("output should contain schedule in DD-MM-YYYY (15-04-2030), got:\n%s", output)
+	}
+	if strings.Contains(output, "2030-04-15") {
+		t.Errorf("output should NOT contain stored ISO schedule 2030-04-15, got:\n%s", output)
+	}
+
+	// Under an alternative layout the schedule must render in that layout,
+	// proving the parameter is wired through (not hardcoded).
+	buf.Reset()
+	FormatSearchResults(&buf, tasks, fixedNow, "01/02/2006")
+	output = buf.String()
+	if !strings.Contains(output, "04/15/2030") {
+		t.Errorf("output should contain schedule in MM/DD/YYYY (04/15/2030), got:\n%s", output)
+	}
+
+	// Bucket names are not ISO dates, so FormatDisplay passes them through.
+	buf.Reset()
+	FormatSearchResults(&buf, []model.Task{{ID: "01X", Title: "Bucket", Schedule: "tomorrow", Status: "open"}}, fixedNow, ddmmyyyy)
+	if !strings.Contains(buf.String(), "tomorrow") {
+		t.Errorf("bucket schedule should pass through unchanged, got:\n%s", buf.String())
+	}
+}
+
+// TestFormatSearchResults_MultibyteTitlePadding verifies padding is computed in
+// runes, not bytes, so a title full of multibyte characters does not overshoot
+// its column.
+func TestFormatSearchResults_MultibyteTitlePadding(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01AAAAAAAAAAAAAAAAAAAAAAAA", Title: "Café → naïve", Schedule: "today", Status: "open"},
+		{ID: "01BBBBBBBBBBBBBBBBBBBBBBBB", Title: "ASCII title!", Schedule: "today", Status: "open"},
+	}
+	// Both titles have the same rune count but different byte lengths.
+	if utf8.RuneCountInString(tasks[0].Title) != utf8.RuneCountInString(tasks[1].Title) {
+		t.Fatalf("fixture titles must have equal rune counts")
+	}
+	if len(tasks[0].Title) == len(tasks[1].Title) {
+		t.Fatalf("fixture titles must differ in byte length")
+	}
+
+	lines := searchLines(t, tasks, ddmmyyyy)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(lines))
+	}
+	c0 := utf8.RuneCountInString(lines[0][:strings.Index(lines[0], "today")])
+	c1 := utf8.RuneCountInString(lines[1][:strings.Index(lines[1], "today")])
+	if c0 != c1 {
+		t.Errorf("schedule column at rune %d vs %d — padding is byte-based, not rune-based:\n%q\n%q", c0, c1, lines[0], lines[1])
+	}
+}

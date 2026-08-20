@@ -19,6 +19,12 @@ const separatorLine = "───────────────────
 // Longer titles are truncated with a trailing "…".
 const titleColWidth = 40
 
+// searchTitleCapWidth caps how wide the title column in `monolog search`
+// output may grow. Titles are never truncated; the cap only bounds the
+// padding, so a single very long title pushes its own trailing columns right
+// instead of widening every row in the result set.
+const searchTitleCapWidth = 60
+
 // padRight pads s with spaces to the given width based on rune count;
 // assumes single-column characters. Multi-byte runes like → (U+2192,
 // 3 bytes, 1 rune) are counted as one column, which is correct on most
@@ -192,6 +198,71 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) 
 			truncatePad(task.Title, titleColWidth),
 			scheduleCell,
 			padRight(dates, 17),
+			tags,
+		)
+	}
+}
+
+// FormatSearchResults writes ranked search hits as a compact terminal table to w.
+// Each line shows: status cell, short ID, full title, schedule, tags.
+//
+// Unlike FormatTasks it never truncates the title — untruncated titles are the
+// whole reason `monolog search` exists, since `ls`'s 40-rune cut makes it unfit
+// for deduplication. Titles are padded to the widest title in the set, capped at
+// searchTitleCapWidth columns so one over-long title pushes only its own trailing
+// columns right instead of widening every row.
+//
+// The position column is dropped (positions are per-schedule, so they are
+// meaningless across a mixed result set) and so is the dates column (dedupe does
+// not need it). Dropping dates is why now goes unused; it stays in the signature
+// for parity with the other formatters, which all take (w, tasks, now, layout).
+// layout is the configured date format (Go layout), e.g. config.DateFormat();
+// stored ISO schedules are rendered through it.
+// When tasks is empty it writes "No matches.\n".
+func FormatSearchResults(w io.Writer, tasks []model.Task, _ time.Time, layout string) {
+	if len(tasks) == 0 {
+		fmt.Fprintln(w, "No matches.")
+		return
+	}
+
+	// Pad to the widest title, capped so a single long title cannot widen the
+	// whole table. Titles longer than the cap are still printed in full.
+	titleWidth := 0
+	for _, task := range tasks {
+		if n := utf8.RuneCountInString(task.Title); n > titleWidth {
+			titleWidth = n
+		}
+	}
+	if titleWidth > searchTitleCapWidth {
+		titleWidth = searchTitleCapWidth
+	}
+
+	for _, task := range tasks {
+		// Done wins over active: `done` auto-deactivates, so a task carrying both
+		// should not exist, but the precedence is pinned rather than left to
+		// field order.
+		statusCell := "  "
+		switch {
+		case task.Status == "done":
+			statusCell = "x "
+		case task.IsActive():
+			statusCell = "* "
+		}
+
+		tags := ""
+		if vt := VisibleTags(task.Tags); len(vt) > 0 {
+			tags = "[" + strings.Join(vt, ", ") + "]"
+		}
+
+		// Render the schedule through FormatDisplay so stored ISO dates appear in
+		// the configured user-facing format; bucket names pass through unchanged.
+		scheduleCell := schedule.FormatDisplay(task.Schedule, layout)
+
+		fmt.Fprintf(w, "%s%-8s  %s %-10s %s\n",
+			statusCell,
+			ShortID(task.ID),
+			padRight(task.Title, titleWidth),
+			scheduleCell,
 			tags,
 		)
 	}

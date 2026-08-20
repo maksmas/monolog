@@ -176,12 +176,12 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - Modify: `internal/display/table.go`
 - Modify: `internal/display/table_test.go`
 
-- [ ] add `FormatSearchResults(w io.Writer, tasks []model.Task, now time.Time, layout string)` computing the max title rune-width, capping the pad at 60 columns, and padding with the existing `padRight`
-- [ ] render `<status><8-char ID>  <padded title> <schedule> <tags>`; status cell `"x "` done / `"* "` active / `"  "` otherwise; schedule via `schedule.FormatDisplay`; tags via `VisibleTags`
-- [ ] print `No matches.` for an empty slice
-- [ ] write tests: title never truncated (include a title longer than 40 runes and assert it appears in full), a >60-rune title does not widen other rows, columns align across mixed title lengths, done-beats-active precedence in the status cell, empty slice message, reserved `active` tag filtered from the tag cell
-- [ ] write a layout-sensitivity test mirroring `table_test.go:455` (`TestFormatTasks_ISOScheduleRendersInConfiguredLayout`) — stored ISO schedules must render in the configured layout
-- [ ] run `go test ./internal/display/` — must pass before Task 4
+- [x] add `FormatSearchResults(w io.Writer, tasks []model.Task, now time.Time, layout string)` computing the max title rune-width, capping the pad at 60 columns, and padding with the existing `padRight`
+- [x] render `<status><8-char ID>  <padded title> <schedule> <tags>`; status cell `"x "` done / `"* "` active / `"  "` otherwise; schedule via `schedule.FormatDisplay`; tags via `VisibleTags`
+- [x] print `No matches.` for an empty slice
+- [x] write tests: title never truncated (include a title longer than 40 runes and assert it appears in full), a >60-rune title does not widen other rows, columns align across mixed title lengths, done-beats-active precedence in the status cell, empty slice message, reserved `active` tag filtered from the tag cell
+- [x] write a layout-sensitivity test mirroring `table_test.go:455` (`TestFormatTasks_ISOScheduleRendersInConfiguredLayout`) — stored ISO schedules must render in the configured layout
+- [x] run `go test ./internal/display/` — must pass before Task 4
 
 ### Task 4: Add the `monolog search` command
 
