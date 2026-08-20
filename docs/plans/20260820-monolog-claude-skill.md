@@ -137,16 +137,16 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - Create: `internal/search/rank.go`
 - Create: `internal/search/rank_test.go`
 
-- [ ] create `internal/search/rank.go` with `Result`, `Index`, `NewIndex`, `Rank`, `Len`; `NewIndex` builds the titles/bodies slices once
-- [ ] move `titleWeight`, `rankAgg`, and `truncate` (renamed `truncateResults`) into the new package
-- [ ] port the ranking body preserving every invariant in the "Semantics to preserve exactly" list above — **especially the no-pre-lowercasing rule**; carry `search_match.go:10-14`'s case-folding comment across verbatim
-- [ ] make `Len()` and `Rank()` nil-receiver safe (`0` / empty non-nil slice) per the nil contract
-- [ ] leave `internal/tui/search_match.go` in place for now (Task 2 removes it) so the tree keeps compiling
-- [ ] port `internal/tui/search_match_test.go` to `internal/search/rank_test.go`, rewriting `docs[r.docIdx].task.ID` assertions as `r.Task.ID`; **skip the two `highlightMatches` cases (`:238`, `:263`)** — they stay in `tui` and are handled in Task 2
-- [ ] write tests for the multibyte/case-folding cases at the offset level (assert `TitleHit` byte offsets directly, since `highlightMatches` is unavailable here)
-- [ ] write a test asserting `TitleHit` offsets are correct for the *first* of several title matches (guards the defensive copy)
-- [ ] write tests for `Len()`, `NewIndex(nil)`, a nil `*Index` receiver, `Rank` returning non-nil on no match, and nil `TitleHit` on a body-only hit
-- [ ] run `go test ./internal/search/` — must pass before Task 2
+- [x] create `internal/search/rank.go` with `Result`, `Index`, `NewIndex`, `Rank`, `Len`; `NewIndex` builds the titles/bodies slices once
+- [x] move `titleWeight`, `rankAgg`, and `truncate` (renamed `truncateResults`) into the new package
+- [x] port the ranking body preserving every invariant in the "Semantics to preserve exactly" list above — **especially the no-pre-lowercasing rule**; carry `search_match.go:10-14`'s case-folding comment across verbatim
+- [x] make `Len()` and `Rank()` nil-receiver safe (`0` / empty non-nil slice) per the nil contract
+- [x] leave `internal/tui/search_match.go` in place for now (Task 2 removes it) so the tree keeps compiling
+- [x] port `internal/tui/search_match_test.go` to `internal/search/rank_test.go`, rewriting `docs[r.docIdx].task.ID` assertions as `r.Task.ID`; **skip the two `highlightMatches` cases (`:238`, `:263`)** — they stay in `tui` and are handled in Task 2
+- [x] write tests for the multibyte/case-folding cases at the offset level (assert `TitleHit` byte offsets directly, since `highlightMatches` is unavailable here)
+- [x] write a test asserting `TitleHit` offsets are correct for the *first* of several title matches (guards the defensive copy)
+- [x] write tests for `Len()`, `NewIndex(nil)`, a nil `*Index` receiver, `Rank` returning non-nil on no match, and nil `TitleHit` on a body-only hit
+- [x] run `go test ./internal/search/` — must pass before Task 2
 
 ### Task 2: Migrate the TUI to `internal/search`
 
