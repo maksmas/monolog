@@ -1,7 +1,7 @@
 ---
 name: monolog
 description: "Personal backlog capture and lookup via the monolog CLI. Use when the user asks to file or check something in their backlog (\"add this to my backlog\", \"put that in mlog\", \"what's on my plate\", \"anything in mlog about X\"). ALSO use proactively, without being asked, whenever work is identified that will NOT be done in the current session: tech debt noticed while doing something else, a bug found but not fixed, something the user deferred (\"not now\", \"later\", \"leave it\"), or unfinished deferred items when a plan or session wraps up. Filing is cheap and quarantined — losing the thought is not."
-allowed-tools: Bash
+allowed-tools: Bash(monolog add *) Bash(monolog note *) Bash(monolog search *) Bash(monolog ls *) Bash(monolog show *) Bash(monolog log *)
 ---
 
 # monolog
@@ -60,7 +60,7 @@ monolog add "<title>" --tags claude
 monolog add "<title>" --tags claude,infra -s week
 ```
 
-The `claude` tag is pure provenance and goes on **every** write, prompted or not, so the user can always tell what you filed. `-s someday` alone carries the triage state; leave it off and the task lands on today, where it interrupts.
+The `claude` tag is pure provenance and goes on **every** `add`, prompted or not, so the user can always tell what you filed. (`monolog note` takes no tags — it inherits whatever the task already carries.) `-s someday` alone carries the triage state; leave it off and the task lands on today, where it interrupts.
 
 `--tags` takes a **single comma-separated string** and is not repeatable — passing it twice keeps only the last value. Merge the tags yourself: `--tags claude,infra`.
 
@@ -76,10 +76,10 @@ Title:
 
 Body, one to three lines:
 
-- where it lives, as a path with a line number: `internal/store/store.go:142`
+- where it lives, as a repo-qualified path with a line number: `monolog/internal/store/store.go:142`
 - one sentence on why it was deferred, so future-them can judge whether it still matters
 
-Put the repo name **in the body, not in a tag**. The TUI's tag view turns every tag into a tab, so a tag per repo makes that view unusable.
+The repo name goes **in the body, not in a tag** — that is why the path above leads with it. The TUI's tag view turns every tag into a tab, so a tag per repo makes that view unusable.
 
 ### Gotcha: titles that start with `word:`
 
@@ -91,7 +91,7 @@ If a title begins with `"<existing-tag>: "` and that tag is already on some othe
 monolog ls                               # today's open tasks
 monolog ls -a                            # all open tasks, every schedule
 monolog ls --active                      # the current working set
-monolog ls -a --tag claude -s someday    # the quarantine queue you file into
+monolog ls --tag claude -s someday       # the quarantine queue you file into
 monolog search "<keywords>"              # fuzzy, untruncated titles, top 10
 monolog search "<keywords>" -n 25        # more hits
 monolog search "<keywords>" -d           # include completed tasks
@@ -99,13 +99,14 @@ monolog show <id>                        # full detail, body and notes
 monolog log                              # completed in the last 7 days
 ```
 
-`ls -a` and `search -d` are **different axes** and easy to conflate: `-a` on `ls` means "all schedules, still open", `-d` on `search` means "include done", and `ls -d` means "only completed".
+`ls -a` and `search -d` are **different axes** and easy to conflate: `-a` on `ls` means "all schedules, still open", `-d` on `search` means "include done", and `ls -d` means "only completed". Passing `--schedule` to `ls` already picks a schedule, so `-a` alongside it does nothing.
 
-Identifiers resolve two ways. Anywhere a command takes `<id>` you can pass a ULID prefix (`01J5K`) or the initials of the title's words — `monolog show flb` resolves "Fix login bug". Two characters minimum; an ambiguous match lists the candidates instead of guessing.
+Identifiers resolve two ways. Anywhere a command takes `<id>` you can pass a ULID prefix (`01J5K`) or the initials of the title's words — `monolog show flb` resolves "Fix login bug". Two characters minimum; an ambiguous match lists the candidates instead of guessing. **Initials only match open tasks**, so a completed task pulled out of `search -d` has to be addressed by ULID prefix — copy it from the search output.
 
 ## Never do these
 
 - **Only `add` and `note` are ever unprompted.** `monolog done`, `monolog edit`, `monolog rm` and `monolog mv` need an explicit instruction in the current conversation. Fixing something does **not** license marking the matching task done — the user decides what is finished.
 - **Never run `monolog sync`.** Pushing and rebasing against the user's remote is their call. The consequence is worth stating out loud if it matters: what you capture stays on this machine until they sync, so it will not show up on their phone right away.
 - **Never launch the TUI.** Bare `monolog` opens an interactive terminal UI — useless here, and it fails outright without a TTY. Same for `monolog init`, `monolog email` and `monolog telegram`: repo setup and background integrations the user owns.
-- **If `monolog` is not on PATH, stop and say so.** Do not install it, do not guess at a binary path, do not create a backlog directory.
+- **If `monolog` is not on PATH, stop and say so.** Do not install it, do not guess at a binary path.
+- **If a write fails with `not a git repository`, the backlog is not set up. Stop.** Tell the user to run `monolog init` and do not run it yourself, do not retry, do not try another directory. Reads will not warn you about this: against an uninitialized directory `monolog search` and `monolog ls` just report nothing found — and the read itself creates an empty `.monolog/tasks/` as a side effect. So an empty backlog and a missing backlog look identical until the first write fails. Mention that the failed `add` still left an uncommitted task file behind — `monolog init` picks it up.

@@ -810,12 +810,17 @@ func TestFormatTasksFull_SingleTask_CreatedLine(t *testing.T) {
 	}
 }
 
+// searchRowIDCol is the column at which the title cell starts in
+// FormatSearchResults output: a 2-character status cell, the ID prefix, and
+// the two-space separator after it.
+const searchRowIDCol = 2 + searchIDWidth + 2
+
 // searchLines renders tasks through FormatSearchResults and splits the output
 // into its (newline-free) rows.
 func searchLines(t *testing.T, tasks []model.Task, layout string) []string {
 	t.Helper()
 	var buf bytes.Buffer
-	FormatSearchResults(&buf, tasks, fixedNow, layout)
+	FormatSearchResults(&buf, tasks, layout)
 	out := strings.TrimSuffix(buf.String(), "\n")
 	if out == "" {
 		return nil
@@ -825,13 +830,13 @@ func searchLines(t *testing.T, tasks []model.Task, layout string) []string {
 
 func TestFormatSearchResults_Empty(t *testing.T) {
 	var buf bytes.Buffer
-	FormatSearchResults(&buf, nil, fixedNow, ddmmyyyy)
+	FormatSearchResults(&buf, nil, ddmmyyyy)
 	if got := buf.String(); got != "No matches.\n" {
 		t.Errorf("expected %q, got %q", "No matches.\n", got)
 	}
 
 	buf.Reset()
-	FormatSearchResults(&buf, []model.Task{}, fixedNow, ddmmyyyy)
+	FormatSearchResults(&buf, []model.Task{}, ddmmyyyy)
 	if got := buf.String(); got != "No matches.\n" {
 		t.Errorf("empty slice: expected %q, got %q", "No matches.\n", got)
 	}
@@ -851,7 +856,7 @@ func TestFormatSearchResults_LongTitleNotTruncated(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	FormatSearchResults(&buf, tasks, fixedNow, ddmmyyyy)
+	FormatSearchResults(&buf, tasks, ddmmyyyy)
 	output := buf.String()
 	if !strings.Contains(output, long) {
 		t.Errorf("output should contain the full untruncated title, got:\n%s", output)
@@ -885,7 +890,7 @@ func TestFormatSearchResults_OverCapTitleDoesNotWidenOtherRows(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("row 1 should contain schedule 'week', got: %q", lines[1])
 	}
-	if maxCol := len("  01BBBBBB  ") + searchTitleCapWidth + 1; idx > maxCol {
+	if maxCol := searchRowIDCol + searchTitleCapWidth + 1; idx > maxCol {
 		t.Errorf("row 1 schedule at column %d (max %d) — the over-long title widened every row: %q", idx, maxCol, lines[1])
 	}
 }
@@ -917,7 +922,7 @@ func TestFormatSearchResults_ColumnsAlignAcrossMixedTitles(t *testing.T) {
 	}
 
 	// Padding tracks the widest title in the set, not a fixed width.
-	if wantCol := len("  01AAAAAA  ") + utf8.RuneCountInString(widest) + 1; want != wantCol {
+	if wantCol := searchRowIDCol + utf8.RuneCountInString(widest) + 1; want != wantCol {
 		t.Errorf("schedule column at %d, want %d (pad should equal the widest title)", want, wantCol)
 	}
 }
@@ -984,22 +989,66 @@ func TestFormatSearchResults_TagsFilterActive(t *testing.T) {
 	}
 }
 
-// TestFormatSearchResults_ShortIDColumn verifies the ID cell holds the 8-char
-// short ID, not the full ULID.
-func TestFormatSearchResults_ShortIDColumn(t *testing.T) {
+// TestFormatSearchResults_IDColumn verifies the ID cell holds a
+// searchIDWidth-character prefix — wider than ShortID's 8, because search
+// output is meant to be pasted into `monolog note <id>` and an 8-character
+// ULID prefix collides for tasks created in the same ~256 ms window — but
+// still not the full ULID.
+func TestFormatSearchResults_IDColumn(t *testing.T) {
+	const id = "01ABCDEFGHIJKLMNOPQRSTUVWX"
 	tasks := []model.Task{
-		{ID: "01ABCDEFGHIJKLMNOPQRSTUVWX", Title: "Buy milk", Schedule: "today", Status: "open"},
+		{ID: id, Title: "Buy milk", Schedule: "today", Status: "open"},
 	}
 
 	lines := searchLines(t, tasks, ddmmyyyy)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(lines))
 	}
-	if !strings.Contains(lines[0], "01ABCDEF") {
-		t.Errorf("row should contain short ID '01ABCDEF', got %q", lines[0])
+	if searchIDWidth <= 10 {
+		t.Fatalf("searchIDWidth = %d; a ULID needs 10 characters just for the millisecond timestamp, so anything at or below that collides for same-millisecond tasks", searchIDWidth)
 	}
-	if strings.Contains(lines[0], "01ABCDEFGHIJ") {
+	want := id[:searchIDWidth]
+	if !strings.Contains(lines[0], want) {
+		t.Errorf("row should contain the %d-char ID prefix %q, got %q", searchIDWidth, want, lines[0])
+	}
+	if strings.Contains(lines[0], id) {
 		t.Errorf("row should not contain the full ULID, got %q", lines[0])
+	}
+}
+
+// TestFormatSearchResults_EmptyTitleAndSchedule pins the degenerate cells: a
+// task with no title still renders a row (with its columns still aligned
+// against a neighbour), and an empty schedule renders as blank padding rather
+// than tripping schedule.FormatDisplay.
+func TestFormatSearchResults_EmptyTitleAndSchedule(t *testing.T) {
+	tasks := []model.Task{
+		{ID: "01AAAAAAAAAAAAAAAAAAAAAAAA", Title: "", Schedule: "", Status: "open"},
+		{ID: "01BBBBBBBBBBBBBBBBBBBBBBBB", Title: "Has a title", Schedule: "today", Status: "open", Tags: []string{"work"}},
+	}
+
+	lines := searchLines(t, tasks, ddmmyyyy)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 rows, got %d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if !strings.HasPrefix(lines[0], "  01AAAAAAAAAA") {
+		t.Errorf("empty-title row should still start with the status cell and ID, got %q", lines[0])
+	}
+	// Column alignment: the tag column of row 1 must start where row 0's would.
+	if idx := strings.Index(lines[1], "[work]"); idx < 0 {
+		t.Errorf("row 1 should carry its tag cell, got %q", lines[1])
+	}
+	if got := len(strings.TrimRight(lines[0], " ")); got == 0 {
+		t.Errorf("empty-title row should not collapse to whitespace, got %q", lines[0])
+	}
+
+	// A single empty-title, empty-schedule task on its own must not panic or
+	// emit "No matches.".
+	solo := searchLines(t, tasks[:1], ddmmyyyy)
+	if len(solo) != 1 {
+		t.Fatalf("expected 1 row for the solo empty task, got %d: %q", len(solo), solo)
+	}
+	if strings.Contains(solo[0], "No matches.") {
+		t.Errorf("a real task with an empty title must not render as %q", "No matches.")
 	}
 }
 
@@ -1013,7 +1062,7 @@ func TestFormatSearchResults_ISOScheduleRendersInConfiguredLayout(t *testing.T) 
 	}
 
 	var buf bytes.Buffer
-	FormatSearchResults(&buf, tasks, fixedNow, ddmmyyyy)
+	FormatSearchResults(&buf, tasks, ddmmyyyy)
 	output := buf.String()
 	if !strings.Contains(output, "15-04-2030") {
 		t.Errorf("output should contain schedule in DD-MM-YYYY (15-04-2030), got:\n%s", output)
@@ -1025,7 +1074,7 @@ func TestFormatSearchResults_ISOScheduleRendersInConfiguredLayout(t *testing.T) 
 	// Under an alternative layout the schedule must render in that layout,
 	// proving the parameter is wired through (not hardcoded).
 	buf.Reset()
-	FormatSearchResults(&buf, tasks, fixedNow, "01/02/2006")
+	FormatSearchResults(&buf, tasks, "01/02/2006")
 	output = buf.String()
 	if !strings.Contains(output, "04/15/2030") {
 		t.Errorf("output should contain schedule in MM/DD/YYYY (04/15/2030), got:\n%s", output)
@@ -1033,7 +1082,7 @@ func TestFormatSearchResults_ISOScheduleRendersInConfiguredLayout(t *testing.T) 
 
 	// Bucket names are not ISO dates, so FormatDisplay passes them through.
 	buf.Reset()
-	FormatSearchResults(&buf, []model.Task{{ID: "01X", Title: "Bucket", Schedule: "tomorrow", Status: "open"}}, fixedNow, ddmmyyyy)
+	FormatSearchResults(&buf, []model.Task{{ID: "01X", Title: "Bucket", Schedule: "tomorrow", Status: "open"}}, ddmmyyyy)
 	if !strings.Contains(buf.String(), "tomorrow") {
 		t.Errorf("bucket schedule should pass through unchanged, got:\n%s", buf.String())
 	}

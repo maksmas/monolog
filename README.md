@@ -107,7 +107,7 @@ Fuzzy-searches task titles and bodies, printing the top matches with **untruncat
 | `-n, --limit` | Maximum matches to print (default 10; any value below 1 falls back to 10) |
 | `-d, --done` | Include completed tasks (default is open tasks only) |
 
-Rows are `<status> <8-char ID> <title> <schedule> <tags>`, where the status cell is `x` for done and `*` for active. Titles are padded to the widest match, capped at 60 columns so one long title doesn't widen every row. No match prints `No matches.`
+Rows are `<status> <12-char ID> <title> <schedule> <tags>`, where the status cell is `x` for done and `*` for active. The ID column is wider than the 8 characters `monolog ls` shows, because ULIDs created in the same ~256 ms window share an 8-character prefix and search output is meant to be pasted straight into `monolog note <id>`. Titles are padded to the widest match, capped at 60 columns so one long title doesn't widen every row. No match prints `No matches.`, and a blank query is an error rather than a dump of arbitrary tasks.
 
 Note the two different axes: `ls -a` means "all schedules, still open", while `search -d` means "include done".
 
@@ -484,7 +484,7 @@ Unprompted writes are quarantined:
 monolog add "<title>" --tags claude -s someday --body "<where + why>"
 ```
 
-`--tags claude` is provenance and goes on every write the skill makes; `-s someday` keeps it out of your today and week views. Drain the queue when it suits you with `monolog ls -a --tag claude -s someday`, rescheduling what is worth doing and `monolog rm`-ing the rest. Before every unprompted write, Claude runs `monolog search` and appends a `monolog note` instead of filing a near-duplicate.
+`--tags claude` is provenance and goes on every task the skill adds; `-s someday` keeps it out of your today and week views. Drain the queue when it suits you with `monolog ls --tag claude -s someday`, rescheduling what is worth doing and `monolog rm`-ing the rest. Before every unprompted write, Claude runs `monolog search` and appends a `monolog note` instead of filing a near-duplicate.
 
 See [`docs/claude-skill/README.md`](docs/claude-skill/README.md) for what the skill does, the full convention, and the one-line symlink install.
 

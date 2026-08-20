@@ -1,9 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/maksmas/monolog/internal/config"
 	"github.com/maksmas/monolog/internal/display"
@@ -33,6 +33,16 @@ func newSearchCmd() *cobra.Command {
 		// works unquoted — friendlier for shell and agent callers alike.
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// MinimumNArgs(1) is satisfied by an empty string, and
+			// Index.Rank("") deliberately means "every task by CreatedAt
+			// desc" — correct for the TUI's initial seed, catastrophic here.
+			// A caller that interpolates an empty keyword string would get ten
+			// arbitrary rows and read them as near-duplicates. Reject instead.
+			query := strings.TrimSpace(strings.Join(args, " "))
+			if query == "" {
+				return errors.New("search query is empty: pass at least one non-blank keyword")
+			}
+
 			s, _, err := openStore()
 			if err != nil {
 				return err
@@ -57,14 +67,14 @@ func newSearchCmd() *cobra.Command {
 				limit = defaultSearchLimit
 			}
 
-			results := search.NewIndex(tasks).Rank(strings.Join(args, " "), limit)
+			results := search.NewIndex(tasks).Rank(query, limit)
 
 			matches := make([]model.Task, len(results))
 			for i, r := range results {
 				matches[i] = r.Task
 			}
 
-			display.FormatSearchResults(cmd.OutOrStdout(), matches, time.Now(), config.DateFormat())
+			display.FormatSearchResults(cmd.OutOrStdout(), matches, config.DateFormat())
 			return nil
 		},
 	}

@@ -27,9 +27,10 @@ type Result struct {
 // and calling Rank per keystroke keeps the TUI overlay from re-allocating the
 // parallel title/body slices on every input event.
 //
-// The zero value is not usable; construct with NewIndex. A nil *Index is
-// valid and behaves as an empty index (Len returns 0, Rank returns no
-// results), which lets callers nil it out to release the task set.
+// The zero value is a usable empty index (Len returns 0, Rank returns no
+// results), and so is a nil *Index — the nil case is what lets callers nil the
+// field out to release the task set while render paths keep calling Len/Rank.
+// Construct populated indexes with NewIndex.
 type Index struct {
 	tasks  []model.Task
 	titles []string
@@ -39,6 +40,11 @@ type Index struct {
 // NewIndex builds an Index over tasks, extracting the title and body slices
 // fuzzy.Find operates on.
 //
+// The task slice is copied, so the index is a true snapshot: callers may keep
+// mutating (or reassigning elements of) the slice they passed in without the
+// index — or the Result.Task values it hands back — changing underneath them.
+// The copy is shallow and happens once per index build, not per Rank call.
+//
 // Titles and bodies are stored as-is. sahilm/fuzzy performs
 // case-insensitive matching natively via Unicode case folding, so no
 // pre-lowercased copies are needed; storing them would also misalign
@@ -46,7 +52,7 @@ type Index struct {
 // length (e.g. Turkish "İ" -> "i", German "ẞ" -> "ß").
 func NewIndex(tasks []model.Task) *Index {
 	ix := &Index{
-		tasks:  tasks,
+		tasks:  append([]model.Task(nil), tasks...),
 		titles: make([]string, len(tasks)),
 		bodies: make([]string, len(tasks)),
 	}
@@ -112,11 +118,21 @@ func (ix *Index) Rank(query string, limit int) []Result {
 		a := &aggs[m.Index]
 		a.matched = true
 		a.titleScore = m.Score
-		// Defensive-copy MatchedIndexes: sahilm/fuzzy reuses this buffer
-		// across Match entries inside a single Find call, so retaining the
-		// slice without copying would later show the last match's indexes
-		// for every earlier hit. Body hits skip the copy because a body
-		// equivalent of TitleHit is intentionally not carried on Result.
+		// Defensive-copy MatchedIndexes so a Result never aliases a buffer
+		// owned by sahilm/fuzzy.
+		//
+		// This is forward-insurance, not a fix for observable behaviour under
+		// the pinned sahilm/fuzzy v0.1.1: there, FindFromNoSort recycles the
+		// index buffer only after a *failed* candidate (`matchedIndexes =
+		// match.MatchedIndexes[:0]`) and sets it to nil after a successful one,
+		// so two returned Matches never share a backing array. No test can
+		// exercise aliasing against v0.1.1 — dropping the copy keeps every
+		// test green. Keep it anyway: the recycling scheme is an internal
+		// optimization upstream is free to widen to successful matches, and
+		// the copy is one allocation per title hit on a slice of a few ints.
+		//
+		// Body hits skip the copy because a body equivalent of TitleHit is
+		// intentionally not carried on Result.
 		a.titleHit = append([]int(nil), m.MatchedIndexes...)
 	}
 

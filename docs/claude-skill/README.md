@@ -8,6 +8,8 @@ The main payoff is proactive capture. Claude notices follow-up work it is not go
 
 This is deliberately **not** plan tracking. Claude manages plan files perfectly well on its own, and the skill says so explicitly.
 
+One thing that looks like a typo but is not: the frontmatter trigger phrases match both "backlog" and "mlog" ("put that in mlog", "anything in mlog about X"). `mlog` is a common shell alias for the `monolog` binary, and people who alias it say it out loud too. Every command in the skill body is spelled `monolog` — only the trigger phrases match the short form.
+
 ## The quarantine convention
 
 Spam is the obvious risk of letting an agent write to your backlog, so unprompted writes are fenced off:
@@ -16,13 +18,13 @@ Spam is the obvious risk of letting an agent write to your backlog, so unprompte
 monolog add "<title>" --tags claude -s someday --body "<where + why>"
 ```
 
-- `--tags claude` is provenance. It goes on **every** write the skill makes, prompted or not, so you can always tell what came from Claude.
+- `--tags claude` is provenance. It goes on **every** task the skill adds, prompted or not, so you can always tell what came from Claude. (`monolog note` takes no tags — a note inherits whatever the task it lands on already carries.)
 - `-s someday` is the quarantine. Someday is out of the today and week views, so nothing Claude files can interrupt your actual day.
 
 Drain the queue when it suits you:
 
 ```sh
-monolog ls -a --tag claude -s someday
+monolog ls --tag claude -s someday
 ```
 
 Reschedule what is worth doing, `monolog rm` the rest. When you ask Claude to file something explicitly, it keeps the `claude` tag but uses whatever schedule you named — no quarantine.
@@ -58,7 +60,7 @@ The explicit path is easy to check — ask Claude to "add X to my backlog" and w
 The proactive path is the interesting one and can only be judged over time: there is no user utterance to match against mid-task, so the frontmatter `description` is doing all the work and a miss is silent. Give it a few sessions, then look at what landed:
 
 ```sh
-monolog ls -a --tag claude -s someday
+monolog ls --tag claude -s someday
 ```
 
 If it never fires unprompted, the fix is a three-line primer in `~/.claude/CLAUDE.md` naming monolog, the filing rule and the one command — a deterministic trigger, at the cost of some permanent context.

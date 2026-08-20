@@ -31,7 +31,10 @@ const searchPageSize = 10
 // reloadAllTasks) into a search.Index, resets input/cursor state, and seeds
 // the results with an empty-query rank so the list starts populated. Using the
 // cached slice avoids a fresh disk scan on every "/" press, and building the
-// index once keeps per-keystroke ranking allocation-free.
+// index once means each keystroke re-ranks without re-deriving the parallel
+// title/body slices. Ranking itself still allocates per keystroke — the
+// per-task scratchpad and the result slice — which is why searchResultLimit
+// caps the output.
 func (m *Model) openSearch() {
 	m.mode = modeSearch
 	m.search.index = search.NewIndex(m.allTasks)

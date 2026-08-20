@@ -79,7 +79,7 @@ func (ix *Index) Len() int
 - `CreatedAt`-descending tie-break, `sort.SliceStable`
 - empty query → all docs by `CreatedAt` desc, no highlights
 - `limit <= 0` → no truncation (note: the CLI clamps before calling — see below)
-- **defensive copy of `m.MatchedIndexes`** — `sahilm/fuzzy` reuses that buffer across matches within one `Find` call; dropping the copy makes every earlier hit show the last match's offsets
+- **defensive copy of `m.MatchedIndexes`** — keep it, but note the correction made during review: under the pinned `sahilm/fuzzy` v0.1.1 the copy is *unobservable*. `FindFromNoSort` recycles the index buffer only after a **failed** candidate and nils it after a successful one, so two returned `Match` values never share a backing array. No test can exercise aliasing against v0.1.1. The copy stays as forward-insurance against upstream widening the recycling scheme; it is not the load-bearing invariant this line originally claimed.
 - **no pre-lowercased title/body copies** — `sahilm/fuzzy` case-folds natively, and a lowercased copy misaligns `MatchedIndexes` byte offsets for runes whose lowercase form differs in byte length (Turkish `İ`→`i`, `ẞ`→`ß`). This is the highest-risk invariant in the migration: `NewIndex` is exactly the place an implementer would "helpfully" add normalization. Carry `search_match.go:10-14`'s comment across verbatim.
 - `Rank` returns a **non-nil empty slice, never nil** (asserted at `search_match_test.go:112`, `:271`)
 - body-only hits carry **nil `TitleHit`** (`search_match_test.go:210`)
@@ -92,14 +92,16 @@ func (ix *Index) Len() int
 Lives in `internal/display` (not `cmd`) so it can use the existing unexported `padRight`, and takes `[]model.Task` rather than `[]search.Result` so `display` gains no dependency on `internal/search`.
 
 ```go
-func FormatSearchResults(w io.Writer, tasks []model.Task, now time.Time, layout string)
+func FormatSearchResults(w io.Writer, tasks []model.Task, layout string)
 ```
+
+*(Corrected during review: the original signature carried a `now time.Time` for "parity" with `FormatTasks`, but the dates column is dropped so nothing reads it, and nothing dispatches over these formatters. The parameter is gone.)*
 
 - Title is **untruncated** — this is the entire point, since 40-rune truncation is what makes `ls` unfit for dedupe.
 - Padded to the widest title in the result set, **capped at 60 columns**. Uncapped padding lets a single 150-rune title widen every row; the cap means over-long titles simply push their own trailing columns right instead of taxing the whole table. Never truncates either way.
 - Drops the position column (meaningless across schedules) and the dates column (dedupe doesn't need them).
 - 2-char status cell: `"x "` done, `"* "` active, `"  "` otherwise — **done takes precedence** if both somehow hold (`done` auto-deactivates, so it should not occur; pin it in a test regardless).
-- Layout: `<status><8-char ID>  <padded title> <schedule> <tags>`
+- Layout: `<status><12-char ID>  <padded title> <schedule> <tags>` — corrected during review from 8. A ULID's first 10 Crockford characters hold the full 48-bit millisecond timestamp, so 8 characters collide for tasks created within ~256 ms of each other, and the printed ID then fails to resolve in `monolog note <id>` — precisely the batch-filing case the skill encourages. `display.ShortID` stays at 8 for the width-sensitive `ls`/`log`/Telegram rows; search uses its own `searchIDWidth` const.
 - Empty input → `No matches.` (mirrors `FormatTasks`' `No tasks.`)
 
 ### `monolog search`
@@ -110,16 +112,24 @@ monolog search <query> -n 25     # --limit
 monolog search <query> -d        # --done, include completed
 ```
 
-- `cobra.MinimumNArgs(1)` with `strings.Join(args, " ")`, so `monolog search fix login` works without quoting — friendlier for an agent caller than `ExactArgs(1)`.
+- `cobra.MinimumNArgs(1)` with `strings.Join(args, " ")`, so `monolog search fix login` works without quoting — friendlier for an agent caller than `ExactArgs(1)`. **Corrected during review:** `MinimumNArgs(1)` is satisfied by `""`, and `Index.Rank("")` means "all tasks by `CreatedAt` desc" (right for the TUI seed, wrong here), so a blank query would print ten arbitrary rows. `RunE` now trims the joined query and errors when it is empty.
 - **`-d/--done`, not `-a/--all`.** `ls -a` already means "all *open* tasks across schedules" and `ls -d` already means "completed" — reusing `-a` for "include done" would give the same letter opposite meanings across two commands the skill documents side by side.
 - `--limit` clamps: any value `< 1` falls back to the default 10, so `-n 0` cannot dump all 219 tasks through the ranker's `limit <= 0` = no-truncation path.
 - Default open-only matches `ls` semantics and is correct for dedupe: a completed task whose issue recurs *should* be re-filed, not suppressed.
 
 ### Skill frontmatter description (verbatim — do not paraphrase)
 
-`name: monolog`, `allowed-tools: Bash`, and:
+`name: monolog`, an `allowed-tools` grant, and:
 
 > Personal backlog capture and lookup via the monolog CLI. Use when the user asks to file or check something in their backlog ("add this to my backlog", "put that in mlog", "what's on my plate", "anything in mlog about X"). ALSO use proactively, without being asked, whenever work is identified that will NOT be done in the current session: tech debt noticed while doing something else, a bug found but not fixed, something the user deferred ("not now", "later", "leave it"), or unfinished deferred items when a plan or session wraps up. Filing is cheap and quarantined — losing the thought is not.
+
+**`allowed-tools` (corrected during review — the plan originally said bare `Bash`, which was wrong).** `allowed-tools` *pre-approves* the listed calls; it does not restrict which tools are available. A bare `Bash` entry therefore waives the permission prompt for every shell command while the skill is loaded, leaving the prose prohibitions ("never `sync`/`done`/`rm`/`edit`") with no backstop at all. Scope it to exactly the documented surface, space-separated, using settings.json permission-rule syntax:
+
+```
+allowed-tools: Bash(monolog add *) Bash(monolog note *) Bash(monolog search *) Bash(monolog ls *) Bash(monolog show *) Bash(monolog log *)
+```
+
+`cmd/skill_test.go` pins this: it rejects a bare `Bash` grant, requires each of the six patterns, and fails if any prohibited subcommand appears in the list.
 
 The explicit proactive permission, the quoted trigger phrases, and the closing cost-asymmetry line are all load-bearing. Without a `CLAUDE.md` primer this paragraph is the only thing that fires the skill. Keep the colloquial "mlog" spellings in the trigger phrases even though the commands say `monolog` — users say the short form.
 
@@ -130,6 +140,8 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 **Post-Completion** — manual verification of skill triggering, which can only be observed across future sessions.
 
 ## Implementation Steps
+
+**Status:** complete except post-merge install steps (see Post-Completion). Every unchecked box below is deferred work, not skipped work.
 
 ### Task 1: Create `internal/search` package with `Index`
 
@@ -206,7 +218,7 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - Create: `cmd/skill_test.go`
 - Symlink (local, not a repo change): `~/.claude/skills/monolog/SKILL.md` → `docs/claude-skill/SKILL.md`
 
-- [x] create `docs/claude-skill/SKILL.md` with frontmatter `name: monolog`, `allowed-tools: Bash`, and the `description` **verbatim** from Technical Details
+- [x] create `docs/claude-skill/SKILL.md` with frontmatter `name: monolog`, the scoped `allowed-tools` grant from Technical Details, and the `description` **verbatim**
 - [x] write it generically — `monolog` throughout, no `mlog` alias, no absolute dev-binary path, nothing specific to one machine
 - [x] document the two write modes — unprompted `monolog add "<title>" --tags claude -s someday --body "<where + why>"`; explicit ask `monolog add "<title>" --tags claude` plus whatever schedule/tags the user named. Note `--tags` is a single comma-separated string, not repeatable, so tags must be merged (`--tags claude,domains`). The `claude` tag is pure provenance and goes on **every** write; `-s someday` alone carries triage state
 - [x] document dedupe: run `monolog search "<keywords>"` before every unprompted write; on a near-duplicate do **not** file — use `monolog note <id> "<new detail>"` instead. Same issue plus new information is a note, not a second task
@@ -220,9 +232,9 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - [x] create `cmd/skill_test.go` following `cmd/telegram_deploy_test.go`: resolve repo root via `runtime.Caller(0)`, assert both `docs/claude-skill/` files exist, assert `SKILL.md` frontmatter parses as YAML with non-empty `name` and `description`
 - [x] extend that test to cross-check documentation against the live CLI: extract every `monolog <subcommand>` occurrence from `SKILL.md`, assert each resolves against `NewRootCmd().Commands()`, and assert every documented `--flag`/`-x` exists on the command it is shown with (`cmd.Flags().Lookup` / `ShorthandLookup`). This is what stops the shipped skill from rotting when a flag is renamed
 - [x] run `go test ./cmd/` — must pass
-- [x] install locally (deferred - worktree run; symlink after merge, see Post-Completion)
+- [ ] install locally (deferred - worktree run; symlink after merge, see Post-Completion)
 - [x] verify the CLI paths by hand: `monolog search "test"`, then one `monolog add ... --tags claude -s someday`, confirm it lands as documented, then `monolog rm` the test task
-- [x] verify skill loads (skipped - not automatable; requires fresh session after install)
+- [ ] verify skill loads (skipped - not automatable; requires fresh session after install)
 
 ### Task 6: Verify acceptance criteria
 
@@ -243,7 +255,7 @@ to 69 runes). The real backlog at `~/.monolog` was never read or written.
   - Spot-checked alongside it: `-n 0` clamps to 10, `-n 3` → 3 rows, `-n 25` → 25 rows, no-match → `No matches.`
 - [x] the shipped skill documents no command or flag that doesn't exist (`cmd/skill_test.go` passes)
   - 4 tests pass. Mutation-checked for teeth: appending `` `monolog search "x" --nonexistent-flag` `` and `` `monolog frobnicate` `` to `SKILL.md` fails `TestSkillDocumentsOnlyRealCommands` with both errors named individually. `SKILL.md` restored, tree clean.
-- [x] `~/.claude/skills/monolog/SKILL.md` resolves through the symlink to the repo copy
+- [ ] `~/.claude/skills/monolog/SKILL.md` resolves through the symlink to the repo copy
   - **NOT verified — deliberately deferred, same reason as Task 5's install step.** `~/.claude/skills/` does not exist yet; creating the symlink from this worktree would dangle the moment the worktree is removed, and a dangling skill file can break session startup. Install after merge per Post-Completion, then re-check.
 - [x] run full suite: `go build ./... && go test ./... && go vet ./...`
   - All three green with the two new tests included; every package `ok`, no cached results (`-count=1`).

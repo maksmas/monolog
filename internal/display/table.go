@@ -25,6 +25,19 @@ const titleColWidth = 40
 // instead of widening every row in the result set.
 const searchTitleCapWidth = 60
 
+// searchIDWidth is how many leading ULID characters `monolog search` prints.
+//
+// It is deliberately wider than ShortID's 8. A ULID's first 10 Crockford
+// characters encode the full 48-bit millisecond timestamp, so 8 characters
+// cover only 40 of those bits — every task created inside the same ~256 ms
+// window shares an 8-character prefix. Search output exists to be copied
+// straight into `monolog note <id>` / `monolog show <id>`, and an ambiguous
+// prefix makes that fail; 12 characters spend the full timestamp plus two
+// characters of randomness, so same-millisecond creations still resolve.
+// ShortID itself is left at 8 because `ls`, `log` and the Telegram rows are
+// width-sensitive in a way this untruncated table is not.
+const searchIDWidth = 12
+
 // padRight pads s with spaces to the given width based on rune count;
 // assumes single-column characters. Multi-byte runes like → (U+2192,
 // 3 bytes, 1 rune) are counted as one column, which is correct on most
@@ -56,10 +69,16 @@ func truncatePad(s string, width int) string {
 
 // ShortID returns the first 8 characters of a task ID, or the full ID if shorter.
 func ShortID(id string) string {
-	if len(id) <= 8 {
+	return idPrefix(id, 8)
+}
+
+// idPrefix returns the first n characters of a task ID, or the full ID if it is
+// shorter. ULIDs are Crockford base32, so byte and character counts agree.
+func idPrefix(id string, n int) string {
+	if len(id) <= n {
 		return id
 	}
-	return id[:8]
+	return id[:n]
 }
 
 // VisibleTags returns a copy of tags with the reserved ActiveTag filtered out,
@@ -204,7 +223,8 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) 
 }
 
 // FormatSearchResults writes ranked search hits as a compact terminal table to w.
-// Each line shows: status cell, short ID, full title, schedule, tags.
+// Each line shows: status cell, searchIDWidth-character ID prefix, full title,
+// schedule, tags.
 //
 // Unlike FormatTasks it never truncates the title — untruncated titles are the
 // whole reason `monolog search` exists, since `ls`'s 40-rune cut makes it unfit
@@ -214,12 +234,11 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) 
 //
 // The position column is dropped (positions are per-schedule, so they are
 // meaningless across a mixed result set) and so is the dates column (dedupe does
-// not need it). Dropping dates is why now goes unused; it stays in the signature
-// for parity with the other formatters, which all take (w, tasks, now, layout).
+// not need it), which is why there is no now parameter here.
 // layout is the configured date format (Go layout), e.g. config.DateFormat();
 // stored ISO schedules are rendered through it.
 // When tasks is empty it writes "No matches.\n".
-func FormatSearchResults(w io.Writer, tasks []model.Task, _ time.Time, layout string) {
+func FormatSearchResults(w io.Writer, tasks []model.Task, layout string) {
 	if len(tasks) == 0 {
 		fmt.Fprintln(w, "No matches.")
 		return
@@ -258,9 +277,10 @@ func FormatSearchResults(w io.Writer, tasks []model.Task, _ time.Time, layout st
 		// the configured user-facing format; bucket names pass through unchanged.
 		scheduleCell := schedule.FormatDisplay(task.Schedule, layout)
 
-		fmt.Fprintf(w, "%s%-8s  %s %-10s %s\n",
+		fmt.Fprintf(w, "%s%-*s  %s %-10s %s\n",
 			statusCell,
-			ShortID(task.ID),
+			searchIDWidth,
+			idPrefix(task.ID, searchIDWidth),
 			padRight(task.Title, titleWidth),
 			scheduleCell,
 			tags,

@@ -87,6 +87,64 @@ func TestRank_TitleWeightBeatsBody(t *testing.T) {
 	}
 }
 
+// scoreOf ranks a single task and returns its score, failing when the fixture
+// does not match at all.
+func scoreOf(t *testing.T, query, title, body string) int {
+	t.Helper()
+	got := rank(query, []model.Task{newTask("X", title, body, "2026-04-01T10:00:00Z")}, 0)
+	if len(got) != 1 {
+		t.Fatalf("fixture title=%q body=%q should produce exactly 1 hit for %q, got %d", title, body, query, len(got))
+	}
+	return got[0].Score
+}
+
+// TestRank_TitleWeightIsExactlyDouble pins the *number*, not the ordering.
+// The two "title outranks body" tests only prove titleWeight >= 1, because
+// their body-hit fixtures have titles that do not fuzzy-match at all. Scoring
+// the identical string once as a title and once as a body isolates the weight:
+// fuzzy scores a given string the same way regardless of which field it came
+// from, so the ratio between the two results is titleWeight itself.
+func TestRank_TitleWeightIsExactlyDouble(t *testing.T) {
+	const term = "login"
+
+	titleScore := scoreOf(t, term, term, "zzz")
+	bodyScore := scoreOf(t, term, "zzz", term)
+
+	if bodyScore <= 0 {
+		t.Fatalf("fixture body score must be positive to make the ratio meaningful, got %d", bodyScore)
+	}
+	if want := 2 * bodyScore; titleScore != want {
+		t.Errorf("title score = %d, want %d (2x the identical body score %d); titleWeight is no longer 2",
+			titleScore, want, bodyScore)
+	}
+}
+
+// TestRank_BodyScoreWinsOverDoubledTitleScore exercises the other side of
+// max(titleScore*titleWeight, bodyScore) within a *single* task: a weak,
+// scattered title match whose doubled score still loses to a strong body match.
+// Without this the max() only ever gets exercised via tasks whose title score
+// is zero.
+func TestRank_BodyScoreWinsOverDoubledTitleScore(t *testing.T) {
+	const (
+		term       = "login"
+		weakTitle  = "lxoxgxixn" // matches, but scattered: no adjacency bonuses
+		strongBody = "login"     // exact prefix run: large adjacency bonuses
+	)
+
+	titleScore := scoreOf(t, term, weakTitle, "")
+	bodyScore := scoreOf(t, term, "zzz", strongBody)
+	if 2*titleScore >= bodyScore {
+		t.Fatalf("fixture is not discriminating: doubled title score %d must stay below body score %d",
+			2*titleScore, bodyScore)
+	}
+
+	mixed := scoreOf(t, term, weakTitle, strongBody)
+	if mixed != bodyScore {
+		t.Errorf("combined score = %d, want %d (the body score should win over the doubled title score %d)",
+			mixed, bodyScore, 2*titleScore)
+	}
+}
+
 func TestRank_CaseInsensitive(t *testing.T) {
 	tasks := []model.Task{
 		newTask("A", "Fix login bug", "", "2026-04-01T10:00:00Z"),
@@ -203,12 +261,18 @@ func TestRank_MatchPositionsReturned(t *testing.T) {
 	}
 }
 
-// TestRank_TitleHitIsDefensivelyCopied guards the defensive copy of
-// fuzzy.Match.MatchedIndexes. sahilm/fuzzy reuses that buffer across matches
-// inside one Find call, so without the copy every earlier hit would end up
-// showing the last match's offsets. Two titles that match at different byte
-// offsets make the difference visible: the first must keep its own offsets.
-func TestRank_TitleHitIsDefensivelyCopied(t *testing.T) {
+// TestRank_TitleHitIsPerResult pins that each result carries its own title
+// offsets: two titles matching at different byte offsets must each report the
+// offsets of their own match, not a neighbour's.
+//
+// Note what this does NOT prove. Rank defensively copies
+// fuzzy.Match.MatchedIndexes, but under the pinned sahilm/fuzzy v0.1.1 that
+// copy is unobservable: FindFromNoSort recycles the index buffer only after a
+// *failed* candidate and nils it after a successful one, so two returned
+// Matches never share a backing array. No test can exercise aliasing against
+// v0.1.1 — the copy is forward-insurance against upstream widening the
+// recycling scheme, and this test would stay green without it.
+func TestRank_TitleHitIsPerResult(t *testing.T) {
 	tasks := []model.Task{
 		newTask("FIRST", "login page", "", "2026-04-02T10:00:00Z"),
 		newTask("SECOND", "xxxxxlogin", "", "2026-04-01T10:00:00Z"),
@@ -278,6 +342,28 @@ func TestIndex_Len(t *testing.T) {
 	}
 	if n := NewIndex(tasks).Len(); n != 2 {
 		t.Errorf("Len() = %d, want 2", n)
+	}
+}
+
+// TestNewIndex_SnapshotsTasks pins that NewIndex copies the caller's slice.
+// The TUI hands it Model.allTasks and keeps that field live for the lifetime
+// of the overlay; without the copy the index would alias it, and the
+// "snapshot" guarantee in openSearch would rest on an unwritten
+// no-in-place-mutation rule.
+func TestNewIndex_SnapshotsTasks(t *testing.T) {
+	tasks := []model.Task{
+		newTask("A", "alpha", "", "2026-04-01T10:00:00Z"),
+	}
+	ix := NewIndex(tasks)
+
+	tasks[0].Title = "mutated in place"
+
+	got := ix.Rank("", 0)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(got))
+	}
+	if got[0].Task.Title != "alpha" {
+		t.Errorf("Result.Task.Title = %q, want %q — the index aliases the caller's slice", got[0].Task.Title, "alpha")
 	}
 }
 

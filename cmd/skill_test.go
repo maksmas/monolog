@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
@@ -138,11 +137,53 @@ func TestSkillFrontmatterParses(t *testing.T) {
 			t.Errorf("frontmatter description is missing the load-bearing fragment %q", frag)
 		}
 	}
-	if strings.TrimSpace(fm.AllowedTools) == "" {
-		t.Error("frontmatter allowed-tools is empty; the skill only ever shells out, so it should declare Bash")
-	}
+	checkAllowedTools(t, fm.AllowedTools)
+
 	if strings.TrimSpace(body) == "" {
 		t.Error("SKILL.md has frontmatter but no body")
+	}
+}
+
+// bareBashGrantRe matches an unscoped `Bash` entry in an allowed-tools list —
+// a `Bash` token that is not followed by a `(...)` argument pattern.
+var bareBashGrantRe = regexp.MustCompile(`(^|[\s,])Bash([\s,]|$)`)
+
+// skillGrantedSubcommands are the read/write commands the skill documents, and
+// the only ones its allowed-tools list may pre-approve.
+var skillGrantedSubcommands = []string{"add", "note", "search", "ls", "show", "log"}
+
+// skillProhibitedSubcommands are the commands SKILL.md tells Claude never to
+// run unprompted (or at all). None may appear in allowed-tools.
+var skillProhibitedSubcommands = []string{"done", "edit", "rm", "mv", "sync", "init", "email", "telegram"}
+
+// checkAllowedTools pins the frontmatter grant to the exact command surface
+// the skill documents.
+//
+// This matters because allowed-tools PRE-APPROVES the listed calls; it does
+// not restrict anything. A bare `Bash` entry therefore waives the permission
+// prompt for every shell command while the skill is loaded, which would leave
+// SKILL.md's "never run done/edit/rm/mv/sync" prose with no enforcement behind
+// it at all. Scoping the grant to `Bash(monolog <sub> *)` keeps the prohibited
+// subcommands hitting the normal prompt.
+func checkAllowedTools(t *testing.T, allowed string) {
+	t.Helper()
+
+	if strings.TrimSpace(allowed) == "" {
+		t.Fatal("frontmatter allowed-tools is empty; the skill only ever shells out, so it should declare its monolog commands")
+	}
+	if bareBashGrantRe.MatchString(allowed) {
+		t.Errorf("allowed-tools grants bare Bash (%q). allowed-tools pre-approves rather than restricts, so this waives the permission prompt for every shell command — including the done/edit/rm/mv/sync calls the skill body forbids. Scope it to Bash(monolog <sub> *) entries.", allowed)
+	}
+	for _, sub := range skillGrantedSubcommands {
+		want := "Bash(monolog " + sub + " *)"
+		if !strings.Contains(allowed, want) {
+			t.Errorf("allowed-tools is missing %q, so that documented command still prompts; got %q", want, allowed)
+		}
+	}
+	for _, sub := range skillProhibitedSubcommands {
+		if strings.Contains(allowed, "Bash(monolog "+sub) {
+			t.Errorf("allowed-tools pre-approves `monolog %s`, which the skill body forbids; got %q", sub, allowed)
+		}
 	}
 }
 
@@ -151,12 +192,24 @@ var inlineCodeRe = regexp.MustCompile("`([^`\n]+)`")
 
 // stripShellComment drops a trailing `# ...` comment. Comments are prose and
 // may legitimately mention flags that are not being invoked.
+//
+// A `#` only starts a comment at a word boundary and outside quotes, so a
+// documented command like `monolog add "fix #123"` keeps its argument.
 func stripShellComment(line string) string {
-	if strings.HasPrefix(strings.TrimSpace(line), "#") {
-		return ""
-	}
-	if i := strings.Index(line, " #"); i >= 0 {
-		return line[:i]
+	var quote rune
+	atBoundary := true // start of line is a word boundary
+	for i, r := range line {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == '#' && atBoundary:
+			return line[:i]
+		}
+		atBoundary = r == ' ' || r == '\t'
 	}
 	return line
 }
@@ -171,8 +224,21 @@ func commandCandidates(md string) []string {
 		inFence bool
 		pending string
 	)
+	// flushPending emits a continuation that never got its final unescaped
+	// line — e.g. a fence whose last line ends in a backslash. Dropping it
+	// would silently skip the command instead of failing on it.
+	flushPending := func() {
+		if full := strings.TrimSpace(pending); full != "" {
+			out = append(out, full)
+		}
+		pending = ""
+	}
+
 	for _, line := range strings.Split(md, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			if inFence {
+				flushPending()
+			}
 			inFence = !inFence
 			pending = ""
 			continue
@@ -180,7 +246,7 @@ func commandCandidates(md string) []string {
 		if inFence {
 			cur := strings.TrimSpace(stripShellComment(line))
 			if strings.HasSuffix(cur, "\\") {
-				pending += strings.TrimSuffix(cur, "\\") + " "
+				pending += strings.TrimSpace(strings.TrimSuffix(cur, "\\")) + " "
 				continue
 			}
 			full := strings.TrimSpace(pending + cur)
@@ -196,37 +262,8 @@ func commandCandidates(md string) []string {
 			}
 		}
 	}
+	flushPending()
 	return out
-}
-
-// findSubcommand looks up a direct child of cmd by name or alias.
-func findSubcommand(cmd *cobra.Command, name string) *cobra.Command {
-	for _, c := range cmd.Commands() {
-		if c.Name() == name || c.HasAlias(name) {
-			return c
-		}
-	}
-	return nil
-}
-
-// hasFlag reports whether cmd accepts the given long flag, counting flags
-// inherited from parents.
-func hasFlag(cmd *cobra.Command, name string) bool {
-	cmd.InitDefaultHelpFlag()
-	if cmd.Flags().Lookup(name) != nil {
-		return true
-	}
-	return cmd.InheritedFlags().Lookup(name) != nil
-}
-
-// hasShorthand reports whether cmd accepts the given single-letter flag,
-// counting shorthands inherited from parents.
-func hasShorthand(cmd *cobra.Command, letter string) bool {
-	cmd.InitDefaultHelpFlag()
-	if cmd.Flags().ShorthandLookup(letter) != nil {
-		return true
-	}
-	return cmd.InheritedFlags().ShorthandLookup(letter) != nil
 }
 
 // isPlaceholder reports whether a token is a documentation placeholder such
@@ -238,6 +275,13 @@ func isPlaceholder(tok string) bool {
 // checkDocumentedCommands validates every `monolog ...` invocation in md
 // against the live cobra tree, returning the set of subcommand paths it
 // actually checked so the caller can prove the extraction was not vacuous.
+//
+// Resolution is delegated to cobra itself — Find walks the command tree to any
+// depth and honours aliases, and ParseFlags is the same pflag parser the real
+// binary runs, so long flags, shorthands, clusters, `--flag=value` and `--`
+// all behave exactly as they would on the command line. A hand-rolled
+// equivalent drifts from the CLI, which is the one thing this test exists to
+// prevent.
 func checkDocumentedCommands(t *testing.T, label, md string) map[string]bool {
 	t.Helper()
 
@@ -252,63 +296,69 @@ func checkDocumentedCommands(t *testing.T, label, md string) map[string]bool {
 		if len(fields) == 1 {
 			continue
 		}
+		// `monolog <subcommand>` is a template, not an invocation.
+		if isPlaceholder(fields[1]) {
+			continue
+		}
 
 		root := NewRootCmd()
-		root.InitDefaultVersionFlag()
 
-		target := root
-		rest := fields[1:]
-
-		if !strings.HasPrefix(rest[0], "-") {
-			if isPlaceholder(rest[0]) {
-				// `monolog <subcommand>` is a template, not an invocation.
-				continue
-			}
-			sub := findSubcommand(root, rest[0])
-			if sub == nil {
-				t.Errorf("%s documents %q but %q is not a monolog subcommand (in: %s)", label, "monolog "+rest[0], rest[0], cand)
-				continue
-			}
-			target = sub
-			rest = rest[1:]
-			// Walk one more level for parent commands like `email` /
-			// `telegram`, e.g. `monolog telegram status`.
-			if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") && !isPlaceholder(rest[0]) && target.HasSubCommands() {
-				if child := findSubcommand(target, rest[0]); child != nil {
-					target = child
-					rest = rest[1:]
-				}
-			}
+		target, rest, err := root.Find(fields[1:])
+		if err != nil {
+			t.Errorf("%s documents %q, which does not resolve: %v (in: %s)", label, cand, err, cand)
+			continue
+		}
+		if target == root && !strings.HasPrefix(fields[1], "-") {
+			t.Errorf("%s documents %q but %q is not a monolog subcommand (in: %s)", label, "monolog "+fields[1], fields[1], cand)
+			continue
 		}
 		seen[target.CommandPath()] = true
 
-		for _, tok := range rest {
-			if !strings.HasPrefix(tok, "-") || tok == "-" || tok == "--" {
-				continue
-			}
-			// `--limit=25` and `--limit 25` are the same flag.
-			name := tok
-			if i := strings.Index(name, "="); i >= 0 {
-				name = name[:i]
-			}
-			if strings.HasPrefix(name, "--") {
-				long := strings.TrimPrefix(name, "--")
-				if !hasFlag(target, long) {
-					t.Errorf("%s documents flag --%s on %q, which has no such flag (in: %s)", label, long, target.CommandPath(), cand)
+		// --help is not documented anywhere, but registering it keeps the
+		// parser's flag set identical to the one a real invocation sees.
+		target.InitDefaultHelpFlag()
+		if err := target.ParseFlags(rest); err != nil {
+			t.Errorf("%s documents flags the CLI rejects on %q: %v (in: %s)", label, target.CommandPath(), err, cand)
+			continue
+		}
+
+		// Find stops at the deepest command it recognises and hands back the
+		// rest, and cobra only reports an unknown subcommand for the *root*.
+		// A grouping command like `email` or `telegram` takes no positional
+		// args of its own, so anything left over there is a subcommand that
+		// does not exist (`monolog email snyc`).
+		if target.HasSubCommands() {
+			for _, pos := range target.Flags().Args() {
+				if isPlaceholder(pos) {
+					continue
 				}
-				continue
-			}
-			// Shorthand, possibly clustered (-af).
-			for _, r := range strings.TrimPrefix(name, "-") {
-				letter := string(r)
-				if !hasShorthand(target, letter) {
-					t.Errorf("%s documents shorthand -%s on %q, which has no such flag (in: %s)", label, letter, target.CommandPath(), cand)
-				}
+				t.Errorf("%s documents %q but %q is not a subcommand of %q (in: %s)", label, cand, pos, target.CommandPath(), cand)
+				break
 			}
 		}
 	}
 
 	return seen
+}
+
+// skillFloorCommands are the invocations every shipped skill doc must still
+// contain. Without this floor an extractor that stops matching (a fence-style
+// change, a renamed binary) turns the cross-check into a vacuous pass.
+var skillFloorCommands = []string{
+	"monolog add",
+	"monolog ls",
+	"monolog search",
+	"monolog note",
+}
+
+// assertFloor fails when the extractor did not reach the named commands.
+func assertFloor(t *testing.T, label string, seen map[string]bool, want []string) {
+	t.Helper()
+	for _, path := range want {
+		if !seen[path] {
+			t.Errorf("%s no longer documents %q (or the extractor stopped seeing it); found: %s", label, path, sortedKeys(seen))
+		}
+	}
 }
 
 // TestSkillDocumentsOnlyRealCommands is the anti-rot check: every
@@ -328,28 +378,83 @@ func TestSkillDocumentsOnlyRealCommands(t *testing.T) {
 	// Guard against a silently vacuous pass: if the extractor stops finding
 	// commands (a fence style change, say) the loop above would report
 	// nothing at all.
-	want := []string{
-		"monolog add",
-		"monolog ls",
-		"monolog search",
-		"monolog note",
-		"monolog show",
-		"monolog log",
-	}
-	for _, path := range want {
-		if !seen[path] {
-			t.Errorf("SKILL.md no longer documents %q (or the extractor stopped seeing it); found: %s", path, sortedKeys(seen))
-		}
-	}
-	if len(seen) < len(want) {
-		t.Errorf("only %d distinct commands extracted from SKILL.md, expected at least %d: %s", len(seen), len(want), sortedKeys(seen))
-	}
+	assertFloor(t, "SKILL.md", seen, append(append([]string{}, skillFloorCommands...), "monolog show", "monolog log"))
 }
 
 // TestSkillReadmeDocumentsOnlyRealCommands applies the same cross-check to
 // the install README, which shows the quarantine and queue-draining commands.
 func TestSkillReadmeDocumentsOnlyRealCommands(t *testing.T) {
-	checkDocumentedCommands(t, "docs/claude-skill/README.md", readSkillDoc(t, "README.md"))
+	seen := checkDocumentedCommands(t, "docs/claude-skill/README.md", readSkillDoc(t, "README.md"))
+
+	// Same floor as SKILL.md, minus show/log which the README has no reason to
+	// mention. Without it this half of the check passes vacuously: rewriting
+	// every `monolog ` in the README to something else would still be green.
+	assertFloor(t, "docs/claude-skill/README.md", seen, skillFloorCommands)
+}
+
+func TestStripShellComment(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no comment", `monolog ls -a`, `monolog ls -a`},
+		{"trailing comment", `monolog ls -a    # all open tasks`, `monolog ls -a    `},
+		{"whole-line comment", `# just prose`, ``},
+		{"indented whole-line comment", `   # just prose`, `   `},
+		{"hash inside double quotes", `monolog add "fix #123 in parser" -s week`, `monolog add "fix #123 in parser" -s week`},
+		{"hash inside single quotes", `monolog add 'ticket #7' # real comment`, `monolog add 'ticket #7' `},
+		{"hash glued to a word", `monolog search abc#def`, `monolog search abc#def`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripShellComment(tt.in); got != tt.want {
+				t.Errorf("stripShellComment(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommandCandidates(t *testing.T) {
+	t.Run("joins backslash continuations", func(t *testing.T) {
+		md := "```sh\nmonolog add \"t\" \\\n  --tags claude\n```\n"
+		got := commandCandidates(md)
+		want := []string{`monolog add "t" --tags claude`}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("flushes a continuation left dangling at the closing fence", func(t *testing.T) {
+		// A trailing backslash on the last line of a fence used to discard the
+		// whole command, so a bogus flag in it would never be checked.
+		md := "```sh\nmonolog search \"x\" \\\n```\n"
+		got := commandCandidates(md)
+		if len(got) != 1 || !strings.HasPrefix(got[0], "monolog search") {
+			t.Errorf("got %q, want the dangling command to survive", got)
+		}
+	})
+
+	t.Run("keeps quoted hashes out of comment stripping", func(t *testing.T) {
+		md := "```sh\nmonolog add \"fix #123\" --tags claude   # provenance\n```\n"
+		got := commandCandidates(md)
+		if len(got) != 1 {
+			t.Fatalf("got %q, want 1 candidate", got)
+		}
+		if !strings.Contains(got[0], "#123") {
+			t.Errorf("quoted hash was stripped: %q", got[0])
+		}
+		if strings.Contains(got[0], "provenance") {
+			t.Errorf("trailing comment survived: %q", got[0])
+		}
+	})
+
+	t.Run("reads inline code spans outside fences", func(t *testing.T) {
+		got := commandCandidates("Use `monolog log` to see recent work.\n")
+		if len(got) != 1 || got[0] != "monolog log" {
+			t.Errorf("got %q, want [monolog log]", got)
+		}
+	})
 }
 
 func sortedKeys(m map[string]bool) string {

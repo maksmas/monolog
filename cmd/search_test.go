@@ -3,10 +3,12 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/maksmas/monolog/internal/config"
 	"github.com/maksmas/monolog/internal/search"
 	"github.com/maksmas/monolog/internal/store"
 )
@@ -169,15 +171,39 @@ func TestSearchCommand_DefaultExcludesDone(t *testing.T) {
 	}
 
 	output = runSearch(t, "archive", "--done")
-	if !strings.Contains(output, "Archive the monthly report") {
-		t.Errorf("--done should include the completed task, got:\n%s", output)
+	doneRow := rowContaining(t, output, "Archive the monthly report")
+	openRow := rowContaining(t, output, "Archive the quarterly report")
+
+	// Assert on the located rows, not on the buffer: "x " appears inside plenty
+	// of titles, so a whole-output Contains would pass without the status cell
+	// ever being rendered.
+	if !strings.HasPrefix(doneRow, "x ") {
+		t.Errorf("done row should start with the %q status cell, got %q", "x ", doneRow)
 	}
-	if !strings.Contains(output, "Archive the quarterly report") {
-		t.Errorf("--done should still include open tasks, got:\n%s", output)
+	if !strings.HasPrefix(openRow, "  ") || strings.HasPrefix(openRow, "x ") {
+		t.Errorf("open row should start with a blank status cell, got %q", openRow)
 	}
-	if !strings.Contains(output, "x ") {
-		t.Errorf("--done output should carry the done status cell, got:\n%s", output)
+}
+
+// rowContaining returns the single output row containing want, failing the
+// test when it is absent or ambiguous.
+func rowContaining(t *testing.T, output, want string) string {
+	t.Helper()
+	var found []string
+	for _, line := range resultLines(output) {
+		if strings.Contains(line, want) {
+			found = append(found, line)
+		}
 	}
+	switch len(found) {
+	case 1:
+		return found[0]
+	case 0:
+		t.Fatalf("no row contains %q, got:\n%s", want, output)
+	default:
+		t.Fatalf("%d rows contain %q, expected exactly 1:\n%s", len(found), want, output)
+	}
+	return ""
 }
 
 func TestSearchCommand_NoMatch(t *testing.T) {
@@ -295,5 +321,221 @@ func TestSearchCommand_RequiresQuery(t *testing.T) {
 
 	if err := rootCmd.Execute(); err == nil {
 		t.Fatalf("search with no query should error, got output:\n%s", buf.String())
+	}
+}
+
+// TestSearchCommand_RejectsBlankQuery is the guard MinimumNArgs cannot give:
+// `monolog search ""` satisfies "at least one argument", and Index.Rank("")
+// deliberately means "every task by CreatedAt desc". Without an explicit
+// check, a caller that interpolated an empty keyword string would get ten
+// arbitrary rows back and read them as near-duplicates — which is exactly how
+// the Claude skill's dedupe step decides to file a note against the wrong
+// task. A blank query must be an error, not a dump.
+func TestSearchCommand_RejectsBlankQuery(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	addTask(t, "Water the plants")
+	addTask(t, "Fix the login bug")
+
+	for _, args := range [][]string{
+		{""},
+		{" "},
+		{"\t"},
+		{"", ""},
+		{" ", " "},
+	} {
+		rootCmd := NewRootCmd()
+		buf := new(bytes.Buffer)
+		rootCmd.SetOut(buf)
+		rootCmd.SetErr(buf)
+		rootCmd.SetArgs(append([]string{"search"}, args...))
+
+		err := rootCmd.Execute()
+		if err == nil {
+			t.Errorf("search %q should error, got output:\n%s", args, buf.String())
+			continue
+		}
+		if !strings.Contains(err.Error(), "empty") {
+			t.Errorf("search %q error = %v, want it to mention an empty query", args, err)
+		}
+		if strings.Contains(buf.String(), "Water the plants") {
+			t.Errorf("search %q must not print task rows, got:\n%s", args, buf.String())
+		}
+	}
+}
+
+// TestSearchCommand_DefaultLimitIsTen pins the documented "top 10". The clamp
+// test reads defaultSearchLimit through the constant, so it stays green if the
+// constant moves; both SKILL.md and the README promise the number.
+func TestSearchCommand_DefaultLimitIsTen(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	const (
+		wantRows = 10
+		total    = wantRows + 4
+	)
+	for i := 0; i < total; i++ {
+		addTask(t, fmt.Sprintf("Sample entry %02d", i))
+	}
+
+	output := runSearch(t, "sample")
+	if got := len(resultLines(output)); got != wantRows {
+		t.Errorf("bare `search` printed %d rows, want the documented top %d:\n%s", got, wantRows, output)
+	}
+	// Sanity: the fixture really does have more matches than the cap, so the
+	// assertion above is about the limit and not about how many tasks exist.
+	if got := len(resultLines(runSearch(t, "sample", "-n", fmt.Sprint(total)))); got != total {
+		t.Errorf("fixture should produce %d matches in total, got %d", total, got)
+	}
+}
+
+// TestSearchCommand_SchedulesRenderInConfiguredDateFormat pins the
+// config.DateFormat() wiring in RunE: hardcoding a layout there would still
+// satisfy every other test in this file, since they all run under the default.
+func TestSearchCommand_SchedulesRenderInConfiguredDateFormat(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// config.Load never resets the date format back to the default, so restore
+	// it rather than leaking MM-DD-YYYY into whatever test runs next.
+	orig := config.DateFormat()
+	t.Cleanup(func() {
+		if err := config.SetDateFormat(orig); err != nil {
+			t.Fatalf("restore date format: %v", err)
+		}
+	})
+
+	// MM-DD-YYYY is neither the default (DD-MM-YYYY) nor ISO, so this fails
+	// both for "layout ignored" and for "layout hardcoded to 2006-01-02".
+	writeDateFormatConfig(t, dir, "01-02-2006")
+
+	addTask(t, "Renew the domain", "-s", "2030-04-15")
+
+	output := runSearch(t, "renew")
+	if !strings.Contains(output, "04-15-2030") {
+		t.Errorf("schedule should render in the configured MM-DD-YYYY layout (04-15-2030), got:\n%s", output)
+	}
+	if strings.Contains(output, "15-04-2030") || strings.Contains(output, "2030-04-15") {
+		t.Errorf("schedule rendered in a layout other than the configured one, got:\n%s", output)
+	}
+}
+
+// writeDateFormatConfig rewrites <dir>/.monolog/config.json with the given Go
+// layout, preserving nothing else — the file `init` writes only carries
+// "theme" and "date_format", and the theme is irrelevant to CLI output.
+func writeDateFormatConfig(t *testing.T, dir, layout string) {
+	t.Helper()
+	p := filepath.Join(dir, ".monolog", "config.json")
+	body := fmt.Sprintf("{\n  \"theme\": \"default\",\n  \"date_format\": %q\n}\n", layout)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+}
+
+// TestSearchCommand_OpenStoreFailure covers the openStore() error path: a
+// MONOLOG_DIR that cannot hold a .monolog/tasks directory.
+func TestSearchCommand_OpenStoreFailure(t *testing.T) {
+	// A regular file where the data directory should be, so MkdirAll fails.
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", blocker)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"search", "anything"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("search against an unusable MONOLOG_DIR should error, got output:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "open store") {
+		t.Errorf("error = %v, want it wrapped as %q", err, "open store")
+	}
+}
+
+// TestSearchCommand_ListFailure covers the s.List() error path: an unparseable
+// task file must surface as an error, not as a silently short result set.
+func TestSearchCommand_ListFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	addTask(t, "Fix the login bug")
+
+	corrupt := filepath.Join(dir, ".monolog", "tasks", "01CORRUPT.json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt task: %v", err)
+	}
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"search", "login"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("search over a corrupt store should error, got output:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "list tasks") {
+		t.Errorf("error = %v, want it wrapped as %q", err, "list tasks")
+	}
+}
+
+// TestSearchCommand_PrintedIDResolves is the end-to-end contract the shipped
+// skill depends on: an ID copied out of `monolog search` output must resolve
+// through store.Resolve. Two tasks created back to back land in the same
+// millisecond window, and a ULID's first 8 characters cover only 40 of the 48
+// timestamp bits — so an 8-character prefix is ambiguous for exactly the batch
+// -filing case the skill encourages.
+func TestSearchCommand_PrintedIDResolves(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Back to back, no sleep: this is the collision case.
+	addTask(t, "Handle nil store in openStore")
+	addTask(t, "Handle nil config in openStore")
+
+	s, err := store.New(filepath.Join(dir, ".monolog", "tasks"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	all, err := s.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("store.List: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("fixture should have 2 tasks, got %d", len(all))
+	}
+	// Guard the fixture: if the two ULIDs happen not to share an 8-character
+	// prefix the test proves nothing about the widening, so say so loudly.
+	if all[0].ID[:8] != all[1].ID[:8] {
+		t.Skipf("the two tasks landed in different 256ms windows (%s / %s); rerun", all[0].ID[:8], all[1].ID[:8])
+	}
+
+	rows := resultLines(runSearch(t, "openStore"))
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d:\n%s", len(rows), strings.Join(rows, "\n"))
+	}
+
+	for _, row := range rows {
+		fields := strings.Fields(row)
+		if len(fields) == 0 {
+			t.Fatalf("empty row in search output:\n%s", strings.Join(rows, "\n"))
+		}
+		id := fields[0]
+		task, err := s.Resolve(id)
+		if err != nil {
+			t.Errorf("ID %q printed by search does not resolve: %v", id, err)
+			continue
+		}
+		if !strings.Contains(row, task.Title) {
+			t.Errorf("ID %q resolved to %q, which is not the task on that row: %q", id, task.Title, row)
+		}
 	}
 }
