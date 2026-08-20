@@ -3,7 +3,9 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/maksmas/monolog/internal/config"
 	"github.com/maksmas/monolog/internal/display"
@@ -17,6 +19,102 @@ import (
 // --limit is not given (or is out of range).
 const defaultSearchLimit = 10
 
+// minUnionTokenLen is the shortest word rankQuery will rank on its own. A
+// one-character token fuzzy-matches almost every task at a low score, so
+// unioning it in buys no recall and only crowds the tail of the result set.
+const minUnionTokenLen = 2
+
+// rankQuery ranks query against ix, making multi-word queries
+// order-independent.
+//
+// sahilm/fuzzy matches the query as an ordered subsequence over the whole
+// candidate string, spaces included, so a phrase only matches when its words
+// appear in that order. `search "week telegram"` finds "week command from
+// telegram ..." while `search "telegram week"` does not — and, worse, does not
+// report "No matches" either: it returns whichever unrelated task happens to
+// contain t-e-l-e-g-r-a-m-space-w-e-e-k scattered through its text. That is a
+// silently wrong answer, and the Claude skill leans on this command as its
+// only duplicate guard before filing a task, so a missed hit means a duplicate
+// task rather than a visible error.
+//
+// The fix is caller-side on purpose. internal/search.Rank keeps its exact
+// subsequence semantics because the TUI overlay ranks per keystroke against
+// live results, where a human refines the query incrementally and in-order
+// matching is the desired behaviour. A one-shot CLI query has no such feedback
+// loop, so it widens the net here instead:
+//
+//  1. the whole phrase, ranked first — an in-order match is the strongest
+//     signal available and must never be displaced by token noise;
+//  2. then each word on its own, merged, deduped by task ID, and re-sorted by
+//     descending score so the best single-word evidence floats up regardless
+//     of the order the words were typed in.
+//
+// Single-token queries take exactly the old path. Ordering therefore diverges
+// from the TUI for multi-word queries only; see the parity tests
+// (cmd.TestSearchCommand_DoneRankingMatchesSharedIndex and
+// tui.TestSearch_RankingMatchesSharedIndexOverStoreList) for the pinned
+// single-token agreement.
+func rankQuery(ix *search.Index, query string, limit int) []search.Result {
+	tokens := strings.Fields(query)
+	switch len(tokens) {
+	case 0:
+		// All whitespace. The command rejects a blank query before it gets
+		// here; pass the string through unchanged rather than quietly giving
+		// it different semantics on a path nothing uses.
+		return ix.Rank(query, limit)
+	case 1:
+		// Rank the bare token, not the raw string: padding is not part of the
+		// query, and leaving it in would make a padded single word behave like
+		// a phrase.
+		return ix.Rank(tokens[0], limit)
+	}
+
+	// Rank with no truncation at each stage: capping per stage would let a
+	// large whole-phrase result set hide every token hit, and the union is
+	// trimmed to limit once at the end anyway.
+	out := ix.Rank(query, 0)
+	seen := make(map[string]bool, len(out))
+	for _, r := range out {
+		seen[r.Task.ID] = true
+	}
+
+	var extra []search.Result
+	// pos maps a task ID to its slot in extra so a task matched by several
+	// tokens is carried once, keeping the best score any single token gave it.
+	pos := make(map[string]int)
+	for _, tok := range tokens {
+		if utf8.RuneCountInString(tok) < minUnionTokenLen {
+			continue
+		}
+		for _, r := range ix.Rank(tok, 0) {
+			if seen[r.Task.ID] {
+				continue
+			}
+			if i, ok := pos[r.Task.ID]; ok {
+				if r.Score > extra[i].Score {
+					extra[i].Score = r.Score
+				}
+				continue
+			}
+			pos[r.Task.ID] = len(extra)
+			extra = append(extra, r)
+		}
+	}
+
+	sort.SliceStable(extra, func(i, j int) bool {
+		if extra[i].Score != extra[j].Score {
+			return extra[i].Score > extra[j].Score
+		}
+		return extra[i].Task.CreatedAt > extra[j].Task.CreatedAt
+	})
+
+	out = append(out, extra...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
 func newSearchCmd() *cobra.Command {
 	var (
 		limit int
@@ -28,7 +126,10 @@ func newSearchCmd() *cobra.Command {
 		Short: "Fuzzy-search tasks by title and body",
 		Long: "Fuzzy-searches task titles and bodies, printing the top matches with untruncated titles.\n" +
 			"Title matches outrank body-only matches. Default: open tasks only, top 10.\n" +
-			"Multiple arguments are joined with a space, so quoting is optional.",
+			"Multiple arguments are joined with a space, so quoting is optional.\n" +
+			"A multi-word query is order-independent: the whole phrase is ranked first,\n" +
+			"then each word on its own, so \"telegram week\" and \"week telegram\" both find\n" +
+			"the same task. A single distinctive keyword is still the sharpest query.",
 		// MinimumNArgs rather than ExactArgs so `monolog search fix login bug`
 		// works unquoted — friendlier for shell and agent callers alike.
 		Args: cobra.MinimumNArgs(1),
@@ -67,7 +168,7 @@ func newSearchCmd() *cobra.Command {
 				limit = defaultSearchLimit
 			}
 
-			results := search.NewIndex(tasks).Rank(query, limit)
+			results := rankQuery(search.NewIndex(tasks), query, limit)
 
 			matches := make([]model.Task, len(results))
 			for i, r := range results {

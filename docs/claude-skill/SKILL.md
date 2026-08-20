@@ -32,10 +32,21 @@ There is **no cap** on writes per session. Dedupe and the bar above are the only
 Before every unprompted write, search:
 
 ```sh
-monolog search "<keywords>"
+monolog search "<keyword>"
 ```
 
 Search is fuzzy across titles and bodies, prints untruncated titles, and returns the top 10 open tasks.
+
+**One distinctive keyword is the most reliable query.** Matching is fuzzy and loose: a common word matches almost everything, and a long phrase pulls in a noisy tail. Pick the rarest word in the thing you are about to file — a symbol, a filename, a package, a product name — and search for that alone.
+
+When no single word is distinctive enough, run **two or three separate one-word searches** and read all of them before deciding. That is more reliable than one long phrase:
+
+```sh
+monolog search "telegram"
+monolog search "reschedule"
+```
+
+Word order does not matter — `monolog search telegram week` and `monolog search week telegram` return the same tasks — but a multi-word query ranks the exact phrase first and then everything matching any single word, so the further down the list you read, the weaker the match.
 
 If a near-duplicate comes back, **do not file a second task**. Append what is new instead:
 
@@ -92,9 +103,9 @@ monolog ls                               # today's open tasks
 monolog ls -a                            # all open tasks, every schedule
 monolog ls --active                      # the current working set
 monolog ls --tag claude -s someday       # the quarantine queue you file into
-monolog search "<keywords>"              # fuzzy, untruncated titles, top 10
-monolog search "<keywords>" -n 25        # more hits
-monolog search "<keywords>" -d           # include completed tasks
+monolog search "<keyword>"               # fuzzy, untruncated titles, top 10
+monolog search "<keyword>" -n 25         # more hits
+monolog search "<keyword>" -d            # include completed tasks
 monolog show <id>                        # full detail, body and notes
 monolog log                              # completed in the last 7 days
 ```

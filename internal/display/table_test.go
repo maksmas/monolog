@@ -994,6 +994,12 @@ func TestFormatSearchResults_TagsFilterActive(t *testing.T) {
 // output is meant to be pasted into `monolog note <id>` and an 8-character
 // ULID prefix collides for tasks created in the same ~256 ms window — but
 // still not the full ULID.
+//
+// The floor below is the honest guarantee: at or under 10 characters the
+// prefix is pure timestamp, so same-millisecond tasks are *always*
+// ambiguous. Above 10 they are merely unlikely to be (10 bits of randomness
+// at 12 characters); see the searchIDWidth comment for why that trade is
+// acceptable.
 func TestFormatSearchResults_IDColumn(t *testing.T) {
 	const id = "01ABCDEFGHIJKLMNOPQRSTUVWX"
 	tasks := []model.Task{

@@ -102,6 +102,8 @@ Lists today's open tasks by default. Each row includes a compact dates column: r
 
 Fuzzy-searches task titles and bodies, printing the top matches with **untruncated** titles (unlike `monolog ls`, which truncates at 40 characters). Title matches outrank body-only matches. Multiple arguments are joined with a space, so quoting is optional: `monolog search fix login bug` works.
 
+A multi-word query is **order-independent**: `monolog search telegram week` and `monolog search week telegram` return the same tasks. The whole phrase is ranked first, then each word on its own, and the two result sets are merged. That widens the net deliberately, so the tail of a long query is noisier than the head — a single distinctive keyword is still the sharpest query.
+
 | Flag | Description |
 |------|-------------|
 | `-n, --limit` | Maximum matches to print (default 10; any value below 1 falls back to 10) |
@@ -111,7 +113,7 @@ Rows are `<status> <12-char ID> <title> <schedule> <tags>`, where the status cel
 
 Note the two different axes: `ls -a` means "all schedules, still open", while `search -d` means "include done".
 
-The same ranker backs the TUI's `/` fuzzy search, so both agree on ordering for the same set of tasks.
+The same ranker backs the TUI's `/` fuzzy search, so for a single-word query both agree on ordering for the same set of tasks. Multi-word queries diverge: only the CLI merges the per-word results. The TUI keeps strict in-order matching because you retype against live results there and can see the query narrowing as you go.
 
 ### `monolog done <id-prefix>`
 

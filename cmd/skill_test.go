@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -67,9 +69,98 @@ func TestSkillArtifactsExist(t *testing.T) {
 // (there is no CLAUDE.md primer), so an empty or unparseable one means the
 // skill silently never fires.
 type skillFrontmatter struct {
-	Name         string `yaml:"name"`
-	Description  string `yaml:"description"`
-	AllowedTools string `yaml:"allowed-tools"`
+	Name         string       `yaml:"name"`
+	Description  string       `yaml:"description"`
+	AllowedTools allowedTools `yaml:"allowed-tools"`
+}
+
+// allowedTools is the parsed allowed-tools grant, one entry per permission
+// rule.
+//
+// Claude Code's frontmatter reference states the field "accepts a space- or
+// comma-separated string, or a YAML list", and shipped skills use all three
+// shapes. Decoding into a plain string would therefore make this test's
+// verdict depend on which shape the author picked — a YAML list would fail
+// with "not valid YAML" when the YAML is perfectly fine — so the entries are
+// normalized first and every check below runs against whole entries rather
+// than a substring search over a raw blob.
+type allowedTools []string
+
+// UnmarshalYAML accepts either documented shape: a scalar string or a YAML
+// sequence.
+func (a *allowedTools) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var s string
+		if err := value.Decode(&s); err != nil {
+			return err
+		}
+		*a = splitToolRules(s)
+		return nil
+	case yaml.SequenceNode:
+		var entries []string
+		if err := value.Decode(&entries); err != nil {
+			return err
+		}
+		out := make(allowedTools, 0, len(entries))
+		for _, e := range entries {
+			if e = strings.TrimSpace(e); e != "" {
+				out = append(out, e)
+			}
+		}
+		*a = out
+		return nil
+	default:
+		return fmt.Errorf("allowed-tools must be a string or a list, got YAML node kind %d", value.Kind)
+	}
+}
+
+// splitToolRules splits a scalar allowed-tools value into entries.
+//
+// The split has to be paren-aware. Both a space and a comma separate entries,
+// but permission patterns legitimately contain spaces — `Bash(monolog add *)`
+// is one rule, not three — so a separator only ends an entry at paren depth 0.
+func splitToolRules(s string) []string {
+	var (
+		out   []string
+		cur   strings.Builder
+		depth int
+	)
+	flush := func() {
+		if e := strings.TrimSpace(cur.String()); e != "" {
+			out = append(out, e)
+		}
+		cur.Reset()
+	}
+	for _, r := range s {
+		switch {
+		case r == '(':
+			depth++
+			cur.WriteRune(r)
+		case r == ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(r)
+		case depth == 0 && (r == ',' || unicode.IsSpace(r)):
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+// parseToolRule splits one allowed-tools entry into its tool name and its
+// optional argument pattern. `Bash(monolog add *)` yields ("Bash",
+// "monolog add *", true); a bare `Bash` yields ("Bash", "", false).
+func parseToolRule(entry string) (name, pattern string, scoped bool) {
+	open := strings.Index(entry, "(")
+	if open < 0 || !strings.HasSuffix(entry, ")") {
+		return strings.TrimSpace(entry), "", false
+	}
+	return strings.TrimSpace(entry[:open]), entry[open+1 : len(entry)-1], true
 }
 
 // splitFrontmatter separates a leading `---`-delimited YAML block from the
@@ -144,10 +235,6 @@ func TestSkillFrontmatterParses(t *testing.T) {
 	}
 }
 
-// bareBashGrantRe matches an unscoped `Bash` entry in an allowed-tools list —
-// a `Bash` token that is not followed by a `(...)` argument pattern.
-var bareBashGrantRe = regexp.MustCompile(`(^|[\s,])Bash([\s,]|$)`)
-
 // skillGrantedSubcommands are the read/write commands the skill documents, and
 // the only ones its allowed-tools list may pre-approve.
 var skillGrantedSubcommands = []string{"add", "note", "search", "ls", "show", "log"}
@@ -156,34 +243,107 @@ var skillGrantedSubcommands = []string{"add", "note", "search", "ls", "show", "l
 // run unprompted (or at all). None may appear in allowed-tools.
 var skillProhibitedSubcommands = []string{"done", "edit", "rm", "mv", "sync", "init", "email", "telegram"}
 
+// grantFor renders the allowed-tools entry that scopes a single monolog
+// subcommand. The trailing " *" is a word-boundary wildcard: per Claude Code's
+// permission rules it requires the prefix to be followed by a space or
+// end-of-string, so it covers `monolog ls --tag x` and bare `monolog ls`
+// alike, while never matching a different binary.
+func grantFor(sub string) string { return "Bash(monolog " + sub + " *)" }
+
+// allowedToolsProblems reports every reason an allowed-tools grant is not an
+// acceptable surface for this skill, as human-readable messages.
+//
+// It is split out from checkAllowedTools so the bypass forms below can be
+// unit-tested directly instead of being trusted.
+//
+// The check matters because allowed-tools PRE-APPROVES the listed calls; it
+// does not restrict anything. Any grant that covers the whole Bash tool
+// therefore waives the permission prompt for every shell command while the
+// skill is loaded, leaving SKILL.md's "never run done/edit/rm/mv/sync" prose
+// with no enforcement behind it. Three shapes do that and all are rejected:
+// bare `Bash`, `Bash(*)` (which Claude Code's permission docs state "is
+// equivalent to `Bash` and matches all Bash commands"), and any entry inside a
+// YAML list, which an earlier substring-over-a-blob check could not see.
+//
+// Scoping is enforced as an allowlist rather than a blocklist: every Bash
+// entry must be exactly one of the six documented grants. A blocklist of
+// forbidden subcommands cannot catch `Bash(monolog *)`, which pre-approves
+// every subcommand there is.
+func allowedToolsProblems(allowed allowedTools) []string {
+	var problems []string
+
+	granted := make(map[string]bool, len(skillGrantedSubcommands))
+	for _, sub := range skillGrantedSubcommands {
+		granted[grantFor(sub)] = false
+	}
+
+	for _, entry := range allowed {
+		name, pattern, scoped := parseToolRule(entry)
+		if name != "Bash" {
+			continue
+		}
+		if !scoped || strings.TrimSpace(pattern) == "*" {
+			problems = append(problems, fmt.Sprintf(
+				"entry %q grants the whole Bash tool (`Bash` and `Bash(*)` are equivalent). allowed-tools pre-approves rather than restricts, so this waives the permission prompt for every shell command — including the done/edit/rm/mv/sync calls the skill body forbids. Scope it to Bash(monolog <sub> *) entries.",
+				entry))
+			continue
+		}
+		if sub, ok := prohibitedSubcommand(pattern); ok {
+			problems = append(problems, fmt.Sprintf(
+				"entry %q pre-approves `monolog %s`, which the skill body forbids", entry, sub))
+			continue
+		}
+		if _, ok := granted[entry]; !ok {
+			problems = append(problems, fmt.Sprintf(
+				"entry %q is outside the documented command surface; the only Bash grants allowed are %v", entry, allGrants()))
+			continue
+		}
+		granted[entry] = true
+	}
+
+	for _, sub := range skillGrantedSubcommands {
+		if !granted[grantFor(sub)] {
+			problems = append(problems, fmt.Sprintf(
+				"missing %q, so that documented command still prompts", grantFor(sub)))
+		}
+	}
+
+	return problems
+}
+
+// allGrants lists the six acceptable Bash entries, for error messages.
+func allGrants() []string {
+	out := make([]string, 0, len(skillGrantedSubcommands))
+	for _, sub := range skillGrantedSubcommands {
+		out = append(out, grantFor(sub))
+	}
+	return out
+}
+
+// prohibitedSubcommand reports whether a Bash pattern targets one of the
+// subcommands SKILL.md forbids. It exists purely for the sharper error
+// message; the allowlist above would reject these anyway.
+func prohibitedSubcommand(pattern string) (string, bool) {
+	p := strings.TrimSpace(pattern)
+	for _, sub := range skillProhibitedSubcommands {
+		prefix := "monolog " + sub
+		if p == prefix || strings.HasPrefix(p, prefix+" ") || strings.HasPrefix(p, prefix+":") {
+			return sub, true
+		}
+	}
+	return "", false
+}
+
 // checkAllowedTools pins the frontmatter grant to the exact command surface
 // the skill documents.
-//
-// This matters because allowed-tools PRE-APPROVES the listed calls; it does
-// not restrict anything. A bare `Bash` entry therefore waives the permission
-// prompt for every shell command while the skill is loaded, which would leave
-// SKILL.md's "never run done/edit/rm/mv/sync" prose with no enforcement behind
-// it at all. Scoping the grant to `Bash(monolog <sub> *)` keeps the prohibited
-// subcommands hitting the normal prompt.
-func checkAllowedTools(t *testing.T, allowed string) {
+func checkAllowedTools(t *testing.T, allowed allowedTools) {
 	t.Helper()
 
-	if strings.TrimSpace(allowed) == "" {
+	if len(allowed) == 0 {
 		t.Fatal("frontmatter allowed-tools is empty; the skill only ever shells out, so it should declare its monolog commands")
 	}
-	if bareBashGrantRe.MatchString(allowed) {
-		t.Errorf("allowed-tools grants bare Bash (%q). allowed-tools pre-approves rather than restricts, so this waives the permission prompt for every shell command — including the done/edit/rm/mv/sync calls the skill body forbids. Scope it to Bash(monolog <sub> *) entries.", allowed)
-	}
-	for _, sub := range skillGrantedSubcommands {
-		want := "Bash(monolog " + sub + " *)"
-		if !strings.Contains(allowed, want) {
-			t.Errorf("allowed-tools is missing %q, so that documented command still prompts; got %q", want, allowed)
-		}
-	}
-	for _, sub := range skillProhibitedSubcommands {
-		if strings.Contains(allowed, "Bash(monolog "+sub) {
-			t.Errorf("allowed-tools pre-approves `monolog %s`, which the skill body forbids; got %q", sub, allowed)
-		}
+	for _, p := range allowedToolsProblems(allowed) {
+		t.Errorf("allowed-tools %v: %s", []string(allowed), p)
 	}
 }
 
@@ -464,4 +624,194 @@ func sortedKeys(m map[string]bool) string {
 	}
 	sort.Strings(keys)
 	return fmt.Sprintf("%v", keys)
+}
+
+// --- allowed-tools parsing and grant scoping --------------------------------
+
+// TestSplitToolRules pins the paren-aware scalar split. Claude Code documents
+// both a space- and a comma-separated string, and its own example grant
+// (`Bash(git add *) Bash(git commit *)`) contains spaces inside the patterns,
+// so a naive strings.Fields would shred one rule into three.
+func TestSplitToolRules(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"space separated with inner spaces",
+			"Bash(monolog add *) Bash(monolog note *)",
+			[]string{"Bash(monolog add *)", "Bash(monolog note *)"}},
+		{"comma separated",
+			"Read, Write, Bash(monolog ls *)",
+			[]string{"Read", "Write", "Bash(monolog ls *)"}},
+		{"comma and space mixed",
+			"Read,  Bash(monolog add *),Bash(monolog log *)",
+			[]string{"Read", "Bash(monolog add *)", "Bash(monolog log *)"}},
+		{"single bare tool", "Bash", []string{"Bash"}},
+		{"empty", "   ", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := splitToolRules(tt.in); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("splitToolRules(%q) = %#v, want %#v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// documentedGrantsYAML renders the six documented grants in each frontmatter
+// shape Claude Code accepts.
+func documentedGrantsYAML() map[string]string {
+	scalarSpace := strings.Join(allGrants(), " ")
+	scalarComma := strings.Join(allGrants(), ", ")
+	var block strings.Builder
+	block.WriteString("allowed-tools:\n")
+	for _, g := range allGrants() {
+		block.WriteString("  - " + g + "\n")
+	}
+	var flow strings.Builder
+	flow.WriteString("allowed-tools: [")
+	for i, g := range allGrants() {
+		if i > 0 {
+			flow.WriteString(", ")
+		}
+		flow.WriteString(`"` + g + `"`)
+	}
+	flow.WriteString("]\n")
+
+	return map[string]string{
+		"space-separated scalar": "allowed-tools: " + scalarSpace + "\n",
+		"comma-separated scalar": "allowed-tools: " + scalarComma + "\n",
+		"block sequence":         block.String(),
+		"flow sequence":          flow.String(),
+	}
+}
+
+// TestAllowedToolsUnmarshal_AcceptsEveryDocumentedShape is the guard that
+// blocked a legitimate edit before: the field used to decode into a plain
+// string, so switching the frontmatter to a YAML list — a shape Claude Code
+// explicitly accepts — failed with "SKILL.md frontmatter is not valid YAML"
+// when the YAML was fine and the test's own struct was wrong.
+func TestAllowedToolsUnmarshal_AcceptsEveryDocumentedShape(t *testing.T) {
+	for name, src := range documentedGrantsYAML() {
+		t.Run(name, func(t *testing.T) {
+			var fm skillFrontmatter
+			if err := yaml.Unmarshal([]byte(src), &fm); err != nil {
+				t.Fatalf("shape %s should unmarshal, got: %v\nsource:\n%s", name, err, src)
+			}
+			if got := []string(fm.AllowedTools); !reflect.DeepEqual(got, allGrants()) {
+				t.Errorf("shape %s parsed as %#v, want %#v", name, got, allGrants())
+			}
+			if problems := allowedToolsProblems(fm.AllowedTools); len(problems) != 0 {
+				t.Errorf("shape %s should be an acceptable grant, got problems: %v", name, problems)
+			}
+		})
+	}
+}
+
+// TestAllowedToolsProblems_RejectsWholeBashGrants is the bypass mutation check
+// written down as a test.
+//
+// Every entry below pre-approves the whole Bash tool while still listing all
+// six documented commands, so it satisfies a naive "are the six present?"
+// check and grants unprompted access to every shell command — including the
+// done/edit/rm/mv/sync calls SKILL.md forbids. The previous regex missed
+// `Bash(*)` (which Claude Code's permission docs call equivalent to bare
+// `Bash`) and could not see inside a YAML list at all.
+func TestAllowedToolsProblems_RejectsWholeBashGrants(t *testing.T) {
+	sneaky := []string{"Bash", "Bash(*)", "Bash( * )"}
+
+	for _, bad := range sneaky {
+		t.Run("scalar/"+bad, func(t *testing.T) {
+			src := "allowed-tools: " + bad + " " + strings.Join(allGrants(), " ") + "\n"
+			var fm skillFrontmatter
+			if err := yaml.Unmarshal([]byte(src), &fm); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			problems := allowedToolsProblems(fm.AllowedTools)
+			if len(problems) == 0 {
+				t.Errorf("%q grants the whole Bash tool but was accepted; parsed entries: %#v",
+					bad, []string(fm.AllowedTools))
+			}
+		})
+
+		t.Run("sequence/"+bad, func(t *testing.T) {
+			src := "allowed-tools:\n  - " + bad + "\n"
+			for _, g := range allGrants() {
+				src += "  - " + g + "\n"
+			}
+			var fm skillFrontmatter
+			if err := yaml.Unmarshal([]byte(src), &fm); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if problems := allowedToolsProblems(fm.AllowedTools); len(problems) == 0 {
+				t.Errorf("%q inside a YAML list grants the whole Bash tool but was accepted; parsed entries: %#v",
+					bad, []string(fm.AllowedTools))
+			}
+		})
+	}
+
+	// The flow-list form the old regex also could not see.
+	t.Run("flow list", func(t *testing.T) {
+		var fm skillFrontmatter
+		src := "allowed-tools: [Bash, Read]\n"
+		if err := yaml.Unmarshal([]byte(src), &fm); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if problems := allowedToolsProblems(fm.AllowedTools); len(problems) == 0 {
+			t.Errorf("flow list [Bash, Read] grants the whole Bash tool but was accepted")
+		}
+	})
+}
+
+// TestAllowedToolsProblems_RejectsBroadMonologGrant closes the hole a
+// blocklist of forbidden subcommands cannot: `Bash(monolog *)` names none of
+// them and pre-approves all of them. This is why the check is an allowlist.
+func TestAllowedToolsProblems_RejectsBroadMonologGrant(t *testing.T) {
+	allowed := append(allowedTools{"Bash(monolog *)"}, allGrants()...)
+	if problems := allowedToolsProblems(allowed); len(problems) == 0 {
+		t.Error("Bash(monolog *) pre-approves every subcommand but was accepted")
+	}
+}
+
+// TestAllowedToolsProblems_RejectsProhibitedSubcommand covers the plain case:
+// a grant for a command the skill body says never to run.
+func TestAllowedToolsProblems_RejectsProhibitedSubcommand(t *testing.T) {
+	for _, sub := range skillProhibitedSubcommands {
+		allowed := append(allowedTools{grantFor(sub)}, allGrants()...)
+		problems := allowedToolsProblems(allowed)
+		if len(problems) == 0 {
+			t.Errorf("grant for forbidden subcommand %q was accepted", sub)
+			continue
+		}
+		if !strings.Contains(strings.Join(problems, "\n"), "monolog "+sub) {
+			t.Errorf("problem for %q should name the subcommand, got: %v", sub, problems)
+		}
+	}
+	// The `:*` spelling is documented as equivalent to a trailing ` *`.
+	if problems := allowedToolsProblems(append(allowedTools{"Bash(monolog rm:*)"}, allGrants()...)); len(problems) == 0 {
+		t.Error("Bash(monolog rm:*) was accepted")
+	}
+}
+
+// TestAllowedToolsProblems_RequiresEveryDocumentedCommand is the other
+// direction: dropping a grant leaves a documented command prompting on every
+// use, which is the failure that makes the skill feel broken rather than
+// unsafe.
+func TestAllowedToolsProblems_RequiresEveryDocumentedCommand(t *testing.T) {
+	if problems := allowedToolsProblems(allowedTools(allGrants())); len(problems) != 0 {
+		t.Fatalf("the exact documented surface should be clean, got: %v", problems)
+	}
+	for i, sub := range skillGrantedSubcommands {
+		short := append(allowedTools{}, allGrants()...)
+		short = append(short[:i], short[i+1:]...)
+		problems := allowedToolsProblems(short)
+		if len(problems) == 0 {
+			t.Errorf("dropping the grant for %q was accepted", sub)
+			continue
+		}
+		if !strings.Contains(strings.Join(problems, "\n"), grantFor(sub)) {
+			t.Errorf("problem for missing %q should name the grant, got: %v", sub, problems)
+		}
+	}
 }

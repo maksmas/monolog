@@ -9198,6 +9198,18 @@ func TestSearch_HighlightCaseInsensitiveMultibyteRoundTrips(t *testing.T) {
 //
 // The mirror assertion on the CLI side lives in cmd:
 // TestSearchCommand_DoneRankingMatchesSharedIndex.
+//
+// Scope: SINGLE-TOKEN queries only, and deliberately so. `monolog search` no
+// longer hands a multi-word query straight to Index.Rank — cmd.rankQuery
+// unions the whole phrase with each word ranked separately, because
+// sahilm/fuzzy matches a query as one ordered subsequence and a one-shot CLI
+// caller (the Claude skill's dedupe step) cannot notice that "telegram week"
+// silently missed the task "week ... telegram". The overlay keeps the strict
+// in-order semantics on purpose: it re-ranks per keystroke while a human
+// watches, so a union would only add noise to a query being refined live.
+// Word order therefore changes CLI ordering and not TUI ordering; what these
+// two tests pin is the single-token path, which both sides still share
+// exactly.
 func TestSearch_RankingMatchesSharedIndexOverStoreList(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "Repair broken pagination", Status: "open",
@@ -9214,15 +9226,23 @@ func TestSearch_RankingMatchesSharedIndexOverStoreList(t *testing.T) {
 			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:03Z"},
 	)
 
+	// Guard the scope stated above: a phrase here would compare the overlay
+	// against a ranker the CLI no longer uses for phrases, and fail for the
+	// wrong reason.
+	const query = "rep"
+	if len(strings.Fields(query)) != 1 {
+		t.Fatalf("parity fixture query %q must be a single token; multi-word CLI queries deliberately diverge from Index.Rank", query)
+	}
+
 	m, _ = key(t, m, "/")
-	m = typeString(t, m, "rep")
+	m = typeString(t, m, query)
 
 	// Rebuild the CLI's `--done` haystack: store.List with no status filter.
 	all, err := m.store.List(store.ListOptions{})
 	if err != nil {
 		t.Fatalf("store.List: %v", err)
 	}
-	want := search.NewIndex(all).Rank("rep", searchResultLimit)
+	want := search.NewIndex(all).Rank(query, searchResultLimit)
 	if len(want) < 2 {
 		t.Fatalf("fixture must produce at least 2 ranked hits, got %d", len(want))
 	}

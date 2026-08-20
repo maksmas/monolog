@@ -40,10 +40,21 @@ type Index struct {
 // NewIndex builds an Index over tasks, extracting the title and body slices
 // fuzzy.Find operates on.
 //
-// The task slice is copied, so the index is a true snapshot: callers may keep
-// mutating (or reassigning elements of) the slice they passed in without the
-// index — or the Result.Task values it hands back — changing underneath them.
-// The copy is shallow and happens once per index build, not per Rank call.
+// The task slice is copied, so the index owns its own slice header and
+// elements: callers may append to, re-sort, or reassign elements of the slice
+// they passed in without the index — or the Result.Task values it hands back —
+// changing underneath them. That is what the TUI relies on when it hands over
+// the live Model.allTasks.
+//
+// The copy is shallow, and the snapshot guarantee stops there. Task's
+// slice-typed fields (Tags) still share a backing array with the caller's
+// tasks, so an in-place edit of one — model.SetActive(false) filters via
+// `out := t.Tags[:0]`, rewriting the array in place — is visible through the
+// index too. No caller does that to a task it has already indexed, and
+// deep-copying every Tags slice on every index build would cost more than the
+// hazard is worth; the boundary is documented rather than defended.
+//
+// The copy happens once per index build, not per Rank call.
 //
 // Titles and bodies are stored as-is. sahilm/fuzzy performs
 // case-insensitive matching natively via Unicode case folding, so no

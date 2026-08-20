@@ -32,8 +32,21 @@ const searchTitleCapWidth = 60
 // cover only 40 of those bits — every task created inside the same ~256 ms
 // window shares an 8-character prefix. Search output exists to be copied
 // straight into `monolog note <id>` / `monolog show <id>`, and an ambiguous
-// prefix makes that fail; 12 characters spend the full timestamp plus two
-// characters of randomness, so same-millisecond creations still resolve.
+// prefix makes that fail.
+//
+// 12 characters spend the full timestamp and add two characters of
+// randomness. What that buys, precisely: any two tasks created in *different*
+// milliseconds are always distinguishable, which covers every path that
+// exists today — separate CLI invocations, TUI keystrokes, and even
+// email.Sync, which interleaves a network round-trip per message. Tasks
+// created in the *same* millisecond are not guaranteed to differ: the two
+// extra characters carry only 10 bits, so a same-millisecond pair collides
+// with probability 1/1024, and a tight loop producing ~20 tasks per
+// millisecond hits an ambiguous group a good fraction of the time. That is a
+// deliberate trade — a collision surfaces as store.Resolve's explicit
+// "ambiguous prefix" error listing the candidates, never as a write to the
+// wrong task, and the full ULID is one `monolog show` away.
+//
 // ShortID itself is left at 8 because `ls`, `log` and the Telegram rows are
 // width-sensitive in a way this untruncated table is not.
 const searchIDWidth = 12

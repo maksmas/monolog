@@ -29,7 +29,7 @@ monolog ls --tag claude -s someday
 
 Reschedule what is worth doing, `monolog rm` the rest. When you ask Claude to file something explicitly, it keeps the `claude` tag but uses whatever schedule you named — no quarantine.
 
-There is no write cap. Deduplication (Claude runs `monolog search` before every unprompted write, and appends a `monolog note` rather than filing a near-duplicate) and a stated bar for what qualifies are the only guards.
+There is no write cap. Deduplication (Claude runs `monolog search` before every unprompted write, and appends a `monolog note` rather than filing a near-duplicate) and a stated bar for what qualifies are the only guards. Because dedupe carries that much weight, the skill is told to search on a single distinctive keyword — or to run two or three separate one-word searches — rather than one long phrase.
 
 ## Install
 
