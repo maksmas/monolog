@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/maksmas/monolog/internal/config"
-	"github.com/maksmas/monolog/internal/model"
 	"github.com/maksmas/monolog/internal/search"
 	"github.com/maksmas/monolog/internal/store"
 )
@@ -266,14 +264,15 @@ func TestSearchCommand_LongTitleNotTruncated(t *testing.T) {
 // TestSearch_RankingMatchesSharedIndexOverStoreList.
 //
 // Scope: SINGLE-TOKEN queries only, and deliberately so. Multi-word CLI
-// queries no longer go straight to Index.Rank — cmd.rankQuery unions the whole
-// phrase with each word ranked separately, because sahilm/fuzzy matches a
-// query as one ordered subsequence and a one-shot CLI caller (the Claude
-// skill's dedupe step) has no way to notice that "telegram week" silently
-// missed the task "week ... telegram". The TUI keeps the strict in-order
-// semantics: a human retypes against live per-keystroke results, so widening
-// there would only add noise. That divergence is intended; the parity these
-// two tests pin is the single-token path both sides share.
+// queries no longer go straight to Index.Rank — cmd.rankQuery ranks them by
+// how many query words a task actually contains, because sahilm/fuzzy matches
+// a query as one ordered subsequence and a one-shot CLI caller (the Claude
+// skill's dedupe step) has no way to notice either failure mode: that
+// "telegram week" silently missed the task "week ... telegram", or that most
+// of what came back contained neither word. The TUI keeps the strict in-order
+// semantics: a human retypes against live per-keystroke results, so a
+// different rule there would only add noise. That divergence is intended; the
+// parity these two tests pin is the single-token path both sides share.
 func TestSearchCommand_DoneRankingMatchesSharedIndex(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
@@ -556,202 +555,5 @@ func TestSearchCommand_PrintedIDResolves(t *testing.T) {
 		if !strings.Contains(row, task.Title) {
 			t.Errorf("ID %q resolved to %q, which is not the task on that row: %q", id, task.Title, row)
 		}
-	}
-}
-
-// --- multi-word order independence (rankQuery) ------------------------------
-
-// orderFixture is the reproduction case for the word-order bug, distilled from
-// a real backlog: `search "week telegram"` found the target while `search
-// "telegram week"` returned the decoy and nothing else — a plausible-looking
-// wrong answer rather than "No matches".
-//
-// target matches the phrase "week telegram" as an ordered subsequence but not
-// "telegram week"; decoy is the mirror image. Neither is a red herring by
-// accident, so if the union ever stops running, exactly one of the two
-// direction assertions below fails.
-func orderFixture() []model.Task {
-	return []model.Task{
-		{ID: "01TARGET0000000000000000AA", Title: "week command from telegram should display today's tasks",
-			CreatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "01DECOY00000000000000000BB", Title: "telegram bot: acknowledge weekly digest",
-			CreatedAt: "2026-01-02T00:00:00Z"},
-	}
-}
-
-func rankedIDs(results []search.Result) []string {
-	out := make([]string, len(results))
-	for i, r := range results {
-		out[i] = r.Task.ID
-	}
-	return out
-}
-
-func containsID(results []search.Result, id string) bool {
-	for _, r := range results {
-		if r.Task.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// TestRankQuery_MultiWordIsOrderIndependent is the core guard: reversing the
-// words of a query must not change which tasks come back. sahilm/fuzzy matches
-// the query as one ordered subsequence including its spaces, so without the
-// per-token union "telegram week" silently misses the task "week ... telegram"
-// — and the skill's dedupe step files a duplicate on the strength of it.
-func TestRankQuery_MultiWordIsOrderIndependent(t *testing.T) {
-	const target = "01TARGET0000000000000000AA"
-	ix := search.NewIndex(orderFixture())
-
-	for _, query := range []string{"week telegram", "telegram week"} {
-		got := rankQuery(ix, query, 10)
-		if !containsID(got, target) {
-			t.Errorf("rankQuery(%q) = %v, want it to include the target %q",
-				query, rankedIDs(got), target)
-		}
-	}
-}
-
-// TestSearchCommand_MultiWordIsOrderIndependent is the same guard end to end,
-// through the cobra command and the real store, so a future refactor that
-// bypasses rankQuery in RunE is caught too.
-func TestSearchCommand_MultiWordIsOrderIndependent(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "monolog")
-	initTestRepo(t, dir)
-
-	const targetTitle = "week command from telegram should display today's tasks"
-	addTask(t, targetTitle)
-	addTask(t, "telegram bot: acknowledge weekly digest")
-
-	for _, query := range []string{"week telegram", "telegram week"} {
-		output := runSearch(t, query)
-		if !strings.Contains(output, targetTitle) {
-			t.Errorf("search %q should find %q regardless of word order, got:\n%s",
-				query, targetTitle, output)
-		}
-	}
-}
-
-// TestRankQuery_SingleTokenMatchesRankExactly pins that the union path is
-// multi-word only. A one-word query must go straight through to the shared
-// ranker, byte for byte, since that is what keeps single-token CLI output in
-// lockstep with the TUI overlay.
-func TestRankQuery_SingleTokenMatchesRankExactly(t *testing.T) {
-	tasks := []model.Task{
-		{ID: "01A", Title: "Repair broken pagination", CreatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "01B", Title: "Repave the parking lot", CreatedAt: "2026-01-02T00:00:00Z"},
-		{ID: "01C", Title: "Unrelated grocery run", CreatedAt: "2026-01-03T00:00:00Z"},
-	}
-	ix := search.NewIndex(tasks)
-
-	want := ix.Rank("rep", 10)
-	if len(want) < 2 {
-		t.Fatalf("fixture must produce at least 2 hits, got %d", len(want))
-	}
-	got := rankQuery(ix, "rep", 10)
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("rankQuery single token = %v, want Rank's exact result %v",
-			rankedIDs(got), rankedIDs(want))
-	}
-
-	// Surrounding whitespace is still one token, not two.
-	if got := rankQuery(ix, "  rep  ", 10); !reflect.DeepEqual(got, want) {
-		t.Errorf("padded single token = %v, want %v", rankedIDs(got), rankedIDs(want))
-	}
-}
-
-// TestRankQuery_UnionDeduplicates guards the seen/pos bookkeeping: a task that
-// matches the whole phrase AND one or more of its tokens must be printed once.
-// Without the dedupe the top of a dedupe-critical result set fills with copies
-// of the same task, hiding the other candidates behind the limit.
-func TestRankQuery_UnionDeduplicates(t *testing.T) {
-	tasks := []model.Task{
-		{ID: "01A", Title: "alpha beta gamma", CreatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "01B", Title: "beta only", CreatedAt: "2026-01-02T00:00:00Z"},
-	}
-	ix := search.NewIndex(tasks)
-
-	// "alpha beta" matches 01A as a phrase; the tokens "alpha" and "beta" both
-	// match it again, so it is a three-way collision.
-	got := rankQuery(ix, "alpha beta", 10)
-
-	counts := map[string]int{}
-	for _, r := range got {
-		counts[r.Task.ID]++
-	}
-	for id, n := range counts {
-		if n != 1 {
-			t.Errorf("task %s appears %d times in %v, want exactly 1", id, n, rankedIDs(got))
-		}
-	}
-	if !containsID(got, "01A") {
-		t.Errorf("phrase match 01A missing from %v", rankedIDs(got))
-	}
-	if !containsID(got, "01B") {
-		t.Errorf("token-only match 01B missing from %v", rankedIDs(got))
-	}
-}
-
-// TestRankQuery_UnionRespectsLimit pins that the limit is applied to the
-// union, not per stage. The union is strictly wider than a phrase match, so an
-// unclamped tail would dump most of the backlog on any multi-word query.
-func TestRankQuery_UnionRespectsLimit(t *testing.T) {
-	var tasks []model.Task
-	for i := 0; i < 8; i++ {
-		tasks = append(tasks, model.Task{
-			ID:        fmt.Sprintf("01%02d", i),
-			Title:     fmt.Sprintf("alpha entry %02d", i),
-			CreatedAt: fmt.Sprintf("2026-01-%02dT00:00:00Z", i+1),
-		})
-	}
-	// One task matching the phrase in order, so both stages contribute.
-	tasks = append(tasks, model.Task{ID: "01P", Title: "alpha beta phrase", CreatedAt: "2026-02-01T00:00:00Z"})
-	ix := search.NewIndex(tasks)
-
-	if got := rankQuery(ix, "alpha beta", 3); len(got) != 3 {
-		t.Errorf("rankQuery with limit 3 returned %d results (%v), want 3", len(got), rankedIDs(got))
-	}
-	// limit <= 0 keeps Rank's "no truncation" meaning; the command clamps
-	// before calling, but the helper must not invent a cap of its own.
-	if got := rankQuery(ix, "alpha beta", 0); len(got) < 9 {
-		t.Errorf("rankQuery with limit 0 returned %d results, want every match (>=9)", len(got))
-	}
-}
-
-// TestRankQuery_PhraseMatchesLeadTheUnion pins the ordering contract: an
-// in-order phrase hit is the strongest signal there is, so it must never be
-// pushed below a single-word hit that happens to score higher.
-func TestRankQuery_PhraseMatchesLeadTheUnion(t *testing.T) {
-	tasks := []model.Task{
-		{ID: "01PHRASE", Title: "xx alpha xx beta xx", CreatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "01TOKEN", Title: "beta", CreatedAt: "2026-01-02T00:00:00Z"},
-	}
-	ix := search.NewIndex(tasks)
-
-	got := rankQuery(ix, "alpha beta", 10)
-	if len(got) != 2 {
-		t.Fatalf("expected both tasks, got %v", rankedIDs(got))
-	}
-	if got[0].Task.ID != "01PHRASE" {
-		t.Errorf("phrase hit should lead, got order %v", rankedIDs(got))
-	}
-}
-
-// TestRankQuery_SkipsSingleCharacterTokens pins minUnionTokenLen. A
-// one-character token fuzzy-matches nearly every task, so unioning it in would
-// turn any query containing "a" or "I" into a backlog dump.
-func TestRankQuery_SkipsSingleCharacterTokens(t *testing.T) {
-	tasks := []model.Task{
-		{ID: "01A", Title: "alpha beta", CreatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "01B", Title: "an unrelated task", CreatedAt: "2026-01-02T00:00:00Z"},
-	}
-	ix := search.NewIndex(tasks)
-
-	// "a" alone would match 01B ("an unrelated task"); "zeta" matches neither.
-	got := rankQuery(ix, "a zeta", 10)
-	if containsID(got, "01B") {
-		t.Errorf("single-character token was unioned in: %v", rankedIDs(got))
 	}
 }

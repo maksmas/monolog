@@ -9200,15 +9200,16 @@ func TestSearch_HighlightCaseInsensitiveMultibyteRoundTrips(t *testing.T) {
 // TestSearchCommand_DoneRankingMatchesSharedIndex.
 //
 // Scope: SINGLE-TOKEN queries only, and deliberately so. `monolog search` no
-// longer hands a multi-word query straight to Index.Rank — cmd.rankQuery
-// unions the whole phrase with each word ranked separately, because
-// sahilm/fuzzy matches a query as one ordered subsequence and a one-shot CLI
-// caller (the Claude skill's dedupe step) cannot notice that "telegram week"
-// silently missed the task "week ... telegram". The overlay keeps the strict
+// longer hands a multi-word query straight to Index.Rank — cmd.rankQuery ranks
+// those by how many query words a task actually contains, because sahilm/fuzzy
+// matches a query as one ordered subsequence and a one-shot CLI caller (the
+// Claude skill's dedupe step) cannot notice either failure mode: that
+// "telegram week" silently missed the task "week ... telegram", or that most
+// of what came back contained neither word. The overlay keeps the strict
 // in-order semantics on purpose: it re-ranks per keystroke while a human
-// watches, so a union would only add noise to a query being refined live.
-// Word order therefore changes CLI ordering and not TUI ordering; what these
-// two tests pin is the single-token path, which both sides still share
+// watches, so a different rule would only add noise to a query being refined
+// live. Word order therefore changes CLI ordering and not TUI ordering; what
+// these two tests pin is the single-token path, which both sides still share
 // exactly.
 func TestSearch_RankingMatchesSharedIndexOverStoreList(t *testing.T) {
 	m := newTestModel(t,
