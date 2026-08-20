@@ -427,9 +427,11 @@ func commandCandidates(md string) []string {
 }
 
 // isPlaceholder reports whether a token is a documentation placeholder such
-// as <id> or <query> rather than a literal argument.
+// as <id> or <query> rather than a literal argument. Both brackets are
+// required, so a stray "<" is treated as a real (and therefore checked)
+// argument rather than waved through.
 func isPlaceholder(tok string) bool {
-	return strings.HasPrefix(tok, "<")
+	return strings.HasPrefix(tok, "<") && strings.HasSuffix(tok, ">") && len(tok) > 2
 }
 
 // checkDocumentedCommands validates every `monolog ...` invocation in md
@@ -461,11 +463,14 @@ func checkDocumentedCommands(t *testing.T, label, md string) map[string]bool {
 			continue
 		}
 
+		// A fresh tree per candidate: ParseFlags below writes the parsed values
+		// into the command's flag set, so reusing one root would leak `-n 25`
+		// from one documented invocation into the next.
 		root := NewRootCmd()
 
 		target, rest, err := root.Find(fields[1:])
 		if err != nil {
-			t.Errorf("%s documents %q, which does not resolve: %v (in: %s)", label, cand, err, cand)
+			t.Errorf("%s documents %q, which does not resolve: %v", label, cand, err)
 			continue
 		}
 		if target == root && !strings.HasPrefix(fields[1], "-") {
@@ -474,9 +479,11 @@ func checkDocumentedCommands(t *testing.T, label, md string) map[string]bool {
 		}
 		seen[target.CommandPath()] = true
 
-		// --help is not documented anywhere, but registering it keeps the
-		// parser's flag set identical to the one a real invocation sees.
+		// Cobra registers --help and --version during Execute, not at
+		// construction, so the parser below would reject them without this.
+		// The root README documents `monolog --version`.
 		target.InitDefaultHelpFlag()
+		target.InitDefaultVersionFlag()
 		if err := target.ParseFlags(rest); err != nil {
 			t.Errorf("%s documents flags the CLI rejects on %q: %v (in: %s)", label, target.CommandPath(), err, cand)
 			continue
@@ -492,7 +499,7 @@ func checkDocumentedCommands(t *testing.T, label, md string) map[string]bool {
 				if isPlaceholder(pos) {
 					continue
 				}
-				t.Errorf("%s documents %q but %q is not a subcommand of %q (in: %s)", label, cand, pos, target.CommandPath(), cand)
+				t.Errorf("%s documents %q but %q is not a subcommand of %q", label, cand, pos, target.CommandPath())
 				break
 			}
 		}
@@ -516,7 +523,7 @@ func assertFloor(t *testing.T, label string, seen map[string]bool, want []string
 	t.Helper()
 	for _, path := range want {
 		if !seen[path] {
-			t.Errorf("%s no longer documents %q (or the extractor stopped seeing it); found: %s", label, path, sortedKeys(seen))
+			t.Errorf("%s no longer documents %q (or the extractor stopped seeing it); found: %v", label, path, sortedKeys(seen))
 		}
 	}
 }
@@ -552,6 +559,26 @@ func TestSkillReadmeDocumentsOnlyRealCommands(t *testing.T) {
 	assertFloor(t, "docs/claude-skill/README.md", seen, skillFloorCommands)
 }
 
+// TestRootReadmeDocumentsOnlyRealCommands runs the same cross-check over the
+// project README, which is the reference documentation for the whole CLI —
+// every subcommand, every flag table, every example. It drifts for exactly the
+// same reasons the skill docs do, and until now was outside the net.
+func TestRootReadmeDocumentsOnlyRealCommands(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(skillRepoRoot(t), "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+
+	seen := checkDocumentedCommands(t, "README.md", string(src))
+
+	// A floor spanning the reference sections, so an extractor that stops
+	// matching fails instead of passing vacuously.
+	assertFloor(t, "README.md", seen, append(append([]string{}, skillFloorCommands...),
+		"monolog show", "monolog log", "monolog done", "monolog rm", "monolog edit",
+		"monolog mv", "monolog init", "monolog sync",
+	))
+}
+
 func TestStripShellComment(t *testing.T) {
 	tests := []struct {
 		name string
@@ -572,6 +599,26 @@ func TestStripShellComment(t *testing.T) {
 				t.Errorf("stripShellComment(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsPlaceholder(t *testing.T) {
+	tests := map[string]bool{
+		"<id>":        true,
+		"<query>":     true,
+		"<id-prefix>": true,
+		// Both brackets required: a lone "<" is a shell redirect, not a
+		// placeholder, and waving it through would skip checking the command.
+		"<":     false,
+		"<id":   false,
+		"id>":   false,
+		"<>":    false,
+		"login": false,
+	}
+	for tok, want := range tests {
+		if got := isPlaceholder(tok); got != want {
+			t.Errorf("isPlaceholder(%q) = %v, want %v", tok, got, want)
+		}
 	}
 }
 
@@ -617,13 +664,14 @@ func TestCommandCandidates(t *testing.T) {
 	})
 }
 
-func sortedKeys(m map[string]bool) string {
+// sortedKeys returns the map's keys in lexical order, for stable messages.
+func sortedKeys(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return fmt.Sprintf("%v", keys)
+	return keys
 }
 
 // --- allowed-tools parsing and grant scoping --------------------------------

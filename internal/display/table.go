@@ -44,8 +44,9 @@ const searchTitleCapWidth = 60
 // with probability 1/1024, and a tight loop producing ~20 tasks per
 // millisecond hits an ambiguous group a good fraction of the time. That is a
 // deliberate trade — a collision surfaces as store.Resolve's explicit
-// "ambiguous prefix" error listing the candidates, never as a write to the
-// wrong task, and the full ULID is one `monolog show` away.
+// "ambiguous prefix" error, which lists the full ULIDs of the colliding tasks,
+// never as a write to the wrong task. (No command prints a full ULID on its
+// own; `monolog show` reports display.ShortID's 8 characters.)
 //
 // ShortID itself is left at 8 because `ls`, `log` and the Telegram rows are
 // width-sensitive in a way this untruncated table is not.

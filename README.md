@@ -100,16 +100,16 @@ Lists today's open tasks by default. Each row includes a compact dates column: r
 
 ### `monolog search <query>`
 
-Searches task titles and bodies, printing the top matches with **untruncated** titles (unlike `monolog ls`, which truncates at 40 characters). Title matches outrank body-only matches. Multiple arguments are joined with a space, so quoting is optional: `monolog search fix login bug` works.
+Searches task titles and bodies, printing the top matches with **untruncated** titles (unlike `monolog ls`, which truncates at 40 characters). Multiple arguments are joined with a space, so quoting is optional: `monolog search fix login bug` works.
 
-A **single word** is fuzzy-matched, so near-spellings and abbreviations still land.
+A **single word** is fuzzy-matched, so near-spellings and abbreviations still land, and a title match outranks a body-only one.
 
-A **multi-word query is ranked by how many of its words the task actually contains** — the term-hit count — and tasks containing none of them are dropped entirely. Ties break on title hits before body-only hits, then on the fuzzy score of the whole phrase, then on creation date. Two consequences worth knowing:
+A **multi-word query is ranked by how many of its words the task actually contains** — the term-hit count — and tasks containing none of them are dropped entirely. Ties break on title hits, then on creation date (newest first). Note that title weighting only applies *within* a term-hit tier here: a task matching three words in its body outranks one matching two in its title. Two consequences worth knowing:
 
 - Word order is irrelevant. `monolog search telegram week` and `monolog search week telegram` return the same rows in the same order.
 - Extra words **narrow** the result set rather than widening it, so a two- or three-word query is usually the sharpest one. It is a ranking rule with a floor, not an AND filter: a task matching two of three words still appears, just below anything matching all three.
 
-Words are matched as case-insensitive substrings, so `week` finds "weekly" but `scheduling` does not find "schedule"; prefer the shorter stem. Words of a single character are ignored.
+Words are matched as case-insensitive substrings, so `week` finds "weekly" but `scheduling` does not find "schedule"; prefer the shorter stem. The query is split on whitespace and nothing else, so punctuation glued to a word travels with it (`telegram,` matches nothing). Words of a single character are ignored; a query made up entirely of them has nothing to count and falls back to whole-phrase fuzzy matching.
 
 | Flag | Description |
 |------|-------------|
@@ -120,7 +120,7 @@ Rows are `<status> <12-char ID> <title> <schedule> <tags>`, where the status cel
 
 Note the two different axes: `ls -a` means "all schedules, still open", while `search -d` means "include done".
 
-The same ranker backs the TUI's `/` fuzzy search, so for a single-word query both agree on ordering for the same set of tasks. Multi-word queries diverge: only the CLI counts term hits. The TUI keeps strict in-order fuzzy matching because you retype against live results there and can see the query narrowing as you go.
+Both this command and the TUI's `/` fuzzy search rank through `internal/search`, so for a single-word query they agree exactly on ordering for the same set of tasks. Multi-word queries diverge: only the CLI counts term hits. The TUI keeps strict in-order fuzzy matching because you retype against live results there and can see the query narrowing as you go.
 
 ### `monolog done <id-prefix>`
 

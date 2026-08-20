@@ -49,6 +49,7 @@ Two things to keep in mind:
 
 - A **single word** is matched fuzzily rather than by term count, so it also catches near-spellings — but a short or common one matches almost anything. One rare word is a fine query; one common word is not.
 - Words are matched as **substrings**, so `week` finds "weekly" but `scheduling` does not find "schedule". When in doubt use the shorter stem.
+- Search **splits on whitespace only**, so punctuation stuck to a word travels with it and stops it matching: `telegram,` and `openStore()` find nothing. Pass bare words — `telegram`, `openStore`.
 
 Not every word has to hit. A three-word query still surfaces a task matching two of them, ranked below anything matching all three — so read past the first row before concluding there is no duplicate.
 
