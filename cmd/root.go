@@ -39,6 +39,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newInitCmd())
 	rootCmd.AddCommand(newAddCmd())
 	rootCmd.AddCommand(newLsCmd())
+	rootCmd.AddCommand(newSearchCmd())
 	rootCmd.AddCommand(newDoneCmd())
 	rootCmd.AddCommand(newRmCmd())
 	rootCmd.AddCommand(newEditCmd())

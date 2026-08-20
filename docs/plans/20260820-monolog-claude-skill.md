@@ -190,13 +190,13 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - Create: `cmd/search_test.go`
 - Modify: `cmd/root.go`
 
-- [ ] create `newSearchCmd()` with `Use: "search <query>"`, `Args: cobra.MinimumNArgs(1)` joining args with a space, flags `-n/--limit` (default 10, clamp `< 1` to default) and `-d/--done` (include completed)
-- [ ] load tasks via `store.List` — `ListOptions{Status: "open"}` by default, no status filter when `--done`
-- [ ] build `search.NewIndex(tasks)`, call `Rank(query, limit)`, map results to `[]model.Task`, print via `display.FormatSearchResults` with `config.DateFormat()`
-- [ ] register with `rootCmd.AddCommand(newSearchCmd())` in `cmd/root.go`
-- [ ] write tests following `cmd/ls_test.go`: query matches title, query matches body, title outranks body-only, multi-word unquoted query, `--limit` truncates, `-n 0` falls back to 10 rather than dumping everything, `--done` includes completed while default excludes them, no-match prints `No matches.`, long title survives untruncated
-- [ ] run `go test ./cmd/` — must pass
-- [ ] run `go build -o monolog` so the `mlog` alias target is current — Tasks 5 and 6 both exercise the binary, and the checked-in artifact is months stale
+- [x] create `newSearchCmd()` with `Use: "search <query>"`, `Args: cobra.MinimumNArgs(1)` joining args with a space, flags `-n/--limit` (default 10, clamp `< 1` to default) and `-d/--done` (include completed)
+- [x] load tasks via `store.List` — `ListOptions{Status: "open"}` by default, no status filter when `--done`
+- [x] build `search.NewIndex(tasks)`, call `Rank(query, limit)`, map results to `[]model.Task`, print via `display.FormatSearchResults` with `config.DateFormat()`
+- [x] register with `rootCmd.AddCommand(newSearchCmd())` in `cmd/root.go`
+- [x] write tests following `cmd/ls_test.go`: query matches title, query matches body, title outranks body-only, multi-word unquoted query, `--limit` truncates, `-n 0` falls back to 10 rather than dumping everything, `--done` includes completed while default excludes them, no-match prints `No matches.`, long title survives untruncated
+- [x] run `go test ./cmd/` — must pass
+- [x] run `go build -o monolog` so the `mlog` alias target is current — Tasks 5 and 6 both exercise the binary, and the checked-in artifact is months stale
 
 ### Task 5: Ship the Claude skill and install it
 
