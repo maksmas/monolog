@@ -9184,6 +9184,77 @@ func TestSearch_HighlightCaseInsensitiveMultibyteRoundTrips(t *testing.T) {
 	}
 }
 
+// TestSearch_RankingMatchesSharedIndexOverStoreList pins CLI/TUI ranking
+// parity from the TUI side.
+//
+// The overlay ranks Model.allTasks, which reloadAllTasks fills from
+// store.List(ListOptions{}) — no status filter, so open + done. `monolog
+// search --done` lifts the same filter and ranks through the same
+// search.Index, so the two must agree row for row. This test rebuilds that
+// haystack straight off the store and asserts the overlay's results match the
+// shared ranker exactly, in order, including scores: if the overlay ever
+// re-sorts, pre-filters, or acquires its own ranker, "the TUI found it but the
+// CLI didn't" fails here instead of in the user's dedupe step.
+//
+// The mirror assertion on the CLI side lives in cmd:
+// TestSearchCommand_DoneRankingMatchesSharedIndex.
+func TestSearch_RankingMatchesSharedIndexOverStoreList(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "Repair broken pagination", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "Repave the parking lot", Status: "done",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:01Z"},
+		model.Task{ID: "01C", Title: "Reap rewards from caching", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 3000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:02Z"},
+		model.Task{ID: "01D", Title: "Unrelated grocery run", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 4000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:03Z"},
+	)
+
+	m, _ = key(t, m, "/")
+	m = typeString(t, m, "rep")
+
+	// Rebuild the CLI's `--done` haystack: store.List with no status filter.
+	all, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("store.List: %v", err)
+	}
+	want := search.NewIndex(all).Rank("rep", searchResultLimit)
+	if len(want) < 2 {
+		t.Fatalf("fixture must produce at least 2 ranked hits, got %d", len(want))
+	}
+
+	got := m.search.results
+	if len(got) != len(want) {
+		t.Fatalf("overlay returned %d results, shared index returned %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Task.ID != want[i].Task.ID {
+			t.Errorf("result %d: overlay ID = %s (%q), shared index ID = %s (%q)",
+				i, got[i].Task.ID, got[i].Task.Title, want[i].Task.ID, want[i].Task.Title)
+		}
+		if got[i].Score != want[i].Score {
+			t.Errorf("result %d (%s): overlay score = %d, shared index score = %d",
+				i, want[i].Task.ID, got[i].Score, want[i].Score)
+		}
+	}
+
+	// The done task must be in the overlay haystack — that is what makes
+	// `search --done`, not the open-only default, the CLI comparison point.
+	var sawDone bool
+	for _, r := range got {
+		if r.Task.ID == "01B" {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		t.Errorf("overlay results should include the done task 01B; got %d results", len(got))
+	}
+}
+
 // TestRenderListItem_LinkifiesURLInTitle confirms that a task whose title
 // contains a URL renders the title wrapped in OSC 8 hyperlink escapes in the
 // list row (after wrapText, before the bullet/indent prefix).

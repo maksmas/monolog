@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/maksmas/monolog/internal/search"
+	"github.com/maksmas/monolog/internal/store"
 )
 
 // runSearch executes `monolog search <args...>` against the current test repo
@@ -217,6 +220,65 @@ func TestSearchCommand_LongTitleNotTruncated(t *testing.T) {
 	}
 	if strings.Contains(output, "…") {
 		t.Errorf("search output should not contain a truncation ellipsis, got:\n%s", output)
+	}
+}
+
+// TestSearchCommand_DoneRankingMatchesSharedIndex pins CLI/TUI ranking parity
+// from the CLI side.
+//
+// The TUI ranks over its cached Model.allTasks, which reloadAllTasks fills
+// from store.List(ListOptions{}) — no status filter, so open + done. `search
+// --done` lifts the same filter, so both sides feed the shared search.Index
+// an identically ordered task slice. This test reconstructs that haystack
+// directly and asserts the command prints the ranker's results in the ranker's
+// order, so any future divergence (a re-sort, a pre-filter, a second ranker)
+// fails here instead of silently making the CLI disagree with `/`.
+//
+// The mirror assertion on the TUI side lives in internal/tui:
+// TestSearch_RankingMatchesSharedIndexOverStoreList.
+func TestSearchCommand_DoneRankingMatchesSharedIndex(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	// Distinct, non-overlapping titles so an ordered Contains check cannot
+	// match the wrong row.
+	addTask(t, "Repair broken pagination")
+	doneID := addTestTask(t, dir, "Repave the parking lot")
+	addTask(t, "Reap rewards from caching")
+	addTask(t, "Unrelated grocery run")
+
+	rc := NewRootCmd()
+	rc.SetOut(new(bytes.Buffer))
+	rc.SetErr(new(bytes.Buffer))
+	rc.SetArgs([]string{"done", doneID})
+	if err := rc.Execute(); err != nil {
+		t.Fatalf("done %s: %v", doneID, err)
+	}
+
+	// Rebuild the TUI's haystack: store.List with no status filter.
+	s, err := store.New(filepath.Join(dir, ".monolog", "tasks"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	all, err := s.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("store.List: %v", err)
+	}
+	want := search.NewIndex(all).Rank("rep", 25)
+	if len(want) < 2 {
+		t.Fatalf("fixture must produce at least 2 ranked hits, got %d", len(want))
+	}
+
+	got := resultLines(runSearch(t, "rep", "--done", "-n", "25"))
+	if len(got) != len(want) {
+		t.Fatalf("printed %d rows, ranker produced %d\noutput:\n%s",
+			len(got), len(want), strings.Join(got, "\n"))
+	}
+	for i, r := range want {
+		if !strings.Contains(got[i], r.Task.Title) {
+			t.Errorf("row %d = %q, want the row for %q (score %d)",
+				i, got[i], r.Task.Title, r.Score)
+		}
 	}
 }
 

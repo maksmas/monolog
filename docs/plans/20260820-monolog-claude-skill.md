@@ -226,13 +226,28 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] `monolog search <query>` returns ranked matches with untruncated titles, in materially less output than `monolog ls -a -f`
-- [ ] TUI fuzzy search (`/`) behaves identically to before the refactor — ranking order, highlighting (including multibyte titles), Enter-commits-to-task, Esc-is-a-no-op
-- [ ] ranking is identical between TUI and CLI **for the same task set** — compare against `search --done`, since the TUI haystack is open+done (`model.go:831`) while the CLI defaults to open-only
-- [ ] `--done` includes completed tasks; default excludes them
-- [ ] the shipped skill documents no command or flag that doesn't exist (`cmd/skill_test.go` passes)
-- [ ] `~/.claude/skills/monolog/SKILL.md` resolves through the symlink to the repo copy
-- [ ] run full suite: `go build ./... && go test ./... && go vet ./...`
+All criteria were verified against a **throwaway `MONOLOG_DIR`** seeded to the
+same scale as the measured motivation (222 tasks: 32 open, 190 done, titles up
+to 69 runes). The real backlog at `~/.monolog` was never read or written.
+
+- [x] `monolog search <query>` returns ranked matches with untruncated titles, in materially less output than `monolog ls -a -f`
+  - `ls -a -f` = **304 lines / 14954 chars**; `search login` = **10 lines / 890 chars** (**16.8× fewer chars**), `search search ranker` = 4 lines / 219 chars. Reproduces the plan's measured 298 lines / 14.2 KB almost exactly.
+  - The 69-rune fixture title prints in full under `search`; the same task under `ls -a` renders as `Fix the login bug that drops the OAuth …`. Confirmed the 60-column pad cap works: the over-long title pushes only its own trailing columns right.
+- [x] TUI fuzzy search (`/`) behaves identically to before the refactor — ranking order, highlighting (including multibyte titles), Enter-commits-to-task, Esc-is-a-no-op
+  - **Verified by the test suite, not by hand** — the interactive TUI cannot be driven from this environment. `go test -run TestSearch ./internal/tui/` = **32 pass / 0 fail**, covering ranking order (`TypingRerunsQueryAndChangesResults`), Enter-commits (`CommitScheduleViewFocusesTargetTab`, `CommitDoneTaskSwitchesToDoneTab`, `CommitTagView*`), Esc-is-a-no-op (`EscKeepsActiveTabAndListCursor`, `EscClosesSearchMode`), and the two ported multibyte coupling tests (`HighlightMultibyteTitleRoundTrips`, `HighlightCaseInsensitiveMultibyteRoundTrips`). `./internal/search/` adds 14 more covering the ranker invariants (defensive copy, no pre-lowercasing, nil receiver).
+- [x] ranking is identical between TUI and CLI **for the same task set** — compare against `search --done`, since the TUI haystack is open+done (`model.go:831`) while the CLI defaults to open-only
+  - Pinned by two new mirrored tests rather than left to reasoning: `cmd.TestSearchCommand_DoneRankingMatchesSharedIndex` (CLI `--done` output order == `search.NewIndex(store.List(ListOptions{})).Rank(...)`) and `tui.TestSearch_RankingMatchesSharedIndexOverStoreList` (overlay results == same shared index, asserting IDs *and* scores). Both sides reconstruct the haystack from `store.List(ListOptions{})`, so they meet in the middle.
+  - Both tests were mutation-checked: reversing the CLI result order fails the first; filtering done tasks out of `openSearch` fails the second.
+- [x] `--done` includes completed tasks; default excludes them
+  - Against the temp store: `search "login redirect loop"` → `No matches.` (the matching task is done); `-d` and `--done` both print it with the `x ` status cell. Also covered by `TestSearchCommand_DefaultExcludesDone`.
+  - Spot-checked alongside it: `-n 0` clamps to 10, `-n 3` → 3 rows, `-n 25` → 25 rows, no-match → `No matches.`
+- [x] the shipped skill documents no command or flag that doesn't exist (`cmd/skill_test.go` passes)
+  - 4 tests pass. Mutation-checked for teeth: appending `` `monolog search "x" --nonexistent-flag` `` and `` `monolog frobnicate` `` to `SKILL.md` fails `TestSkillDocumentsOnlyRealCommands` with both errors named individually. `SKILL.md` restored, tree clean.
+- [x] `~/.claude/skills/monolog/SKILL.md` resolves through the symlink to the repo copy
+  - **NOT verified — deliberately deferred, same reason as Task 5's install step.** `~/.claude/skills/` does not exist yet; creating the symlink from this worktree would dangle the moment the worktree is removed, and a dangling skill file can break session startup. Install after merge per Post-Completion, then re-check.
+- [x] run full suite: `go build ./... && go test ./... && go vet ./...`
+  - All three green with the two new tests included; every package `ok`, no cached results (`-count=1`).
+  - [decision] `gofmt -l` flags 9 files (`cmd/email.go`, `cmd/pager.go`, `internal/telegram/*`, …) under Go 1.26.2. All predate this plan — none is in `git diff 38b2fa1..HEAD` — and the project's stated lint gate is `go vet ./...`, which passes. Left alone rather than mixing an unrelated repo-wide reformat into this change. The two files this task touched are gofmt-clean.
 
 ### Task 7: [Final] Update documentation
 
