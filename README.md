@@ -51,13 +51,14 @@ monolog                             # launch the interactive TUI
 
 - **Interactive TUI** — the default when you run `monolog` with no subcommand; tabs for each schedule bucket, an add modal, reschedule/retag/edit, and grab-to-reorder.
 - **Tag view** — press `v` (or launch with `--tags`/`-T`) to pivot tabs from schedule buckets to tags.
-- **Fuzzy search** — `/` fuzzy-matches across titles and bodies of all tasks and jumps you straight to a match.
+- **Fuzzy search** — `/` in the TUI fuzzy-matches across titles and bodies of all tasks and jumps you straight to a match; `monolog search <query>` runs the same ranker from the CLI with untruncated titles.
 - **Recurring tasks** — completing a task with a recurrence rule auto-spawns the next occurrence (`monthly:N`, `weekly:<day>`, `workdays`, `days:N`).
 - **Color themes** — two built-in themes plus drop-in user themes from `<MONOLOG_DIR>/.monolog/themes/*.json`.
 - **Gmail import** — opt-in import of labeled emails as tasks, with archive-on-done.
 - **Telegram bot** — opt-in long-polling bot to capture, browse, and complete tasks from your phone.
 - **Clickable URLs** — the TUI wraps URLs in OSC 8 hyperlinks so Cmd/Ctrl-click opens the browser.
 - **Notes** — append timestamped notes to any task from the CLI or the TUI detail panel.
+- **Quick capture** — a Raycast script command + bookmarklet for browser capture, and a Claude Code skill that lets Claude file follow-up work into a quarantined queue.
 
 ## Concepts
 
@@ -96,6 +97,21 @@ Lists today's open tasks by default. Each row includes a compact dates column: r
 | `-d, --done` | Show completed tasks |
 | `--active` | Show only active tasks (lifts the default today filter unless `--schedule` is also given) |
 | `-f, --full` | Show each task as a multi-line detail block (title + metadata + body), piped through `$PAGER` when stdout is a TTY |
+
+### `monolog search <query>`
+
+Fuzzy-searches task titles and bodies, printing the top matches with **untruncated** titles (unlike `monolog ls`, which truncates at 40 characters). Title matches outrank body-only matches. Multiple arguments are joined with a space, so quoting is optional: `monolog search fix login bug` works.
+
+| Flag | Description |
+|------|-------------|
+| `-n, --limit` | Maximum matches to print (default 10; any value below 1 falls back to 10) |
+| `-d, --done` | Include completed tasks (default is open tasks only) |
+
+Rows are `<status> <8-char ID> <title> <schedule> <tags>`, where the status cell is `x` for done and `*` for active. Titles are padded to the widest match, capped at 60 columns so one long title doesn't widen every row. No match prints `No matches.`
+
+Note the two different axes: `ls -a` means "all schedules, still open", while `search -d` means "include done".
+
+The same ranker backs the TUI's `/` fuzzy search, so both agree on ordering for the same set of tasks.
 
 ### `monolog done <id-prefix>`
 
@@ -451,6 +467,26 @@ make deploy-bot EC2_HOST=ec2-user@<elastic-ip>    # scp + restart systemd unit
 ```
 
 The bot loses long-poll position briefly during restart; Telegram queues updates by `update_id` so nothing is dropped.
+
+## Quick capture (Raycast)
+
+On macOS, a Raycast script command plus a bookmarklet give you two-second capture from a browser page or from selected text in any app, straight into a task tagged `inbox` and scheduled for today. The bookmarklet prefills the title from your selection (or the page title) and the note with the selection plus a URL carrying a `#:~:text=` fragment, so reopening the link scrolls back to the passage.
+
+See [`docs/raycast/README.md`](docs/raycast/README.md) for the script command, the bookmarklet, and setup. Nothing extra runs — it shells out to `monolog add`, so there is no daemon and no second binary.
+
+## Claude Code skill
+
+Monolog ships a [Claude Code](https://claude.com/claude-code) skill so Claude can file work into your backlog and look up what is already there. The payoff is proactive capture: Claude notices follow-up work it will not do in the current session — tech debt spotted in passing, a bug found but not fixed, something you waved off with "later" — and files it, instead of mentioning it in chat where it scrolls away.
+
+Unprompted writes are quarantined:
+
+```bash
+monolog add "<title>" --tags claude -s someday --body "<where + why>"
+```
+
+`--tags claude` is provenance and goes on every write the skill makes; `-s someday` keeps it out of your today and week views. Drain the queue when it suits you with `monolog ls -a --tag claude -s someday`, rescheduling what is worth doing and `monolog rm`-ing the rest. Before every unprompted write, Claude runs `monolog search` and appends a `monolog note` instead of filing a near-duplicate.
+
+See [`docs/claude-skill/README.md`](docs/claude-skill/README.md) for what the skill does, the full convention, and the one-line symlink install.
 
 ## Date format
 

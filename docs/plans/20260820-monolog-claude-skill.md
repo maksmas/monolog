@@ -251,13 +251,16 @@ to 69 runes). The real backlog at `~/.monolog` was never read or written.
 
 ### Task 7: [Final] Update documentation
 
-- [ ] **edit** `CLAUDE.md:67` — "Pure ranker lives in `internal/tui/search_match.go`" is false after Task 2; point it at `internal/search/rank.go`
-- [ ] **edit** `CLAUDE.md:81` — Dependencies lists sahilm/fuzzy as "TUI fuzzy search ranker"; `internal/tui` no longer imports it, `internal/search` does
-- [ ] add `internal/search/` to the Architecture tree in `CLAUDE.md`
-- [ ] add a Key Design Decisions entry for the shared ranker: one `Index` used by both TUI and CLI, so ranking cannot drift between them; plus the nil-receiver contract and the no-pre-lowercasing invariant
-- [ ] update `README.md` command list with `monolog search` (repo docs use `monolog`, never the `mlog` alias)
-- [ ] add a `docs/claude-skill/` entry to `CLAUDE.md` describing the shipped skill, the `claude` + `someday` quarantine convention, and the fact that `cmd/skill_test.go` pins its documented commands to the live cobra tree
-- [ ] add a README section pointing at `docs/claude-skill/README.md`, alongside the existing Raycast quick-capture docs
+- [x] **edit** `CLAUDE.md:67` — "Pure ranker lives in `internal/tui/search_match.go`" is false after Task 2; point it at `internal/search/rank.go`
+- [x] **edit** `CLAUDE.md:81` — Dependencies lists sahilm/fuzzy as "TUI fuzzy search ranker"; `internal/tui` no longer imports it, `internal/search` does
+- [x] add `internal/search/` to the Architecture tree in `CLAUDE.md`
+- [x] add a Key Design Decisions entry for the shared ranker: one `Index` used by both TUI and CLI, so ranking cannot drift between them; plus the nil-receiver contract and the no-pre-lowercasing invariant
+- [x] update `README.md` command list with `monolog search` (repo docs use `monolog`, never the `mlog` alias)
+- [x] add a `docs/claude-skill/` entry to `CLAUDE.md` describing the shipped skill, the `claude` + `someday` quarantine convention, and the fact that `cmd/skill_test.go` pins its documented commands to the live cobra tree
+- [x] add a README section pointing at `docs/claude-skill/README.md`, alongside the existing Raycast quick-capture docs
+  - [decision] `README.md` had **no** Raycast section to sit alongside — `docs/raycast/` was only ever linked from `CLAUDE.md`. Added a short `## Quick capture (Raycast)` section pointing at `docs/raycast/README.md` immediately before the new `## Claude Code skill` section, so the intended pairing now actually exists. Both sit after `## Telegram integration`, matching how the other integration docs are laid out.
+  - [decision] Both new Key Design Decisions entries were **appended** at the end of the list rather than filed next to the "Fuzzy search" bullet — the list is append-ordered by feature. The fuzzy-search bullet gained an explicit "see **Shared search ranker** below" cross-reference so discoverability doesn't depend on reading order.
+  - [decision] `grep -rn 'search_match' --include='*.md' .` still hits `docs/plans/*` (this plan's own Context section and the 2026-04-16 fuzzy-search plan, in both `docs/plans/` and `docs/plans/completed/`). Plans are point-in-time records, not live documentation — rewriting them would falsify the history the `completed/` convention exists to keep. All **live** docs (`CLAUDE.md`, `README.md`, `docs/**/README.md`, `SKILL.md`) are clean.
 - [ ] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
