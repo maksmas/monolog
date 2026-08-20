@@ -141,7 +141,13 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 
 ## Implementation Steps
 
-**Status:** complete except post-merge install steps (see Post-Completion). Every unchecked box below is deferred work, not skipped work.
+**Status:** implementation complete; four boxes remain unchecked, and they are not all the same kind of outstanding.
+
+- **Deferred to Post-Completion (post-merge install steps):** Task 5's local symlink install, and Task 6's "`~/.claude/skills/monolog/SKILL.md` resolves through the symlink" check that depends on it.
+- **Skipped, not deferred:** Task 5's "verify skill loads" — it needs a *fresh* Claude Code session and cannot be automated from inside a running one. Post-Completion carries it as a manual observation, not as work still queued.
+- **Neither:** Task 7's "move this plan to `docs/plans/completed/`" is repo housekeeping performed when this branch lands, not an install step.
+
+See **Deviations from this plan as executed** at the end for where the shipped code diverges from the spec above.
 
 ### Task 1: Create `internal/search` package with `Index`
 
@@ -188,8 +194,8 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - Modify: `internal/display/table.go`
 - Modify: `internal/display/table_test.go`
 
-- [x] add `FormatSearchResults(w io.Writer, tasks []model.Task, now time.Time, layout string)` computing the max title rune-width, capping the pad at 60 columns, and padding with the existing `padRight`
-- [x] render `<status><8-char ID>  <padded title> <schedule> <tags>`; status cell `"x "` done / `"* "` active / `"  "` otherwise; schedule via `schedule.FormatDisplay`; tags via `VisibleTags`
+- [x] add `FormatSearchResults(w io.Writer, tasks []model.Task, now time.Time, layout string)` computing the max title rune-width, capping the pad at 60 columns, and padding with the existing `padRight` (signature superseded — see Deviations)
+- [x] render `<status><8-char ID>  <padded title> <schedule> <tags>` (ID width superseded — see Deviations); status cell `"x "` done / `"* "` active / `"  "` otherwise; schedule via `schedule.FormatDisplay`; tags via `VisibleTags`
 - [x] print `No matches.` for an empty slice
 - [x] write tests: title never truncated (include a title longer than 40 runes and assert it appears in full), a >60-rune title does not widen other rows, columns align across mixed title lengths, done-beats-active precedence in the status cell, empty slice message, reserved `active` tag filtered from the tag cell
 - [x] write a layout-sensitivity test mirroring `table_test.go:455` (`TestFormatTasks_ISOScheduleRendersInConfiguredLayout`) — stored ISO schedules must render in the configured layout
@@ -204,7 +210,7 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 
 - [x] create `newSearchCmd()` with `Use: "search <query>"`, `Args: cobra.MinimumNArgs(1)` joining args with a space, flags `-n/--limit` (default 10, clamp `< 1` to default) and `-d/--done` (include completed)
 - [x] load tasks via `store.List` — `ListOptions{Status: "open"}` by default, no status filter when `--done`
-- [x] build `search.NewIndex(tasks)`, call `Rank(query, limit)`, map results to `[]model.Task`, print via `display.FormatSearchResults` with `config.DateFormat()`
+- [x] build `search.NewIndex(tasks)`, call `Rank(query, limit)`, map results to `[]model.Task`, print via `display.FormatSearchResults` with `config.DateFormat()` (entry point superseded — see Deviations)
 - [x] register with `rootCmd.AddCommand(newSearchCmd())` in `cmd/root.go`
 - [x] write tests following `cmd/ls_test.go`: query matches title, query matches body, title outranks body-only, multi-word unquoted query, `--limit` truncates, `-n 0` falls back to 10 rather than dumping everything, `--done` includes completed while default excludes them, no-match prints `No matches.`, long title survives untruncated
 - [x] run `go test ./cmd/` — must pass
@@ -248,6 +254,7 @@ to 69 runes). The real backlog at `~/.monolog` was never read or written.
 - [x] TUI fuzzy search (`/`) behaves identically to before the refactor — ranking order, highlighting (including multibyte titles), Enter-commits-to-task, Esc-is-a-no-op
   - **Verified by the test suite, not by hand** — the interactive TUI cannot be driven from this environment. `go test -run TestSearch ./internal/tui/` = **32 pass / 0 fail**, covering ranking order (`TypingRerunsQueryAndChangesResults`), Enter-commits (`CommitScheduleViewFocusesTargetTab`, `CommitDoneTaskSwitchesToDoneTab`, `CommitTagView*`), Esc-is-a-no-op (`EscKeepsActiveTabAndListCursor`, `EscClosesSearchMode`), and the two ported multibyte coupling tests (`HighlightMultibyteTitleRoundTrips`, `HighlightCaseInsensitiveMultibyteRoundTrips`). `./internal/search/` adds 14 more covering the ranker invariants (defensive copy, no pre-lowercasing, nil receiver).
 - [x] ranking is identical between TUI and CLI **for the same task set** — compare against `search --done`, since the TUI haystack is open+done (`model.go:831`) while the CLI defaults to open-only
+  - **Qualified as shipped:** this holds for **single-word queries**, which is what both mirrored tests assert. Multi-word CLI queries deliberately rank differently — they go through `search.Index.RankTerms` rather than `Rank`; see Deviations.
   - Pinned by two new mirrored tests rather than left to reasoning: `cmd.TestSearchCommand_DoneRankingMatchesSharedIndex` (CLI `--done` output order == `search.NewIndex(store.List(ListOptions{})).Rank(...)`) and `tui.TestSearch_RankingMatchesSharedIndexOverStoreList` (overlay results == same shared index, asserting IDs *and* scores). Both sides reconstruct the haystack from `store.List(ListOptions{})`, so they meet in the middle.
   - Both tests were mutation-checked: reversing the CLI result order fails the first; filtering done tasks out of `openSearch` fails the second.
 - [x] `--done` includes completed tasks; default excludes them
@@ -313,3 +320,18 @@ tagged `claude, infra`.
 
 **Queue health:**
 - After a few weeks, run `monolog ls -a --tag claude -s someday` and judge signal-to-noise. If the queue is full of items you delete on sight, the bar in the skill is too low — tighten it there rather than reinstating a write cap.
+
+## Deviations from this plan as executed
+
+Recorded after the fact. Everything above is left as originally written — plan
+files in this repo are point-in-time records, and rewriting a spec to match its
+outcome erases the reasoning that produced the change.
+
+- **`(*Index).RankTerms` — an entire second ranking entry point — was added during review and appears nowhere in the plan above.** It exists because `search "telegram week"` and `search "week telegram"` returned different row sets at `-n 1`: `sahilm/fuzzy` matches a phrase as one ordered subsequence, spaces included, which costs recall (the words must appear in that order) and precision (a short word is an ordered subsequence of almost any sentence). Multi-word CLI queries now rank by **term-hit count using exact case-insensitive substring matching**. That is an explicit trade of **fuzzy tolerance for precision**: a multi-word query no longer forgives typos or partial words, and a task containing none of the terms is dropped outright. Single-word queries still delegate to `Rank`. Full rationale on `search.Index.RankTerms`.
+- **`allowed-tools` went from bare `Bash` to six scoped `Bash(monolog <sub> *)` grants.** The field *pre-approves* the listed calls rather than restricting anything, so a bare grant would have waived the permission prompt for every shell command while the skill is loaded. (Also corrected inline under "Skill frontmatter description".)
+- **Search ID width 8 → 12 (`searchIDWidth`).** A ULID's first 10 Crockford characters carry the 48-bit millisecond timestamp, so an 8-character prefix collides for tasks created inside the same ~256 ms window — which broke the documented search-then-`note <id>` loop the skill leans on. (Also corrected inline under `display.FormatSearchResults`.)
+- **`FormatSearchResults` dropped its `now time.Time` parameter.** The dates column is not rendered, so nothing read it, and nothing dispatches over these formatters. (Also corrected inline.)
+- **Blank and whitespace-only queries are now rejected with exit 1.** `cobra.MinimumNArgs(1)` is satisfied by `""`, and `Rank("")` means "every task by `CreatedAt` desc" — ten arbitrary rows handed to a caller doing deduplication. (Also corrected inline under `monolog search`.)
+- **`NewIndex` copies the caller's slice** rather than merely documenting that callers must not mutate what they passed in. The TUI hands over the live `Model.allTasks`, so the copy is what makes the snapshot real. It is shallow: `Tags` still shares a backing array, documented in `rank.go` rather than defended with a deep copy.
+- **The defensive-copy note was corrected rather than carried across.** Verified against the pinned `sahilm/fuzzy` v0.1.1: `FindFromNoSort` recycles its index buffer only after a *failed* candidate and nils it after a successful one, so two returned matches never alias. The copy is kept as forward-insurance only, and **no test can exercise it** — that is documented on the copy in `rank.go` instead of being pinned by an unfalsifiable test.
+- **The doc-drift test was extended beyond the plan's scope.** Task 5 scoped the cobra cross-check to `SKILL.md`; as shipped it also covers `docs/claude-skill/README.md` and the root `README.md`, which is the reference documentation for the whole CLI and rots for exactly the same reasons.

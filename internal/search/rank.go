@@ -282,6 +282,9 @@ type termCandidate struct {
 //     and it is what removes the subsequence noise above;
 //  4. sort by term-hit count desc, then title hits desc, then CreatedAt desc.
 //
+// The title-hit key orders only *within* a term-hit tier, so a task matching
+// three terms in its body alone still outranks one matching two in its title.
+//
 // Every one of those keys is a function of the *set* of query words, so the
 // returned rows and their order are identical however the words are ordered
 // (and however much whitespace separates them). That order-independence is a
@@ -298,6 +301,10 @@ type termCandidate struct {
 // second set of semantics: a query that tokenizes to nothing (blank — the
 // command rejects that before it gets here) and one whose every word is a
 // single rune, where there is nothing left to count.
+//
+// The rule lives here rather than in cmd/ because it reads the already-derived
+// titles/bodies the index holds — in cmd/ it would re-derive them per call, and
+// cmd/ is meant to be argument parsing plus delegation.
 //
 // Results built here carry no Score or TitleHit; see Result. Ranking is over
 // the whole index, so limit only truncates the finished list, and limit <= 0

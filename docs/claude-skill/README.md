@@ -10,6 +10,8 @@ This is deliberately **not** plan tracking. Claude manages plan files perfectly 
 
 One thing that looks like a typo but is not: the frontmatter trigger phrases match both "backlog" and "mlog" ("put that in mlog", "anything in mlog about X"). `mlog` is a common shell alias for the `monolog` binary, and people who alias it say it out loud too. Every command in the skill body is spelled `monolog` — only the trigger phrases match the short form.
 
+That is part of a deliberate choice to ship exactly **one** skill file rather than a public variant plus a personal one: the shipped `SKILL.md` is generic throughout — no alias, no machine-specific paths, no dev-binary location — so it installs and runs unmodified anywhere.
+
 ## The quarantine convention
 
 Spam is the obvious risk of letting an agent write to your backlog, so unprompted writes are fenced off:

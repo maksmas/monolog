@@ -252,6 +252,9 @@ func FormatTasks(w io.Writer, tasks []model.Task, now time.Time, layout string) 
 // layout is the configured date format (Go layout), e.g. config.DateFormat();
 // stored ISO schedules are rendered through it.
 // When tasks is empty it writes "No matches.\n".
+//
+// It takes []model.Task rather than []search.Result so internal/display gains
+// no dependency on internal/search.
 func FormatSearchResults(w io.Writer, tasks []model.Task, layout string) {
 	if len(tasks) == 0 {
 		fmt.Fprintln(w, "No matches.")
