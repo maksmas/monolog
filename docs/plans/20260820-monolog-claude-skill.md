@@ -206,23 +206,23 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - Create: `cmd/skill_test.go`
 - Symlink (local, not a repo change): `~/.claude/skills/monolog/SKILL.md` → `docs/claude-skill/SKILL.md`
 
-- [ ] create `docs/claude-skill/SKILL.md` with frontmatter `name: monolog`, `allowed-tools: Bash`, and the `description` **verbatim** from Technical Details
-- [ ] write it generically — `monolog` throughout, no `mlog` alias, no absolute dev-binary path, nothing specific to one machine
-- [ ] document the two write modes — unprompted `monolog add "<title>" --tags claude -s someday --body "<where + why>"`; explicit ask `monolog add "<title>" --tags claude` plus whatever schedule/tags the user named. Note `--tags` is a single comma-separated string, not repeatable, so tags must be merged (`--tags claude,domains`). The `claude` tag is pure provenance and goes on **every** write; `-s someday` alone carries triage state
-- [ ] document dedupe: run `monolog search "<keywords>"` before every unprompted write; on a near-duplicate do **not** file — use `monolog note <id> "<new detail>"` instead. Same issue plus new information is a note, not a second task
-- [ ] document the bar — files: outlives the session, concretely actionable, annoying to lose. Does not file: anything fixed in-session, observations with no action, vague "maybe refactor X someday", and explicitly anything already captured in a plan file. State that there is **no write cap** — dedupe and the bar are the only guards
-- [ ] document conventions — title imperative, self-contained, readable cold in three weeks; body 1-3 lines as `repo/path.go:142` plus one sentence on why it was deferred; repo name goes in the **body, not a tag**, because the TUI's tag view turns every tag into a tab
-- [ ] warn about the auto-tag rule: a title starting `"<existing-tag>: "` silently gains that tag via `model.ParseTitleTag` (`cmd/add.go:83`), so a title like `"monolog: add search command"` can pick up a second tag despite an explicit `--tags`. Prefer titles that don't lead with `word:`
-- [ ] document read commands: `monolog search`, `monolog ls`, `monolog ls --active`, `monolog ls -a --tag claude -s someday`, `monolog show <id-or-initials>`, `monolog log`; call out that `ls -a` means "all schedules, still open" while `search -d` means "include done" — different axes, easy to conflate
-- [ ] note that identifiers resolve by title initials as well as ULID prefix (`monolog show flb` → "Fix login bug")
-- [ ] document prohibitions: only `add` and `note` are ever unprompted — `done`/`edit`/`rm`/`mv` need an explicit instruction in the current conversation, and fixing something does **not** license marking the matching task done; never `monolog sync` (state the consequence — captures stay local until the user syncs, so they don't reach other devices immediately); never bare `monolog` (TUI), `init`, `email`, or `telegram`; if `monolog` is missing from PATH, stop and say so rather than installing it
-- [ ] create `docs/claude-skill/README.md` explaining what the skill does, the quarantine convention, and install: symlink (`ln -s "$PWD/docs/claude-skill/SKILL.md" ~/.claude/skills/monolog/SKILL.md`) to track repo updates, or copy for a pinned install. Mirror the tone of `docs/raycast/README.md`
-- [ ] create `cmd/skill_test.go` following `cmd/telegram_deploy_test.go`: resolve repo root via `runtime.Caller(0)`, assert both `docs/claude-skill/` files exist, assert `SKILL.md` frontmatter parses as YAML with non-empty `name` and `description`
-- [ ] extend that test to cross-check documentation against the live CLI: extract every `monolog <subcommand>` occurrence from `SKILL.md`, assert each resolves against `NewRootCmd().Commands()`, and assert every documented `--flag`/`-x` exists on the command it is shown with (`cmd.Flags().Lookup` / `ShorthandLookup`). This is what stops the shipped skill from rotting when a flag is renamed
-- [ ] run `go test ./cmd/` — must pass
-- [ ] install locally: `mkdir -p ~/.claude/skills/monolog && ln -s "$PWD/docs/claude-skill/SKILL.md" ~/.claude/skills/monolog/SKILL.md`
-- [ ] verify the CLI paths by hand: `monolog search "test"`, then one `monolog add ... --tags claude -s someday`, confirm it lands as documented, then `monolog rm` the test task
-- [ ] verify the **skill itself loads**: start a fresh Claude Code session and confirm `monolog` appears in the available-skills list (frontmatter parse check — distinct from the CLI check above)
+- [x] create `docs/claude-skill/SKILL.md` with frontmatter `name: monolog`, `allowed-tools: Bash`, and the `description` **verbatim** from Technical Details
+- [x] write it generically — `monolog` throughout, no `mlog` alias, no absolute dev-binary path, nothing specific to one machine
+- [x] document the two write modes — unprompted `monolog add "<title>" --tags claude -s someday --body "<where + why>"`; explicit ask `monolog add "<title>" --tags claude` plus whatever schedule/tags the user named. Note `--tags` is a single comma-separated string, not repeatable, so tags must be merged (`--tags claude,domains`). The `claude` tag is pure provenance and goes on **every** write; `-s someday` alone carries triage state
+- [x] document dedupe: run `monolog search "<keywords>"` before every unprompted write; on a near-duplicate do **not** file — use `monolog note <id> "<new detail>"` instead. Same issue plus new information is a note, not a second task
+- [x] document the bar — files: outlives the session, concretely actionable, annoying to lose. Does not file: anything fixed in-session, observations with no action, vague "maybe refactor X someday", and explicitly anything already captured in a plan file. State that there is **no write cap** — dedupe and the bar are the only guards
+- [x] document conventions — title imperative, self-contained, readable cold in three weeks; body 1-3 lines as `repo/path.go:142` plus one sentence on why it was deferred; repo name goes in the **body, not a tag**, because the TUI's tag view turns every tag into a tab
+- [x] warn about the auto-tag rule: a title starting `"<existing-tag>: "` silently gains that tag via `model.ParseTitleTag` (`cmd/add.go:83`), so a title like `"monolog: add search command"` can pick up a second tag despite an explicit `--tags`. Prefer titles that don't lead with `word:`
+- [x] document read commands: `monolog search`, `monolog ls`, `monolog ls --active`, `monolog ls -a --tag claude -s someday`, `monolog show <id-or-initials>`, `monolog log`; call out that `ls -a` means "all schedules, still open" while `search -d` means "include done" — different axes, easy to conflate
+- [x] note that identifiers resolve by title initials as well as ULID prefix (`monolog show flb` → "Fix login bug")
+- [x] document prohibitions: only `add` and `note` are ever unprompted — `done`/`edit`/`rm`/`mv` need an explicit instruction in the current conversation, and fixing something does **not** license marking the matching task done; never `monolog sync` (state the consequence — captures stay local until the user syncs, so they don't reach other devices immediately); never bare `monolog` (TUI), `init`, `email`, or `telegram`; if `monolog` is missing from PATH, stop and say so rather than installing it
+- [x] create `docs/claude-skill/README.md` explaining what the skill does, the quarantine convention, and install: symlink (`ln -s "$PWD/docs/claude-skill/SKILL.md" ~/.claude/skills/monolog/SKILL.md`) to track repo updates, or copy for a pinned install. Mirror the tone of `docs/raycast/README.md`
+- [x] create `cmd/skill_test.go` following `cmd/telegram_deploy_test.go`: resolve repo root via `runtime.Caller(0)`, assert both `docs/claude-skill/` files exist, assert `SKILL.md` frontmatter parses as YAML with non-empty `name` and `description`
+- [x] extend that test to cross-check documentation against the live CLI: extract every `monolog <subcommand>` occurrence from `SKILL.md`, assert each resolves against `NewRootCmd().Commands()`, and assert every documented `--flag`/`-x` exists on the command it is shown with (`cmd.Flags().Lookup` / `ShorthandLookup`). This is what stops the shipped skill from rotting when a flag is renamed
+- [x] run `go test ./cmd/` — must pass
+- [x] install locally (deferred - worktree run; symlink after merge, see Post-Completion)
+- [x] verify the CLI paths by hand: `monolog search "test"`, then one `monolog add ... --tags claude -s someday`, confirm it lands as documented, then `monolog rm` the test task
+- [x] verify skill loads (skipped - not automatable; requires fresh session after install)
 
 ### Task 6: Verify acceptance criteria
 
@@ -248,6 +248,33 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 ## Post-Completion
 
 *No checkboxes — requires observation across future sessions.*
+
+**Deferred from Task 5 (run these after merging):**
+
+Task 5 ran in a temporary git worktree, so the local install step was skipped —
+a symlink into the worktree would dangle the moment it is removed, and a
+dangling skill file can break session startup. After merging to `main`, install
+from the real checkout:
+
+```sh
+mkdir -p ~/.claude/skills/monolog
+ln -s /Users/mmaksmas/IdeaProjects/monolog/docs/claude-skill/SKILL.md ~/.claude/skills/monolog/SKILL.md
+```
+
+Then start a **fresh** Claude Code session and confirm `monolog` appears in the
+available-skills list — that is the frontmatter-parse check, which cannot be
+automated from inside a running session. (`cmd/skill_test.go` already asserts
+the frontmatter parses as YAML with a non-empty `name`/`description`, so a hard
+parse failure would have shown up in CI; the fresh-session check confirms
+Claude Code itself picks the file up.)
+
+The CLI half of that verification *was* done in Task 5, against a throwaway
+`MONOLOG_DIR` rather than the real backlog: `init`, `add --tags claude -s
+someday --body`, `add --tags claude,infra -s week`, `ls`, `ls -a`,
+`ls --active`, `ls -a --tag claude -s someday`, `search`, `search -n 25 -d`,
+`note` (resolved by title initials), `show`, `log`, `rm`. Behaviour matched the
+skill, including the auto-tag gotcha — `add "infra: …" --tags claude` landed
+tagged `claude, infra`.
 
 **Manual verification of the skill:**
 - Confirm the skill loads on an explicit ask ("add this to my backlog") — this path should be reliable.
