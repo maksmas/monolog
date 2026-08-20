@@ -19,6 +19,7 @@ import (
 	"github.com/maksmas/monolog/internal/git"
 	"github.com/maksmas/monolog/internal/model"
 	"github.com/maksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/search"
 	"github.com/maksmas/monolog/internal/store"
 )
 
@@ -8185,8 +8186,8 @@ func TestSearch_SlashEntersSearchMode(t *testing.T) {
 	if m.mode != modeSearch {
 		t.Fatalf("mode after '/' = %v, want modeSearch", m.mode)
 	}
-	if len(m.search.haystack) != 2 {
-		t.Errorf("haystack size = %d, want 2 (open + done tasks)", len(m.search.haystack))
+	if m.search.index.Len() != 2 {
+		t.Errorf("index size = %d, want 2 (open + done tasks)", m.search.index.Len())
 	}
 	// Initial rank with empty query should return all docs (sorted by CreatedAt desc).
 	if len(m.search.results) != 2 {
@@ -8211,8 +8212,8 @@ func TestSearch_EscClosesSearchMode(t *testing.T) {
 	if m.mode != modeNormal {
 		t.Errorf("mode after esc = %v, want modeNormal", m.mode)
 	}
-	if len(m.search.haystack) != 0 {
-		t.Errorf("haystack should be cleared on close, got len=%d", len(m.search.haystack))
+	if m.search.index.Len() != 0 {
+		t.Errorf("index should be cleared on close, got len=%d", m.search.index.Len())
 	}
 	if len(m.search.results) != 0 {
 		t.Errorf("results should be cleared on close, got len=%d", len(m.search.results))
@@ -8272,7 +8273,7 @@ func TestSearch_TypingRerunsQueryAndChangesResults(t *testing.T) {
 	}
 	// Confirm the matched IDs are the login-bearing tasks, not "write docs".
 	for _, r := range m.search.results {
-		id := m.search.haystack[r.docIdx].task.ID
+		id := r.Task.ID
 		if id == "01B" {
 			t.Errorf("result includes non-matching task %q", id)
 		}
@@ -8488,8 +8489,8 @@ func TestSearch_CtrlCClosesLikeEsc(t *testing.T) {
 	if m.mode != modeNormal {
 		t.Errorf("mode after ctrl+c = %v, want modeNormal", m.mode)
 	}
-	if len(m.search.haystack) != 0 {
-		t.Errorf("haystack not cleared after ctrl+c, len = %d", len(m.search.haystack))
+	if m.search.index.Len() != 0 {
+		t.Errorf("index not cleared after ctrl+c, len = %d", m.search.index.Len())
 	}
 }
 
@@ -8537,9 +8538,9 @@ func TestSearch_CommitScheduleViewFocusesTargetTab(t *testing.T) {
 		t.Fatalf("results empty after typing query")
 	}
 	// The first result should be the Tomorrow task (title match).
-	firstDoc := m.search.haystack[m.search.results[0].docIdx].task
-	if firstDoc.ID != "01B" {
-		t.Fatalf("first result = %q, want 01B (tomorrow special)", firstDoc.ID)
+	firstTask := m.search.results[0].Task
+	if firstTask.ID != "01B" {
+		t.Fatalf("first result = %q, want 01B (tomorrow special)", firstTask.ID)
 	}
 	m, _ = key(t, m, "enter")
 
@@ -9050,7 +9051,7 @@ func TestSearch_RenderSearchTinyTerminalFitsBounds(t *testing.T) {
 }
 
 // TestSearch_CommitAfterAsyncAllTasksMutation simulates a taskSavedMsg arriving
-// while the search overlay is open. The overlay's haystack snapshot must
+// while the search overlay is open. The overlay's search.Index snapshot must
 // survive the reload, and committing the selection must still focus the task
 // via the search-time snapshot (not the mutated allTasks). The focus target
 // is the task as it exists *after* reload, via focusTaskByID.
@@ -9071,11 +9072,11 @@ func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
 	if len(m.search.results) == 0 {
 		t.Fatalf("precondition: results empty after typing 'beta'")
 	}
-	snapshotSize := len(m.search.haystack)
+	snapshotSize := m.search.index.Len()
 
 	// Simulate an unrelated async mutation completing (e.g. a prior 'c' that
 	// created a new task resolves while modeSearch is open). The taskSavedMsg
-	// reloads allTasks and tab lists but must not touch the search haystack.
+	// reloads allTasks and tab lists but must not touch the search index.
 	id, err := model.NewID()
 	if err != nil {
 		t.Fatalf("model.NewID: %v", err)
@@ -9097,9 +9098,9 @@ func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
 	if m.mode != modeSearch {
 		t.Errorf("mode after taskSavedMsg = %v, want modeSearch (still open)", m.mode)
 	}
-	// Haystack is a snapshot from openSearch and must not have grown.
-	if got := len(m.search.haystack); got != snapshotSize {
-		t.Errorf("haystack len after async save = %d, want %d (snapshot invariant)", got, snapshotSize)
+	// The index is a snapshot from openSearch and must not have grown.
+	if got := m.search.index.Len(); got != snapshotSize {
+		t.Errorf("index len after async save = %d, want %d (snapshot invariant)", got, snapshotSize)
 	}
 	// allTasks, on the other hand, reflects the newly-created task.
 	if got := len(m.allTasks); got != 3 {
@@ -9107,7 +9108,7 @@ func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
 	}
 
 	// Commit the selection — Enter on the "beta" match must still focus the
-	// target task via the stable haystack snapshot.
+	// target task via the stable index snapshot.
 	m, _ = key(t, m, "enter")
 	if m.mode != modeNormal {
 		t.Errorf("mode after commit = %v, want modeNormal", m.mode)
@@ -9124,6 +9125,62 @@ func TestSearch_CommitAfterAsyncAllTasksMutation(t *testing.T) {
 	selItem, ok := items[sel].(item)
 	if !ok || selItem.task.ID != "01B" {
 		t.Errorf("selected task after async-mutated commit = %+v, want ID 01B", selItem.task)
+	}
+}
+
+// --- search.Index ↔ highlightMatches coupling ------------------------------
+//
+// These two tests are the only ones that exercise internal/search and
+// internal/tui together. Each package can pass its own suite while disagreeing
+// about what a TitleHit offset means (byte vs. rune index, original-case vs.
+// folded string), and the symptom — highlights landing on the wrong rune, or
+// runes dropped from a multibyte title — is invisible to either suite alone.
+// Do not delete them when refactoring either side.
+
+// TestSearch_HighlightMultibyteTitleRoundTrips ranks a title containing a
+// multi-byte rune through search.Index and feeds the resulting offsets into
+// highlightMatches. "café" is 5 bytes (c=1, a=1, f=1, é=2), so a match on "é"
+// must report byte offset 3. An implementation that ranked a lowercased copy
+// and highlighted the original would misalign here.
+func TestSearch_HighlightMultibyteTitleRoundTrips(t *testing.T) {
+	ix := search.NewIndex([]model.Task{
+		{ID: "CAFE", Title: "café", Status: "open", CreatedAt: "2026-04-01T10:00:00Z"},
+	})
+	got := ix.Rank("é", 0)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(got))
+	}
+	if len(got[0].TitleHit) != 1 {
+		t.Fatalf("expected 1 title hit, got %v", got[0].TitleHit)
+	}
+	if got[0].TitleHit[0] != 3 {
+		t.Errorf("TitleHit[0] = %d, want 3 (byte offset of 'é' in 'café')", got[0].TitleHit[0])
+	}
+	// Rendering with those offsets must not drop runes or inject stray bytes.
+	styled := highlightMatches("café", got[0].TitleHit)
+	if plain := ansi.Strip(styled); plain != "café" {
+		t.Errorf("highlightMatches round-trip: got %q, want %q", plain, "café")
+	}
+}
+
+// TestSearch_HighlightCaseInsensitiveMultibyteRoundTrips confirms a lowercase
+// query still matches a mixed-case multibyte title, that the offsets are
+// measured against the original-case title, and that highlighting them
+// round-trips through ansi.Strip.
+func TestSearch_HighlightCaseInsensitiveMultibyteRoundTrips(t *testing.T) {
+	ix := search.NewIndex([]model.Task{
+		{ID: "CAFE", Title: "Café latte", Status: "open", CreatedAt: "2026-04-01T10:00:00Z"},
+	})
+	got := ix.Rank("café", 0)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 result for lowercase query, got %d", len(got))
+	}
+	if len(got[0].TitleHit) == 0 || got[0].TitleHit[0] != 0 {
+		t.Errorf("expected first hit at byte offset 0, got %v", got[0].TitleHit)
+	}
+	styled := highlightMatches("Café latte", got[0].TitleHit)
+	if plain := ansi.Strip(styled); plain != "Café latte" {
+		t.Errorf("highlightMatches round-trip: got %q, want %q", plain, "Café latte")
 	}
 }
 

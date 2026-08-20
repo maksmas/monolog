@@ -25,6 +25,7 @@ import (
 	"github.com/maksmas/monolog/internal/ordering"
 	"github.com/maksmas/monolog/internal/recurrence"
 	"github.com/maksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/search"
 	"github.com/maksmas/monolog/internal/store"
 )
 
@@ -99,17 +100,16 @@ var defaultTabs = []tab{
 }
 
 // searchState holds the per-modal state for the fuzzy-search overlay.
-// haystack is captured once at openSearch time along with parallel titles/
-// bodies slices that sahilm/fuzzy consumes, so the ranker does not re-allocate
-// on every keystroke. results is re-ranked on every keystroke. cursor is the
-// currently-highlighted index into results.
+// index is a snapshot of the task set built once at openSearch time, so the
+// ranker does not re-derive its title/body slices on every keystroke; it is
+// nil while the overlay is closed. results is re-ranked on every keystroke and
+// carries the matched task on each entry. cursor is the currently-highlighted
+// index into results.
 type searchState struct {
-	input    textinput.Model
-	haystack []searchDoc
-	titles   []string
-	bodies   []string
-	results  []searchResult
-	cursor   int
+	input   textinput.Model
+	index   *search.Index
+	results []search.Result
+	cursor  int
 }
 
 // searchInputReserve is the column budget taken out of the total width for the

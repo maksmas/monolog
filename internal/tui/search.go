@@ -13,6 +13,7 @@ import (
 	"github.com/maksmas/monolog/internal/display"
 	"github.com/maksmas/monolog/internal/model"
 	"github.com/maksmas/monolog/internal/schedule"
+	"github.com/maksmas/monolog/internal/search"
 )
 
 // searchResultLimit caps the number of ranked results returned each keystroke.
@@ -27,41 +28,30 @@ const searchPageSize = 10
 
 // openSearch enters the fuzzy-search overlay. It snapshots the current
 // in-memory task list (Model.allTasks, kept current by every mutation via
-// reloadAllTasks) into searchDoc wrappers with parallel titles/bodies slices
-// for the ranker, resets input/cursor state, and seeds the results with an
-// empty-query rank so the list starts populated. Using the cached slice
-// avoids a fresh disk scan on every "/" press.
+// reloadAllTasks) into a search.Index, resets input/cursor state, and seeds
+// the results with an empty-query rank so the list starts populated. Using the
+// cached slice avoids a fresh disk scan on every "/" press, and building the
+// index once keeps per-keystroke ranking allocation-free.
 func (m *Model) openSearch() {
-	tasks := m.allTasks
-	docs := make([]searchDoc, len(tasks))
-	titles := make([]string, len(tasks))
-	bodies := make([]string, len(tasks))
-	for i, t := range tasks {
-		docs[i] = searchDoc{task: t}
-		titles[i] = t.Title
-		bodies[i] = t.Body
-	}
 	m.mode = modeSearch
-	m.search.haystack = docs
-	m.search.titles = titles
-	m.search.bodies = bodies
+	m.search.index = search.NewIndex(m.allTasks)
 	m.search.cursor = 0
 	m.search.input.SetValue("")
 	m.search.input.Focus()
-	m.search.results = rankSearch("", docs, titles, bodies, searchResultLimit)
+	m.search.results = m.search.index.Rank("", searchResultLimit)
 	m.recomputeLayout()
 }
 
 // closeSearch leaves the fuzzy-search overlay and returns to normal mode. It
-// releases the haystack/results slices so they can be garbage-collected and
-// leaves activeTab / list cursor untouched so Esc is a true no-op.
+// releases the index and results so the snapshotted task set can be
+// garbage-collected, and leaves activeTab / list cursor untouched so Esc is a
+// true no-op. A nil index is a valid empty index, so the render/count paths
+// stay safe until the overlay is reopened.
 func (m *Model) closeSearch() {
 	m.mode = modeNormal
 	m.search.input.Blur()
 	m.search.input.SetValue("")
-	m.search.haystack = nil
-	m.search.titles = nil
-	m.search.bodies = nil
+	m.search.index = nil
 	m.search.results = nil
 	m.search.cursor = 0
 }
@@ -101,7 +91,7 @@ func (m *Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.search.input, cmd = m.search.input.Update(msg)
 	if m.search.input.Value() != before {
-		m.search.results = rankSearch(m.search.input.Value(), m.search.haystack, m.search.titles, m.search.bodies, searchResultLimit)
+		m.search.results = m.search.index.Rank(m.search.input.Value(), searchResultLimit)
 		m.clampSearchCursor()
 	}
 	return m, cmd
@@ -153,11 +143,7 @@ func (m *Model) commitSearch() {
 	if idx < 0 || idx >= len(m.search.results) {
 		return
 	}
-	docIdx := m.search.results[idx].docIdx
-	if docIdx < 0 || docIdx >= len(m.search.haystack) {
-		return
-	}
-	task := m.search.haystack[docIdx].task
+	task := m.search.results[idx].Task
 	m.closeSearch()
 	m.focusTaskAcrossTabs(task)
 }
@@ -255,7 +241,7 @@ const searchCompactMinHeight = 10
 // repeatedly per frame.
 func (m *Model) renderSearch() string {
 	// Input bar: `> ` + value with a right-aligned "visible/total" counter.
-	total := len(m.search.haystack)
+	total := m.search.index.Len()
 	visible := len(m.search.results)
 	counter := m.styles.searchCountStyle.Render(fmt.Sprintf("%d/%d", visible, total))
 	input := m.search.input.View()
@@ -430,15 +416,14 @@ func resultsWindow(cursor, total, height int) (int, int) {
 // done tasks, bolded matched runes, and a reverse-video wash when selected.
 func (m *Model) renderSearchResultRow(resultIdx, width int) string {
 	res := m.search.results[resultIdx]
-	doc := m.search.haystack[res.docIdx]
-	task := doc.task
+	task := res.Task
 
 	prefix := "  "
 	if task.Status == "done" {
 		prefix = "✓ "
 	}
 
-	title := highlightMatches(task.Title, res.titleHit)
+	title := highlightMatches(task.Title, res.TitleHit)
 	// Truncate after highlighting to keep the byte offsets aligned with the
 	// original title. We budget the styled prefix width out of the total.
 	available := width - lipgloss.Width(prefix)
@@ -461,8 +446,9 @@ func (m *Model) renderSearchResultRow(resultIdx, width int) string {
 }
 
 // highlightMatches bolds the runes at the given byte offsets in s (the offsets
-// sahilm/fuzzy returns in MatchedIndexes). Offsets outside the string or that
-// do not start a rune are skipped defensively.
+// carried on search.Result.TitleHit, measured against the original-case
+// title). Offsets outside the string or that do not start a rune are skipped
+// defensively.
 func highlightMatches(s string, hits []int) string {
 	if len(hits) == 0 {
 		return s
@@ -526,8 +512,7 @@ func (m *Model) renderSearchPreview(width, height int) string {
 		return m.styles.searchPreviewBorderStyle.Width(width).Height(height).Render(ph)
 	}
 
-	res := m.search.results[m.search.cursor]
-	task := m.search.haystack[res.docIdx].task
+	task := m.search.results[m.search.cursor].Task
 
 	title := searchPreviewTitleStyle.Render(truncateTitle(task.Title, innerWidth))
 	var body string
@@ -547,8 +532,7 @@ func (m *Model) renderSearchMeta() string {
 	if len(m.search.results) == 0 {
 		return m.styles.searchMetaStyle.Render(" ")
 	}
-	res := m.search.results[m.search.cursor]
-	task := m.search.haystack[res.docIdx].task
+	task := m.search.results[m.search.cursor].Task
 	bucket := schedule.Bucket(task.Schedule, time.Now())
 	created := display.FormatRelDate(time.Now(), task.CreatedAt, config.DateFormat())
 	parts := []string{bucket, task.Status}

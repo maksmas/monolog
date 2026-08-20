@@ -157,18 +157,18 @@ The explicit proactive permission, the quoted trigger phrases, and the closing c
 - Delete: `internal/tui/search_match.go`
 - Delete: `internal/tui/search_match_test.go`
 
-- [ ] in `model.go:106-113`, replace `haystack`/`titles`/`bodies` with `index *search.Index` and retype `results` to `[]search.Result`
-- [ ] `openSearch` (`search.go:36-51`): replace the three-slice build with `m.search.index = search.NewIndex(m.allTasks)` and seed `results` via `m.search.index.Rank("", searchResultLimit)`
-- [ ] `closeSearch` (`search.go:62-64`): nil out `index` instead of the three slices
-- [ ] `updateSearch` (`search.go:104`): call `m.search.index.Rank(query, searchResultLimit)`
-- [ ] `commitSearch` (`search.go:156-160`): read `res.Task` directly and delete the now-unreachable `docIdx` bounds check
-- [ ] update remaining reads at `search.go:258` (→ `m.search.index.Len()`), `:433`, `:530`, `:551` (→ `res.Task`)
-- [ ] rewrite the doc comments the migration invalidates: `model.go:101-105` (`searchState`), `search.go:28-33` (`openSearch`), `search.go:55-57` (`closeSearch`), and the "haystack" references in `model_test.go:9053`, `:9078`, `:9110`
-- [ ] **port the two `highlightMatches` coupling tests into `model_test.go`** (from deleted `search_match_test.go:222` / `:250`): rank a multibyte title through `search.Index`, feed `res.TitleHit` into `highlightMatches`, assert the `ansi.Strip` round-trip. This is the only test that catches `internal/search` and `internal/tui` disagreeing about byte offsets
-- [ ] delete `internal/tui/search_match.go` and `internal/tui/search_match_test.go`
-- [ ] update all **10 occurrences across 7 sites** of `m.search.haystack` in `model_test.go` (`:8188`, `:8189`, `:8214`, `:8215`, `:8275`, `:8491`, `:8492`, `:8540`, `:9074`, `:9101`) to use `index.Len()` / `r.Task`; keep every assertion's *intent* unchanged — these are the regression net for the overlay
-- [ ] confirm `internal/tui` no longer imports `sahilm/fuzzy` (it becomes an `internal/search`-only dependency; Task 7 updates the docs)
-- [ ] run `go build ./... && go test ./internal/tui/ && go vet ./...` — must pass before Task 3
+- [x] in `model.go:106-113`, replace `haystack`/`titles`/`bodies` with `index *search.Index` and retype `results` to `[]search.Result`
+- [x] `openSearch` (`search.go:36-51`): replace the three-slice build with `m.search.index = search.NewIndex(m.allTasks)` and seed `results` via `m.search.index.Rank("", searchResultLimit)`
+- [x] `closeSearch` (`search.go:62-64`): nil out `index` instead of the three slices
+- [x] `updateSearch` (`search.go:104`): call `m.search.index.Rank(query, searchResultLimit)`
+- [x] `commitSearch` (`search.go:156-160`): read `res.Task` directly and delete the now-unreachable `docIdx` bounds check
+- [x] update remaining reads at `search.go:258` (→ `m.search.index.Len()`), `:433`, `:530`, `:551` (→ `res.Task`)
+- [x] rewrite the doc comments the migration invalidates: `model.go:101-105` (`searchState`), `search.go:28-33` (`openSearch`), `search.go:55-57` (`closeSearch`), and the "haystack" references in `model_test.go:9053`, `:9078`, `:9110`
+- [x] **port the two `highlightMatches` coupling tests into `model_test.go`** (from deleted `search_match_test.go:222` / `:250`): rank a multibyte title through `search.Index`, feed `res.TitleHit` into `highlightMatches`, assert the `ansi.Strip` round-trip. This is the only test that catches `internal/search` and `internal/tui` disagreeing about byte offsets
+- [x] delete `internal/tui/search_match.go` and `internal/tui/search_match_test.go`
+- [x] update all **10 occurrences across 7 sites** of `m.search.haystack` in `model_test.go` (`:8188`, `:8189`, `:8214`, `:8215`, `:8275`, `:8491`, `:8492`, `:8540`, `:9074`, `:9101`) to use `index.Len()` / `r.Task`; keep every assertion's *intent* unchanged — these are the regression net for the overlay
+- [x] confirm `internal/tui` no longer imports `sahilm/fuzzy` (it becomes an `internal/search`-only dependency; Task 7 updates the docs)
+- [x] run `go build ./... && go test ./internal/tui/ && go vet ./...` — must pass before Task 3
 
 ### Task 3: Add `display.FormatSearchResults`
 
