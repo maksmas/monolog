@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -256,22 +257,13 @@ func Sync(repoPath string) (SyncResult, error) {
 	}
 	res.HasRemote = true
 
-	if err := PullRebase(repoPath); err != nil {
-		rebasing, rbErr := IsRebasing(repoPath)
-		if rbErr != nil || !rebasing {
-			return res, fmt.Errorf("pull: %w", err)
-		}
-		n, resErr := ResolveConflicts(repoPath)
-		if resErr != nil {
-			_ = RebaseAbort(repoPath)
-			return res, fmt.Errorf("resolve conflicts: %w", resErr)
-		}
-		if err := RebaseContinue(repoPath); err != nil {
-			_ = RebaseAbort(repoPath)
-			return res, fmt.Errorf("rebase continue: %w", err)
-		}
-		res.Resolved = n
+	// Sync commits pending changes above, so the working tree is already clean
+	// and the rebase does not need an autostash.
+	n, err := pullRebaseResolving(repoPath, false)
+	if err != nil {
+		return res, err
 	}
+	res.Resolved = n
 
 	if err := Push(repoPath); err != nil {
 		return res, fmt.Errorf("push: %w", err)
@@ -407,4 +399,54 @@ func run(dir string, name string, args ...string) error {
 		return fmt.Errorf("%s %v: %w\n%s", name, args, err, out)
 	}
 	return nil
+}
+
+// runOut is run's output-returning, context-aware sibling. The combined output
+// is returned on both the success and the failure path so callers can classify
+// a failure by what git printed (git signals push rejections on stderr with a
+// generic exit code, so there is no status to switch on).
+func runOut(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s %v: %w\n%s", name, args, err, out)
+	}
+	return string(out), nil
+}
+
+// pullRebaseResolving pulls with rebase (autostashing local modifications when
+// autostash is true), auto-resolving task-file conflicts via ResolveConflicts,
+// and returns the number of resolved files. Extracted from Sync so the manual
+// sync path and the automatic push path share identical conflict semantics.
+//
+// Errors are returned already wrapped ("pull: ", "resolve conflicts: ",
+// "rebase continue: ") so callers can surface them verbatim. On a resolution or
+// continue failure the rebase is aborted, leaving the worktree clean.
+//
+// Not context-aware: killing git mid-rebase would leave .git/rebase-merge
+// behind, and nothing in this package recovers from that. Callers' timeouts
+// therefore bound their pushes, not this call.
+func pullRebaseResolving(repoPath string, autostash bool) (int, error) {
+	args := []string{"pull", "--rebase"}
+	if autostash {
+		args = append(args, "--autostash")
+	}
+	if err := run(repoPath, "git", args...); err != nil {
+		rebasing, rbErr := IsRebasing(repoPath)
+		if rbErr != nil || !rebasing {
+			return 0, fmt.Errorf("pull: %w", err)
+		}
+		n, resErr := ResolveConflicts(repoPath)
+		if resErr != nil {
+			_ = RebaseAbort(repoPath)
+			return 0, fmt.Errorf("resolve conflicts: %w", resErr)
+		}
+		if err := RebaseContinue(repoPath); err != nil {
+			_ = RebaseAbort(repoPath)
+			return 0, fmt.Errorf("rebase continue: %w", err)
+		}
+		return n, nil
+	}
+	return 0, nil
 }

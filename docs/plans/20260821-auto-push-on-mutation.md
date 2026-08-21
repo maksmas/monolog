@@ -396,14 +396,14 @@ user submits add modal
 - Modify: `internal/git/git.go`
 - Modify: `internal/git/git_test.go`
 
-- [ ] add `runOut(ctx context.Context, dir, name string, args ...string) (string, error)` — `exec.CommandContext` + `CombinedOutput`, returning the output string alongside the error so callers can classify failures
-- [ ] add private `pullRebaseResolving(repoPath string, autostash bool) (int, error)` containing the `PullRebase` → `IsRebasing` → `ResolveConflicts` → `RebaseContinue` / `RebaseAbort` block lifted from `Sync`, passing `--autostash` when requested
-- [ ] refactor `Sync` to call `pullRebaseResolving(repoPath, false)`, keeping its exported signature, error-wrapping strings, and `SyncResult` semantics unchanged
-- [ ] write tests for `runOut` (success returns output; failing command returns output + error; expired context returns an error)
-- [ ] write tests for `pullRebaseResolving` against a bare fixture remote (clean fast-forward returns 0; conflicting task file auto-resolved returns 1)
-- [ ] write a test that `autostash: true` succeeds with a modified tracked file present and restores that modification afterwards, while `autostash: false` fails on the same fixture
-- [ ] confirm the existing `Sync`/`ResolveConflicts` tests still pass unchanged (pure refactor — no behavior change)
-- [ ] run tests - must pass before task 2
+- [x] add `runOut(ctx context.Context, dir, name string, args ...string) (string, error)` — `exec.CommandContext` + `CombinedOutput`, returning the output string alongside the error so callers can classify failures
+- [x] add private `pullRebaseResolving(repoPath string, autostash bool) (int, error)` containing the `PullRebase` → `IsRebasing` → `ResolveConflicts` → `RebaseContinue` / `RebaseAbort` block lifted from `Sync`, passing `--autostash` when requested
+- [x] refactor `Sync` to call `pullRebaseResolving(repoPath, false)`, keeping its exported signature, error-wrapping strings, and `SyncResult` semantics unchanged
+- [x] write tests for `runOut` (success returns output; failing command returns output + error; expired context returns an error)
+- [x] write tests for `pullRebaseResolving` against a bare fixture remote (clean fast-forward returns 0; conflicting task file auto-resolved returns 1)
+- [x] write a test that `autostash: true` succeeds with a modified tracked file present and restores that modification afterwards, while `autostash: false` fails on the same fixture
+- [x] confirm the existing `Sync`/`ResolveConflicts` tests still pass unchanged (pure refactor — no behavior change)
+- [x] run tests - must pass before task 2
 
 ### Task 2: Serialize all mutating git entry points behind one repo mutex
 

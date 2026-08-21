@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -904,5 +905,247 @@ func TestAutoCommit_DeletedFile(t *testing.T) {
 	}
 	if got := string(out); !strings.Contains(got, "rm: del task") {
 		t.Errorf("commit log should contain 'rm: del task', got: %s", got)
+	}
+}
+
+func TestRunOut_Success(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	out, err := runOut(context.Background(), repoPath, "git", "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("runOut() error = %v (out=%q)", err, out)
+	}
+	want, err := headSHA(repoPath)
+	if err != nil {
+		t.Fatalf("headSHA: %v", err)
+	}
+	if strings.TrimSpace(out) != want {
+		t.Errorf("runOut() output = %q, want %q", strings.TrimSpace(out), want)
+	}
+}
+
+func TestRunOut_FailureReturnsOutputAndError(t *testing.T) {
+	dir := t.TempDir()
+
+	out, err := runOut(context.Background(), dir, "git", "rev-parse", "HEAD")
+	if err == nil {
+		t.Fatal("expected error running git rev-parse outside a repo")
+	}
+	// The output must come back alongside the error so callers can classify.
+	if strings.TrimSpace(out) == "" {
+		t.Error("expected git's stderr in the returned output, got empty string")
+	}
+	if !strings.Contains(err.Error(), "git [rev-parse HEAD]") {
+		t.Errorf("error should name the command, got: %v", err)
+	}
+}
+
+func TestRunOut_ExpiredContext(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already expired before the command starts
+
+	if _, err := runOut(ctx, repoPath, "git", "rev-parse", "HEAD"); err == nil {
+		t.Error("expected error for an expired context")
+	}
+}
+
+// setupRemoteFixture creates a bare remote plus a monolog clone whose current
+// branch tracks it, returning the bare repo path and the clone path. The bare
+// repo's HEAD is pointed at the pushed branch so further clones check it out.
+func setupRemoteFixture(t *testing.T) (bare, clone string) {
+	t.Helper()
+	dir := t.TempDir()
+	bare = filepath.Join(dir, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	clone = filepath.Join(dir, "clone-a")
+	if err := Init(clone, bare); err != nil {
+		t.Fatalf("Init with remote: %v", err)
+	}
+	gitRun(t, bare, "symbolic-ref", "HEAD", "refs/heads/"+baseBranch(t, clone))
+	return bare, clone
+}
+
+// cloneOf clones the bare repo into a sibling directory of it named name.
+func cloneOf(t *testing.T, bare, name string) string {
+	t.Helper()
+	dst := filepath.Join(filepath.Dir(bare), name)
+	if out, err := exec.Command("git", "clone", bare, dst).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	return dst
+}
+
+// pushTask writes a task file in the given clone, commits and pushes it,
+// returning the repo-relative task path.
+func pushTask(t *testing.T, repoPath string, task model.Task) string {
+	t.Helper()
+	taskPath := filepath.Join(".monolog", "tasks", task.ID+".json")
+	writeTaskJSON(t, filepath.Join(repoPath, taskPath), task)
+	gitRun(t, repoPath, "add", taskPath)
+	gitRun(t, repoPath, "commit", "-m", "add "+task.ID)
+	gitRun(t, repoPath, "push")
+	return taskPath
+}
+
+func TestPullRebaseResolving_CleanFastForward(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	taskPath := pushTask(t, b, model.Task{
+		ID: "01FF", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	n, err := pullRebaseResolving(a, false)
+	if err != nil {
+		t.Fatalf("pullRebaseResolving() error = %v", err)
+	}
+	if n != 0 {
+		t.Errorf("resolved = %d, want 0 on a clean fast-forward", n)
+	}
+	if _, err := os.Stat(filepath.Join(a, taskPath)); err != nil {
+		t.Errorf("B's task should be present in A after the pull: %v", err)
+	}
+}
+
+func TestPullRebaseResolving_AutoResolvesConflict(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// B pushes the task with an EARLIER UpdatedAt.
+	taskPath := pushTask(t, b, model.Task{
+		ID: "01CF", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// A commits the same task locally with a LATER UpdatedAt (add/add conflict).
+	absA := filepath.Join(a, taskPath)
+	writeTaskJSON(t, absA, model.Task{
+		ID: "01CF", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, a, "add", taskPath)
+	gitRun(t, a, "commit", "-m", "A edit")
+
+	n, err := pullRebaseResolving(a, false)
+	if err != nil {
+		t.Fatalf("pullRebaseResolving() error = %v", err)
+	}
+	if n != 1 {
+		t.Errorf("resolved = %d, want 1", n)
+	}
+	if got := readTaskJSON(t, absA); got.Title != "from A" {
+		t.Errorf("later UpdatedAt should win; got Title = %q", got.Title)
+	}
+	rebasing, err := IsRebasing(a)
+	if err != nil {
+		t.Fatalf("IsRebasing: %v", err)
+	}
+	if rebasing {
+		t.Error("repo should not be mid-rebase after a resolved pull")
+	}
+}
+
+func TestPullRebaseResolving_AutostashPreservesDirtyFile(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// Something to rebase onto, so the pull actually runs a rebase.
+	pushTask(t, b, model.Task{
+		ID: "01AS", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// A has an uncommitted modification to a TRACKED file (mirrors the TUI
+	// writing .monolog/config.json via config.Save without committing it).
+	dirty := filepath.Join(a, ".monolog", "config.json")
+	const dirtyContent = "{\n  \"theme\": \"dracula\"\n}\n"
+	if err := os.WriteFile(dirty, []byte(dirtyContent), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	// Without autostash, git refuses to rebase over unstaged changes.
+	if _, err := pullRebaseResolving(a, false); err == nil {
+		t.Fatal("expected pullRebaseResolving(autostash=false) to fail with a dirty tracked file")
+	}
+
+	// With autostash it succeeds and the modification is restored afterwards.
+	n, err := pullRebaseResolving(a, true)
+	if err != nil {
+		t.Fatalf("pullRebaseResolving(autostash=true) error = %v", err)
+	}
+	if n != 0 {
+		t.Errorf("resolved = %d, want 0", n)
+	}
+	data, err := os.ReadFile(dirty)
+	if err != nil {
+		t.Fatalf("read dirty file after autostash: %v", err)
+	}
+	if string(data) != dirtyContent {
+		t.Errorf("autostash should restore the modification; got %q, want %q", string(data), dirtyContent)
+	}
+	has, err := HasChanges(a)
+	if err != nil {
+		t.Fatalf("HasChanges: %v", err)
+	}
+	if !has {
+		t.Error("dirty file should still be uncommitted after autostash")
+	}
+}
+
+func TestSync_PullsAndPushesThroughSharedRebasePath(t *testing.T) {
+	// Guards the Sync refactor onto pullRebaseResolving: a diverged remote is
+	// rebased in and the local commit still reaches the remote.
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	bTask := pushTask(t, b, model.Task{
+		ID: "01SY", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// A creates a DIFFERENT task, uncommitted, then syncs.
+	aTask := filepath.Join(".monolog", "tasks", "01SZ.json")
+	writeTaskJSON(t, filepath.Join(a, aTask), model.Task{
+		ID: "01SZ", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	res, err := Sync(a)
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if !res.Committed {
+		t.Error("Sync should have committed the pending change")
+	}
+	if !res.HasRemote {
+		t.Error("Sync should report HasRemote for a repo with an origin")
+	}
+	if res.Resolved != 0 {
+		t.Errorf("Resolved = %d, want 0 (no conflicting file)", res.Resolved)
+	}
+	if _, err := os.Stat(filepath.Join(a, bTask)); err != nil {
+		t.Errorf("B's task should be present in A after Sync: %v", err)
+	}
+
+	// A's commit must be on the remote now.
+	out, err := exec.Command("git", "-C", bare, "log", "--oneline").Output()
+	if err != nil {
+		t.Fatalf("git log on bare: %v", err)
+	}
+	if !strings.Contains(string(out), "sync") {
+		t.Errorf("remote should contain A's sync commit, got: %s", out)
 	}
 }
