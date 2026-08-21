@@ -3,8 +3,10 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,14 +98,21 @@ func toKeyMsg(s string) tea.KeyMsg {
 
 // runCmd executes cmd and feeds the resulting msg back through the model.
 // Returns the model after the follow-up Update. Panics if cmd is nil.
+// It expands tea.BatchMsg the way the Bubble Tea runtime does, feeding each
+// leaf message through Update in order. Update batches more than one cmd on
+// several paths now (archive + auto-push after a mutation), and without the
+// expansion the batch's own BatchMsg would fall through Update's type switch
+// and the real messages would never be delivered.
 func runCmd(t *testing.T, m *Model, cmd tea.Cmd) *Model {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("runCmd: nil cmd")
 	}
-	msg := cmd()
-	next, _ := m.Update(msg)
-	return next.(*Model)
+	for _, msg := range runCmds(cmd) {
+		next, _ := m.Update(msg)
+		m = next.(*Model)
+	}
+	return m
 }
 
 // findTabByLabel returns the index of the tab with the given label,
@@ -3886,6 +3895,7 @@ func TestGrab_DeleteKey_OpensConfirmDeleteAfterCommit(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("cmd should be non-nil (commitGrab)")
 	}
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
 
 	// Execute commitGrab and capture pending action cmd.
 	msg := cmd()
@@ -3895,9 +3905,14 @@ func TestGrab_DeleteKey_OpensConfirmDeleteAfterCommit(t *testing.T) {
 	if m.pendingAction != nil {
 		t.Error("pendingAction should be nil after dispatch")
 	}
-	// openConfirmDelete sets mode and returns nil.
-	if actionCmd != nil {
-		t.Error("openConfirmDelete returns nil cmd, expected nil from dispatch")
+	// openConfirmDelete sets mode and returns nil, so the only cmd coming back
+	// out of the dispatch is the auto-push for the grab-move commit that
+	// Update batches alongside the dispatched action.
+	if got := msgsOfType[autoPushResult](runCmds(actionCmd)); len(got) != 1 {
+		t.Errorf("got %d autoPushResult msgs, want 1 (openConfirmDelete itself contributes no cmd)", len(got))
+	}
+	if rec.count() != 1 {
+		t.Errorf("runAutoPush calls = %d, want 1", rec.count())
 	}
 	if m.mode != modeConfirmDelete {
 		t.Errorf("mode after commit+dispatch = %v, want modeConfirmDelete", m.mode)
@@ -5689,6 +5704,88 @@ func newTestModelWithOpts(t *testing.T, opts Options, tasks ...model.Task) *Mode
 		t.Fatalf("newModel: %v", err)
 	}
 	return m
+}
+
+// TestMain neutralizes the runAutoPush seam for the whole package. Test models
+// have auto-push enabled (git.Init writes "auto_push": true into the temp
+// repo's config.json), so any test that drives a mutation through runCmd now
+// executes a batched auto-push cmd incidentally. Defaulting the seam to a
+// no-op keeps those incidental pushes from shelling out to git — and keeps the
+// invariant that no test outside internal/git can reach the network. Tests
+// that assert on push behavior install their own recorder via stubAutoPush.
+func TestMain(mn *testing.M) {
+	runAutoPush = func(string, time.Duration) (git.PushResult, error) {
+		return git.PushResult{Skipped: true}, nil
+	}
+	os.Exit(mn.Run())
+}
+
+// autoPushRecorder records calls made through the runAutoPush seam.
+type autoPushRecorder struct {
+	mu       sync.Mutex
+	calls    int
+	paths    []string
+	timeouts []time.Duration
+	res      git.PushResult
+	err      error
+}
+
+func (r *autoPushRecorder) record(repoPath string, timeout time.Duration) (git.PushResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	r.paths = append(r.paths, repoPath)
+	r.timeouts = append(r.timeouts, timeout)
+	return r.res, r.err
+}
+
+func (r *autoPushRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// stubAutoPush swaps the runAutoPush seam for the duration of the test so no
+// test outside internal/git touches the network. Every call returns res/err
+// and is recorded on the returned recorder.
+func stubAutoPush(t *testing.T, res git.PushResult, err error) *autoPushRecorder {
+	t.Helper()
+	rec := &autoPushRecorder{res: res, err: err}
+	prev := runAutoPush
+	runAutoPush = rec.record
+	t.Cleanup(func() { runAutoPush = prev })
+	return rec
+}
+
+// runCmds executes cmd and returns every message it produces, expanding
+// tea.BatchMsg recursively. Bubble Tea's tea.Batch returns a lone non-nil cmd
+// directly and only wraps two or more, so a test asserting on one specific
+// message out of a multi-cmd Update return has to collect them all and pick by
+// type rather than type-asserting the cmd's single result.
+func runCmds(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, runCmds(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+// msgsOfType returns every message in msgs whose dynamic type is T.
+func msgsOfType[T tea.Msg](msgs []tea.Msg) []T {
+	var out []T
+	for _, m := range msgs {
+		if typed, ok := m.(T); ok {
+			out = append(out, typed)
+		}
+	}
+	return out
 }
 
 func TestNewModel_DefaultStartsInScheduleView(t *testing.T) {
@@ -10607,5 +10704,452 @@ func TestStripRevertPrefix(t *testing.T) {
 		if got := stripRevertPrefix(c.in); got != c.want {
 			t.Errorf("stripRevertPrefix(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// --- auto-push wiring (TUI) -------------------------------------------------
+
+// newTestModelNoAutoPush builds a test Model with auto-push disabled. The
+// MONOLOG_NO_AUTOPUSH escape hatch is consulted by config.AutoPush(), which
+// newModel reads at construction time, so the env var must be set before the
+// model is built.
+func newTestModelNoAutoPush(t *testing.T, tasks ...model.Task) *Model {
+	t.Helper()
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "1")
+	return newTestModel(t, tasks...)
+}
+
+// taskIDsInLists returns every non-separator task ID currently loaded into the
+// model's lists, across all tabs.
+func taskIDsInLists(m *Model) []string {
+	var out []string
+	for i := range m.lists {
+		for _, li := range m.lists[i].Items() {
+			it, ok := li.(item)
+			if !ok || it.isSeparator {
+				continue
+			}
+			out = append(out, it.task.ID)
+		}
+	}
+	return out
+}
+
+// TestNewModel_AutoPushEnabledFromConfig pins that the flag comes from
+// config.AutoPush() inside newModel — git.Init writes "auto_push": true into
+// the temp repo's config.json, and Options carries nothing about it.
+func TestNewModel_AutoPushEnabledFromConfig(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{})
+	if !m.autoPushEnabled {
+		t.Error("autoPushEnabled = false, want true — newModel must read config.AutoPush(), and Options{} must not default it off")
+	}
+	if m.pushInFlight || m.pushPending {
+		t.Errorf("fresh model pushInFlight=%v pushPending=%v, want both false", m.pushInFlight, m.pushPending)
+	}
+}
+
+// TestNewModel_AutoPushDisabledByEnv pins the escape hatch reaches the Model.
+func TestNewModel_AutoPushDisabledByEnv(t *testing.T) {
+	m := newTestModelNoAutoPush(t)
+	if m.autoPushEnabled {
+		t.Error("autoPushEnabled = true with MONOLOG_NO_AUTOPUSH=1, want false")
+	}
+}
+
+// TestTaskSavedMsg_DispatchesAutoPush pins that a successful mutation pushes,
+// with the model's repo path and the TUI (not CLI) timeout.
+func TestTaskSavedMsg_DispatchesAutoPush(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	next, cmd := m.Update(taskSavedMsg{sha: "abc123", status: "Added: alpha"})
+	m = next.(*Model)
+
+	if !m.pushInFlight {
+		t.Error("pushInFlight = false after dispatching a push; the coalescing gate must be armed")
+	}
+	pushes := msgsOfType[autoPushResult](runCmds(cmd))
+	if len(pushes) != 1 {
+		t.Fatalf("got %d autoPushResult msgs, want 1", len(pushes))
+	}
+	if rec.count() != 1 {
+		t.Fatalf("runAutoPush calls = %d, want 1", rec.count())
+	}
+	if rec.paths[0] != m.repoPath {
+		t.Errorf("push repoPath = %q, want %q", rec.paths[0], m.repoPath)
+	}
+	if rec.timeouts[0] != git.DefaultPushTimeout {
+		t.Errorf("push timeout = %v, want git.DefaultPushTimeout (%v)", rec.timeouts[0], git.DefaultPushTimeout)
+	}
+}
+
+// TestTaskSavedMsg_NoAutoPushWhenDisabled pins the off switch: no cmd, no call.
+func TestTaskSavedMsg_NoAutoPushWhenDisabled(t *testing.T) {
+	m := newTestModelNoAutoPush(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	next, cmd := m.Update(taskSavedMsg{sha: "abc123", status: "Added: alpha"})
+	m = next.(*Model)
+
+	if m.pushInFlight {
+		t.Error("pushInFlight = true with auto-push disabled")
+	}
+	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+		t.Errorf("got %d autoPushResult msgs with auto-push disabled, want 0", len(got))
+	}
+	if rec.count() != 0 {
+		t.Errorf("runAutoPush calls = %d with auto-push disabled, want 0", rec.count())
+	}
+}
+
+// TestTaskSavedMsg_NoPushWithoutCommit covers the shapes of taskSavedMsg that
+// carry no new commit: a manual sync's status-only message (Sync already
+// pushed), a failed revert handing its SHA back to a stack, and a failed
+// commit.
+func TestTaskSavedMsg_NoPushWithoutCommit(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  taskSavedMsg
+	}{
+		{"sync status only", taskSavedMsg{status: "Synced", clearHistory: true}},
+		{"no remote", taskSavedMsg{status: "No remote configured; committed locally"}},
+		{"restore undo SHA after failed revert", taskSavedMsg{restoreUndoSHA: "abc", err: errors.New("undo: conflict")}},
+		{"restore redo SHA after failed revert", taskSavedMsg{restoreRedoSHA: "abc", err: errors.New("redo: conflict")}},
+		{"commit failure", taskSavedMsg{err: errors.New("commit: boom")}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModel(t,
+				model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+					Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+			)
+			rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+			next, cmd := m.Update(c.msg)
+			m = next.(*Model)
+			if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+				t.Errorf("got %d autoPushResult msgs, want 0", len(got))
+			}
+			if rec.count() != 0 {
+				t.Errorf("runAutoPush calls = %d, want 0", rec.count())
+			}
+			if m.pushInFlight {
+				t.Error("pushInFlight = true, want false")
+			}
+		})
+	}
+}
+
+// TestTaskSavedMsg_UndoAndRedoCommitsPush pins that undo and redo push too —
+// both produce real revert commits that must reach the remote.
+func TestTaskSavedMsg_UndoAndRedoCommitsPush(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  taskSavedMsg
+	}{
+		{"undo (redoSHA)", taskSavedMsg{redoSHA: "revert1", status: "Undone: add: alpha"}},
+		{"redo (redoneSHA)", taskSavedMsg{redoneSHA: "revert2", status: "Redone: add: alpha"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModel(t,
+				model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+					Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+			)
+			rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+			_, cmd := m.Update(c.msg)
+			if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 1 {
+				t.Fatalf("got %d autoPushResult msgs, want 1", len(got))
+			}
+			if rec.count() != 1 {
+				t.Errorf("runAutoPush calls = %d, want 1", rec.count())
+			}
+		})
+	}
+}
+
+// TestAutoPushCmd_InFlightCoalesces pins the gate at the cmd level: a second
+// call while a push is in flight sets pushPending and returns nil rather than
+// launching a second concurrent push.
+func TestAutoPushCmd_InFlightCoalesces(t *testing.T) {
+	m := newTestModel(t)
+	stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	if cmd := m.autoPushCmd(); cmd == nil {
+		t.Fatal("first autoPushCmd returned nil, want a cmd")
+	}
+	if !m.pushInFlight {
+		t.Fatal("pushInFlight = false after the first autoPushCmd")
+	}
+	if cmd := m.autoPushCmd(); cmd != nil {
+		t.Error("second autoPushCmd while in flight returned a cmd; want nil so the burst coalesces")
+	}
+	if !m.pushPending {
+		t.Error("pushPending = false after a coalesced call; the follow-up push would be lost")
+	}
+	// A third call must not queue a second follow-up.
+	if cmd := m.autoPushCmd(); cmd != nil {
+		t.Error("third autoPushCmd while in flight returned a cmd; want nil")
+	}
+}
+
+// TestAutoPush_BurstFiresExactlyOneFollowUp drives three mutations through
+// Update while the first push is still in flight and asserts the whole burst
+// costs two pushes: the in-flight one plus exactly one coalesced follow-up.
+func TestAutoPush_BurstFiresExactlyOneFollowUp(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	// Mutation 1 → dispatches a push, but we hold its cmd un-run so the push
+	// stays "in flight" for the rest of the burst.
+	next, firstCmd := m.Update(taskSavedMsg{sha: "sha1", status: "Added: one"})
+	m = next.(*Model)
+	if !m.pushInFlight {
+		t.Fatal("pushInFlight = false after the first mutation")
+	}
+
+	// Mutations 2 and 3 land during the in-flight push: no new push cmds.
+	for _, sha := range []string{"sha2", "sha3"} {
+		next, cmd := m.Update(taskSavedMsg{sha: sha, status: "Added: " + sha})
+		m = next.(*Model)
+		if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+			t.Fatalf("mutation %s dispatched %d pushes during an in-flight push, want 0", sha, len(got))
+		}
+	}
+	if !m.pushPending {
+		t.Fatal("pushPending = false after mutations landed mid-push")
+	}
+
+	// Now let the first push complete and feed its result back in.
+	results := msgsOfType[autoPushResult](runCmds(firstCmd))
+	if len(results) != 1 {
+		t.Fatalf("first cmd produced %d autoPushResult msgs, want 1", len(results))
+	}
+	next, followUp := m.Update(results[0])
+	m = next.(*Model)
+	if m.pushPending {
+		t.Error("pushPending = true after the follow-up was dispatched; it must be consumed")
+	}
+	if !m.pushInFlight {
+		t.Error("pushInFlight = false after dispatching the follow-up push")
+	}
+	if got := msgsOfType[autoPushResult](runCmds(followUp)); len(got) != 1 {
+		t.Fatalf("follow-up produced %d autoPushResult msgs, want exactly 1 for the whole burst", len(got))
+	}
+	if rec.count() != 2 {
+		t.Errorf("runAutoPush calls = %d for 3 mutations, want 2 (one in flight + one coalesced follow-up)", rec.count())
+	}
+
+	// Draining the follow-up leaves nothing queued.
+	next, tail := m.Update(autoPushResult{})
+	m = next.(*Model)
+	if m.pushInFlight || m.pushPending {
+		t.Errorf("after draining: pushInFlight=%v pushPending=%v, want both false", m.pushInFlight, m.pushPending)
+	}
+	if tail != nil {
+		t.Errorf("drained autoPushResult returned cmd %v, want nil", tail)
+	}
+}
+
+// TestAutoPushResult_ErrorFlashesAndPreservesStacks pins the non-fatal
+// contract: a plain push failure (no rebase) flashes but leaves undo/redo
+// intact, because local history was not rewritten.
+func TestAutoPushResult_ErrorFlashesAndPreservesStacks(t *testing.T) {
+	m := newTestModel(t)
+	m.pushInFlight = true
+	m.undoStack = []string{"u1", "u2"}
+	m.redoStack = []string{"r1"}
+
+	next, cmd := m.Update(autoPushResult{err: errors.New("dial tcp: no route to host")})
+	m = next.(*Model)
+
+	if m.pushInFlight {
+		t.Error("pushInFlight = true after a failed push; the gate must always clear")
+	}
+	if !contains(m.statusMsg, "push failed") || !contains(m.statusMsg, "no route to host") {
+		t.Errorf("statusMsg = %q, want a 'push failed: <err>' flash carrying the underlying error", m.statusMsg)
+	}
+	if m.err != nil {
+		t.Errorf("m.err = %v, want nil — a failed push is non-fatal and must not set the sticky error", m.err)
+	}
+	if !sliceEq(m.undoStack, []string{"u1", "u2"}) {
+		t.Errorf("undoStack = %v, want preserved — a plain push does not rewrite history", m.undoStack)
+	}
+	if !sliceEq(m.redoStack, []string{"r1"}) {
+		t.Errorf("redoStack = %v, want preserved", m.redoStack)
+	}
+	if cmd != nil {
+		t.Errorf("returned cmd %v, want nil with nothing pending", cmd)
+	}
+}
+
+// TestAutoPushResult_RebasedClearsStacksAndReloads pins that a rebase nils
+// both stacks (the SHAs were rewritten) and reloads, since the rebase may have
+// brought remote tasks in.
+func TestAutoPushResult_RebasedClearsStacksAndReloads(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.pushInFlight = true
+	m.undoStack = []string{"u1"}
+	m.redoStack = []string{"r1"}
+
+	// Stand in for the rebase bringing a remote task down: write it straight
+	// into the store behind the model's back, so only a reload can surface it.
+	if err := m.store.Create(model.Task{ID: "01REMOTE", Title: "from remote", Status: "open",
+		Schedule: expectSchedule(t, "today"), Position: 2000, UpdatedAt: "2026-04-14T00:00:00Z"}); err != nil {
+		t.Fatalf("seed remote task: %v", err)
+	}
+	if ids := taskIDsInLists(m); len(ids) != 1 {
+		t.Fatalf("precondition: lists hold %v, want only the seeded task", ids)
+	}
+
+	next, _ := m.Update(autoPushResult{rebased: true})
+	m = next.(*Model)
+
+	if m.undoStack != nil {
+		t.Errorf("undoStack = %v, want nil — the rebase rewrote every SHA", m.undoStack)
+	}
+	if m.redoStack != nil {
+		t.Errorf("redoStack = %v, want nil", m.redoStack)
+	}
+	if m.statusMsg != "Synced" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "Synced")
+	}
+	found := false
+	for _, id := range taskIDsInLists(m) {
+		if id == "01REMOTE" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("task IDs in lists = %v, want 01REMOTE present — a rebase must trigger reloadAll", taskIDsInLists(m))
+	}
+}
+
+// TestAutoPushResult_RebasedWithResolvedFlashesCount pins the conflict count
+// in the flash, mirroring syncCmd's wording.
+func TestAutoPushResult_RebasedWithResolvedFlashesCount(t *testing.T) {
+	m := newTestModel(t)
+	m.pushInFlight = true
+
+	next, _ := m.Update(autoPushResult{rebased: true, resolved: 2})
+	m = next.(*Model)
+
+	if m.statusMsg != "Synced (auto-resolved 2 conflicts)" {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, "Synced (auto-resolved 2 conflicts)")
+	}
+}
+
+// TestAutoPushResult_RebasedWithErrorStillClearsStacks is the review-critical
+// case: the rebase rewrote local history and only the retry push failed, so
+// the stacks are just as dead as on the success path. Leaving them would let
+// revertStackCmd silently drop entries on a CommitSubject miss.
+func TestAutoPushResult_RebasedWithErrorStillClearsStacks(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.pushInFlight = true
+	m.undoStack = []string{"u1", "u2"}
+	m.redoStack = []string{"r1"}
+
+	if err := m.store.Create(model.Task{ID: "01REMOTE", Title: "from remote", Status: "open",
+		Schedule: expectSchedule(t, "today"), Position: 2000, UpdatedAt: "2026-04-14T00:00:00Z"}); err != nil {
+		t.Fatalf("seed remote task: %v", err)
+	}
+
+	next, _ := m.Update(autoPushResult{rebased: true, resolved: 1, err: errors.New("push after rebase: rejected")})
+	m = next.(*Model)
+
+	if m.undoStack != nil {
+		t.Errorf("undoStack = %v, want nil — rebase clears the stacks even when the retry push failed", m.undoStack)
+	}
+	if m.redoStack != nil {
+		t.Errorf("redoStack = %v, want nil", m.redoStack)
+	}
+	// The error flash wins over the "Synced" flash.
+	if !contains(m.statusMsg, "push failed") {
+		t.Errorf("statusMsg = %q, want a push-failure flash", m.statusMsg)
+	}
+	found := false
+	for _, id := range taskIDsInLists(m) {
+		if id == "01REMOTE" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("task IDs in lists = %v, want 01REMOTE present — the reload must run on the error path too", taskIDsInLists(m))
+	}
+}
+
+// TestAutoPushResult_PlainSuccessIsSilent pins that a successful push leaves
+// the mutation's own status flash ("Added: X") on screen.
+func TestAutoPushResult_PlainSuccessIsSilent(t *testing.T) {
+	m := newTestModel(t)
+	m.pushInFlight = true
+	m.statusMsg = "Added: alpha"
+	m.undoStack = []string{"u1"}
+	m.redoStack = []string{"r1"}
+
+	next, cmd := m.Update(autoPushResult{})
+	m = next.(*Model)
+
+	if m.statusMsg != "Added: alpha" {
+		t.Errorf("statusMsg = %q, want %q — a successful push must not overwrite the mutation flash", m.statusMsg, "Added: alpha")
+	}
+	if m.pushInFlight {
+		t.Error("pushInFlight = true after a completed push")
+	}
+	if !sliceEq(m.undoStack, []string{"u1"}) || !sliceEq(m.redoStack, []string{"r1"}) {
+		t.Errorf("stacks changed on a plain push: undo=%v redo=%v", m.undoStack, m.redoStack)
+	}
+	if cmd != nil {
+		t.Errorf("returned cmd %v, want nil", cmd)
+	}
+}
+
+// TestAddTask_EndToEndDispatchesPush walks the real add flow (modal → commit →
+// Update) and asserts the push fires once for it, so the wiring is pinned at
+// the key-press level and not only against a synthesized taskSavedMsg.
+func TestAddTask_EndToEndDispatchesPush(t *testing.T) {
+	m := newTestModel(t)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("mode = %v, want modeAdd", m.mode)
+	}
+	m = typeString(t, m, "pushed task")
+	m, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter in add modal returned nil cmd")
+	}
+	saved, ok := cmd().(taskSavedMsg)
+	if !ok {
+		t.Fatalf("add cmd produced %T, want taskSavedMsg", cmd())
+	}
+	if saved.err != nil {
+		t.Fatalf("add failed: %v", saved.err)
+	}
+	next, savedCmd := m.Update(saved)
+	m = next.(*Model)
+	if !contains(m.statusMsg, "Added: pushed task") {
+		t.Errorf("statusMsg = %q, want the add flash", m.statusMsg)
+	}
+	if got := msgsOfType[autoPushResult](runCmds(savedCmd)); len(got) != 1 {
+		t.Fatalf("got %d autoPushResult msgs from the add flow, want 1", len(got))
+	}
+	if rec.count() != 1 {
+		t.Errorf("runAutoPush calls = %d, want 1", rec.count())
 	}
 }

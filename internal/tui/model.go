@@ -228,6 +228,16 @@ type Model struct {
 	emailMaxPerSync int
 	emailInterval   time.Duration
 
+	// Auto-push state. autoPushEnabled is snapshotted from config.AutoPush()
+	// in newModel; when false every mutation stays local until the user
+	// presses `s`. pushInFlight/pushPending implement coalescing rather than
+	// debouncing: a mutation landing while a push is in flight only sets
+	// pushPending, and the in-flight push's autoPushResult fires exactly one
+	// follow-up for the whole burst.
+	autoPushEnabled bool
+	pushInFlight    bool
+	pushPending     bool
+
 	// watcher observes the tasks directory for changes made outside this
 	// process so the TUI can auto-refresh. nil when MONOLOG_NO_WATCH=1 is
 	// set, when fsnotify fails to start, or in tests that build a Model
@@ -462,6 +472,13 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	// (Enabled=false) makes every email-driven code path a no-op.
 	ec := config.Email()
 
+	// Snapshot auto-push the same way, and for the same reason: the render
+	// and Update paths must not round-trip through internal/config. It is
+	// read here rather than threaded through Options because Options carries
+	// CLI launch flags only — routing it there would silently default
+	// auto-push off for every caller (and every test) building Options{}.
+	autoPush := config.AutoPush()
+
 	m := &Model{
 		store:           s,
 		repoPath:        repoPath,
@@ -478,6 +495,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		emailLabel:      ec.Label,
 		emailMaxPerSync: ec.MaxPerSync,
 		emailInterval:   ec.SyncInterval,
+		autoPushEnabled: autoPush,
 	}
 	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(activeTheme)
 	if !ok {
@@ -1038,11 +1056,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// empty, and tea.Batch silently drops nil entries, so no extra
 		// guard is needed here.
 		archiveCmd := m.archiveEmailCmd(msg.archiveSourceID)
+		// A commit landed, so push it. All three SHA fields carry a real
+		// commit: sha is a plain mutation, redoSHA is the revert commit a
+		// successful undo produced, and redoneSHA the revert-of-revert a redo
+		// produced. Only the restore* fields are excluded — they hand a SHA
+		// back to a stack after a *failed* revert and create no commit.
+		// autoPushCmd itself returns nil when disabled or already in flight,
+		// and tea.Batch drops nil entries, so no extra guard is needed.
+		var pushCmd tea.Cmd
+		if msg.sha != "" || msg.redoneSHA != "" || msg.redoSHA != "" {
+			pushCmd = m.autoPushCmd()
+		}
 		if action := m.pendingAction; action != nil {
 			m.pendingAction = nil
-			return m, tea.Batch(action(), archiveCmd)
+			return m, tea.Batch(action(), archiveCmd, pushCmd)
 		}
-		return m, archiveCmd
+		return m, tea.Batch(archiveCmd, pushCmd)
 
 	case archiveResult:
 		// Archive is non-fatal: surface the result via a status flash but do
@@ -1052,6 +1081,49 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.statusMsg = "email archived"
+		return m, nil
+
+	case autoPushResult:
+		// Always clear the in-flight flag so the coalescing gate never
+		// wedges shut, regardless of outcome.
+		m.pushInFlight = false
+		// A rebase rewrote local history, so every SHA on either stack is
+		// dead and the rebase may have pulled remote tasks in. This runs
+		// whether or not err is nil: if the rebase succeeded and only the
+		// retry push failed, the SHAs are gone all the same, and leaving them
+		// would let revertStackCmd silently drop entries on a CommitSubject
+		// miss. Mirrors syncCmd setting clearHistory on its error return.
+		if msg.rebased {
+			m.undoStack = nil
+			m.redoStack = nil
+			if err := m.reloadAll(); err != nil {
+				m.err = err
+			}
+			m.recomputeLayout()
+			if m.viewMode == viewTag {
+				m.skipSeparator(0)
+			}
+		}
+		// Silent on plain success — a flash here would immediately overwrite
+		// the mutation's own "Added: <title>". Flash only on failure and on a
+		// rebase, where history was rewritten and remote tasks may have
+		// arrived (same rule as the fsnotify watcher).
+		switch {
+		case msg.err != nil:
+			// Non-fatal: the commit is durable locally and the next push or
+			// `s` catches up, so no m.err and no rollback.
+			m.statusMsg = fmt.Sprintf("push failed: %v", msg.err)
+		case msg.rebased && msg.resolved > 0:
+			m.statusMsg = fmt.Sprintf("Synced (auto-resolved %d conflicts)", msg.resolved)
+		case msg.rebased:
+			m.statusMsg = "Synced"
+		}
+		// Coalesced follow-up: mutations that landed during this push set
+		// pushPending. Fire exactly one push for the whole burst.
+		if m.pushPending {
+			m.pushPending = false
+			return m, m.autoPushCmd()
+		}
 		return m, nil
 
 	case emailSyncResult:
@@ -2642,6 +2714,43 @@ func (m *Model) syncCmd() tea.Cmd {
 			return taskSavedMsg{status: fmt.Sprintf("Synced (auto-resolved %d conflicts)", res.Resolved), clearHistory: true}
 		}
 		return taskSavedMsg{status: "Synced", clearHistory: true}
+	}
+}
+
+// runAutoPush is the seam tests replace so nothing outside internal/git
+// touches the network, mirroring runEmailSync/emailClientBuilder in email.go.
+var runAutoPush = git.AutoPush
+
+// autoPushResult is dispatched back to Update after a background auto-push
+// completes. rebased is meaningful even when err is non-nil: the rebase may
+// have rewritten local history before the retry push failed, which invalidates
+// every SHA on the undo/redo stacks.
+type autoPushResult struct {
+	rebased  bool
+	resolved int
+	err      error
+}
+
+// autoPushCmd pushes the just-committed state to the remote in the background.
+//
+// Returns nil when auto-push is disabled, and also returns nil (after setting
+// pushPending) when a push is already in flight: the in-flight push's
+// autoPushResult handler dispatches exactly one follow-up, so a burst of
+// mutations costs two pushes rather than one per mutation. Mutating Model here
+// is safe because autoPushCmd is only ever called from the Update loop.
+func (m *Model) autoPushCmd() tea.Cmd {
+	if !m.autoPushEnabled {
+		return nil
+	}
+	if m.pushInFlight {
+		m.pushPending = true
+		return nil
+	}
+	m.pushInFlight = true
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		res, err := runAutoPush(repoPath, git.DefaultPushTimeout)
+		return autoPushResult{rebased: res.Rebased, resolved: res.Resolved, err: err}
 	}
 }
 

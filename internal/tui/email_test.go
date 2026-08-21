@@ -666,14 +666,21 @@ func TestDoneOnGmailTask_ArchivesViaSavedMsg(t *testing.T) {
 		t.Errorf("archiveSourceID = %q, want %q", saved.archiveSourceID, "msg-abc")
 	}
 	// Dispatch the saved msg into Update. It should return an archive cmd.
-	next, archiveCmd := m.Update(saved)
+	// The test model has auto-push enabled (git.Init writes "auto_push": true
+	// and the saved msg carries a commit SHA), so Update batches the archive
+	// cmd with an auto-push cmd — hence runCmds/msgsOfType rather than a
+	// direct type assertion on a lone cmd. The push seam is stubbed so this
+	// test never shells out to the network.
+	stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+	next, savedCmd := m.Update(saved)
 	m = next.(*Model)
-	if archiveCmd == nil {
+	if savedCmd == nil {
 		t.Fatal("Update on taskSavedMsg with archiveSourceID returned nil cmd; want archiveEmailCmd")
 	}
-	// Run the archive cmd — fake records the call.
-	if _, ok := archiveCmd().(archiveResult); !ok {
-		t.Errorf("archive cmd produced %T, want archiveResult", archiveCmd())
+	// Run the batched cmds — fake records the archive call.
+	msgs := runCmds(savedCmd)
+	if got := msgsOfType[archiveResult](msgs); len(got) != 1 {
+		t.Errorf("got %d archiveResult msgs from %v, want 1", len(got), msgs)
 	}
 	if len(fake.archived) != 1 || fake.archived[0] != "msg-abc" {
 		t.Errorf("fake.archived = %v, want [msg-abc]", fake.archived)
@@ -745,9 +752,13 @@ func TestDoneOnGmailTask_ArchiveFailureLeavesTaskDone(t *testing.T) {
 	fake := &fakeGmail{archiveErr: errors.New("network down")}
 	stubEmailClientBuilder(t, fake, nil)
 
+	// Auto-push is enabled in the test model and the done commit carries a
+	// SHA, so Update batches archive + push; stub the push seam and unwrap
+	// the batch below.
+	stubAutoPush(t, git.PushResult{Pushed: true}, nil)
 	m, cmd := key(t, m, "d")
 	saved, _ := cmd().(taskSavedMsg)
-	next, archiveCmd := m.Update(saved)
+	next, savedCmd := m.Update(saved)
 	m = next.(*Model)
 
 	// Verify the task moved to done in the store regardless of archive outcome.
@@ -760,14 +771,14 @@ func TestDoneOnGmailTask_ArchiveFailureLeavesTaskDone(t *testing.T) {
 	}
 
 	// Run archive cmd → archiveResult{err: ...} → flashes failure, leaves task done.
-	if archiveCmd == nil {
+	if savedCmd == nil {
 		t.Fatal("expected archive cmd to be returned from saved msg dispatch")
 	}
-	resultMsg := archiveCmd()
-	res, ok := resultMsg.(archiveResult)
-	if !ok {
-		t.Fatalf("archive cmd produced %T, want archiveResult", resultMsg)
+	results := msgsOfType[archiveResult](runCmds(savedCmd))
+	if len(results) != 1 {
+		t.Fatalf("got %d archiveResult msgs, want 1", len(results))
 	}
+	res := results[0]
 	if res.err == nil {
 		t.Error("res.err = nil, want non-nil from fake archive error")
 	}

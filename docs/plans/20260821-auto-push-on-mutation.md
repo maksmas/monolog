@@ -560,18 +560,47 @@ subtest fail, confirming the table drives each command rather than passing vacuo
 - Modify: `internal/tui/model_test.go`
 - Modify: `internal/tui/email_test.go`
 
-- [ ] add `var runAutoPush = git.AutoPush` seam and the `autoPushResult` msg type
-- [ ] add `autoPushEnabled`/`pushInFlight`/`pushPending` to `Model`, snapshotting `config.AutoPush()` inside `newModel` next to `ec := config.Email()` (`model.go:463`) — **not** via `Options`
-- [ ] implement `Model.autoPushCmd() tea.Cmd`: nil when disabled; when a push is in flight, set `pushPending` and return nil; else set `pushInFlight` and call `runAutoPush(repoPath, git.DefaultPushTimeout)` in the goroutine
-- [ ] in the `taskSavedMsg` handler, batch `m.autoPushCmd()` alongside `archiveCmd` when `msg.err == nil` and any of `msg.sha`/`msg.redoneSHA`/`msg.redoSHA` is non-empty
-- [ ] add `case autoPushResult`: clear `pushInFlight`; re-dispatch once if `pushPending`; when `rebased`, nil **both** stacks and `reloadAll()` + `recomputeLayout()` **regardless of `err`**; on `err` flash `"push failed: <err>"`; on `rebased && err == nil` flash `"Synced"` / `"Synced (auto-resolved N conflicts)"`; on plain success stay silent
-- [ ] fix `internal/tui/email_test.go:669-677`, which asserts `archiveCmd().(archiveResult)` on the cmd returned by `Update` — `compactCmds` returns a lone cmd directly, so batching a second non-nil cmd makes it a `BatchMsg` and breaks the assertion; note in the test whether the model has auto-push enabled
-- [ ] audit `model_test.go` for other assertions on the cmd returned by a `taskSavedMsg` `Update` and repair them the same way
-- [ ] write tests that a successful mutation dispatches a push when enabled and dispatches none when disabled
-- [ ] write tests for coalescing (a mutation during an in-flight push sets `pushPending` and fires exactly one follow-up push, not two)
-- [ ] write tests for the handler: `err` flashes and preserves stacks; `rebased: true` clears both stacks and reloads; `rebased: true` **with** an error also clears both stacks; plain success leaves `statusMsg` untouched so `"Added: X"` survives
-- [ ] write a test that undo and redo commits also trigger a push (`redoSHA`/`redoneSHA` paths)
-- [ ] run tests with `-race` - must pass before task 8
+- [x] add `var runAutoPush = git.AutoPush` seam and the `autoPushResult` msg type
+- [x] add `autoPushEnabled`/`pushInFlight`/`pushPending` to `Model`, snapshotting `config.AutoPush()` inside `newModel` next to `ec := config.Email()` (`model.go:463`) — **not** via `Options`
+- [x] implement `Model.autoPushCmd() tea.Cmd`: nil when disabled; when a push is in flight, set `pushPending` and return nil; else set `pushInFlight` and call `runAutoPush(repoPath, git.DefaultPushTimeout)` in the goroutine
+- [x] in the `taskSavedMsg` handler, batch `m.autoPushCmd()` alongside `archiveCmd` when `msg.err == nil` and any of `msg.sha`/`msg.redoneSHA`/`msg.redoSHA` is non-empty
+- [x] add `case autoPushResult`: clear `pushInFlight`; re-dispatch once if `pushPending`; when `rebased`, nil **both** stacks and `reloadAll()` + `recomputeLayout()` **regardless of `err`**; on `err` flash `"push failed: <err>"`; on `rebased && err == nil` flash `"Synced"` / `"Synced (auto-resolved N conflicts)"`; on plain success stay silent
+- [x] fix `internal/tui/email_test.go:669-677`, which asserts `archiveCmd().(archiveResult)` on the cmd returned by `Update` — `compactCmds` returns a lone cmd directly, so batching a second non-nil cmd makes it a `BatchMsg` and breaks the assertion; note in the test whether the model has auto-push enabled
+- [x] audit `model_test.go` for other assertions on the cmd returned by a `taskSavedMsg` `Update` and repair them the same way — `runCmd` now expands `tea.BatchMsg` (fixed 4 grab tests), and `TestGrab_DeleteKey_OpensConfirmDeleteAfterCommit`'s "cmd must be nil" assertion became "the only cmd is the auto-push"
+- [x] write tests that a successful mutation dispatches a push when enabled and dispatches none when disabled
+- [x] write tests for coalescing (a mutation during an in-flight push sets `pushPending` and fires exactly one follow-up push, not two)
+- [x] write tests for the handler: `err` flashes and preserves stacks; `rebased: true` clears both stacks and reloads; `rebased: true` **with** an error also clears both stacks; plain success leaves `statusMsg` untouched so `"Added: X"` survives
+- [x] write a test that undo and redo commits also trigger a push (`redoSHA`/`redoneSHA` paths)
+- [x] run tests with `-race` - must pass before task 8
+
+[decision] `internal/tui`'s test package gained a `TestMain` defaulting `runAutoPush` to a no-op
+returning `PushResult{Skipped: true}`. Test models have auto-push **enabled** (`git.Init` writes
+`"auto_push": true` into the temp repo's config.json and `newTestModelWithOpts` reloads it), so
+every existing test that drives a mutation through `runCmd` now executes a batched push cmd
+incidentally. Without the default the seam would fall through to the real `git.AutoPush`, which
+is harmless on a remote-less fixture but shells out to git on every such test and would reach
+the network the moment a fixture gained a remote. Tests that assert on push behavior install
+their own recorder via `stubAutoPush`.
+
+[decision] `runCmd` was changed to expand `tea.BatchMsg` and feed each leaf message through
+`Update`, mirroring the Bubble Tea runtime. `tea.Batch` returns a lone non-nil cmd directly and
+only wraps two or more, so the four `TestGrab_*AfterCommit` tests were silently delivering a
+`BatchMsg` into `Update`'s type switch (where it fell through) instead of the real messages.
+Fixing the helper rather than each call site keeps future multi-cmd `Update` returns from
+breaking the same way.
+
+[decision] `taskSavedMsg`'s tail now returns `tea.Batch(archiveCmd, pushCmd)` rather than
+`archiveCmd`. `tea.Batch` returns nil for zero non-nil cmds and the lone cmd for one, so the
+existing single-cmd and no-cmd behaviors are byte-identical when auto-push is off.
+
+➕ Added beyond the checklist: `TestTaskSavedMsg_NoPushWithoutCommit` (a table over the
+`taskSavedMsg` shapes that carry no new commit — manual-sync status lines, `restoreUndoSHA`/
+`restoreRedoSHA` after a failed revert, and a commit failure — none may push; the manual-sync
+case matters because `git.Sync` already pushed), `TestAddTask_EndToEndDispatchesPush` (pins the
+wiring from the `c` keypress through the real add flow, not just a synthesized msg), and
+`TestNewModel_AutoPushDisabledByEnv`. The three load-bearing behaviors were mutation-checked:
+gating the `rebased` branch on `err == nil`, dropping `redoSHA`/`redoneSHA` from the push
+trigger, and removing the `pushInFlight` gate each make the corresponding test fail.
 
 ### Task 8: Push Gmail-imported tasks
 
