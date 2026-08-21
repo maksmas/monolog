@@ -432,17 +432,17 @@ the returned SHA still resolves.
 - Create: `internal/git/autopush.go`
 - Create: `internal/git/autopush_test.go`
 
-- [ ] create `internal/git/autopush.go` with `PushResult`, `DefaultPushTimeout` (10s), `CLIPushTimeout` (5s), and `ErrRebaseInProgress`
-- [ ] implement `isNonFastForward(out string) bool` matching `non-fast-forward`, `fetch first`, and `Updates were rejected` case-insensitively — deliberately **not** a bare `! [rejected]`
-- [ ] implement `hasUpstream(repoPath string) (bool, error)` via `git rev-parse --abbrev-ref @{upstream}`
-- [ ] implement `AutoPush`: acquire `repoMu`; `IsRebasing` → `ErrRebaseInProgress`; `HasRemote` false or `hasUpstream` false → `PushResult{Skipped: true}, nil`; else `git push` via `runOut` under `context.WithTimeout` → `Pushed: true`
-- [ ] return non-rejection push failures unchanged, with `Pushed: false` and no rebase attempted
-- [ ] write a test for the happy path against a bare fixture remote (commit → AutoPush → commit present on remote, `Pushed` true, `Rebased` false)
-- [ ] write tests for both skip cases: no remote, and a remote with no upstream on the current branch (`Skipped: true`, nil error, no output, no side effects)
-- [ ] write a test that a repo left mid-rebase returns `ErrRebaseInProgress` and performs no push
-- [ ] write table-driven tests for `isNonFastForward` (each accepted marker matches; auth/DNS/timeout output and a bare `! [rejected] (stale info)` do not)
-- [ ] write a test that a bogus remote URL returns an error with `Pushed: false`
-- [ ] run tests - must pass before task 4
+- [x] create `internal/git/autopush.go` with `PushResult`, `DefaultPushTimeout` (10s), `CLIPushTimeout` (5s), and `ErrRebaseInProgress`
+- [x] implement `isNonFastForward(out string) bool` matching `non-fast-forward`, `fetch first`, and `Updates were rejected` case-insensitively — deliberately **not** a bare `! [rejected]`
+- [x] implement `hasUpstream(repoPath string) (bool, error)` via `git rev-parse --abbrev-ref @{upstream}`
+- [x] implement `AutoPush`: acquire `repoMu`; `IsRebasing` → `ErrRebaseInProgress`; `HasRemote` false or `hasUpstream` false → `PushResult{Skipped: true}, nil`; else `git push` via `runOut` under `context.WithTimeout` → `Pushed: true` — the push itself is the small `pushWithTimeout` helper so Task 4's retry reuses it
+- [x] return non-rejection push failures unchanged, with `Pushed: false` and no rebase attempted
+- [x] write a test for the happy path against a bare fixture remote (commit → AutoPush → commit present on remote, `Pushed` true, `Rebased` false)
+- [x] write tests for both skip cases: no remote, and a remote with no upstream on the current branch (`Skipped: true`, nil error, no output, no side effects)
+- [x] write a test that a repo left mid-rebase returns `ErrRebaseInProgress` and performs no push
+- [x] write table-driven tests for `isNonFastForward` (each accepted marker matches; auth/DNS/timeout output and a bare `! [rejected] (stale info)` do not)
+- [x] write a test that a bogus remote URL returns an error with `Pushed: false`
+- [x] run tests - must pass before task 4
 
 ### Task 4: Add the rebase fallback with autostash and a single bounded retry
 
