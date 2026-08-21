@@ -97,15 +97,41 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 		res.Pushed = true
 		return res, nil
 	}
-	if isNonFastForward(out) {
-		// Rejected because the remote holds commits we do not have — the one
-		// rejection a rebase can fix, and where that recovery hangs off. With no
-		// recovery wired up the rejection surfaces like any other failure.
+	if !isNonFastForward(out) {
+		// The remote state is unknown (DNS, auth, timeout, protected branch), so
+		// rebasing onto it would be a guess. Surface the failure unchanged.
 		return res, err
 	}
-	// The remote state is unknown (DNS, auth, timeout, protected branch), so
-	// rebasing onto it would be a guess. Surface the failure unchanged.
-	return res, err
+
+	// Rejected because the remote holds commits we do not have — the one
+	// rejection a rebase can fix.
+	//
+	// Rebased is set BEFORE the recovery runs and is reported on every return
+	// path below, error included. Once pull --rebase has touched the repo the
+	// local SHAs may already have been rewritten, so a caller told otherwise
+	// (the TUI's undo/redo stacks) would keep holding SHAs that no longer
+	// resolve — and revertStackCmd silently drops such an entry, corrupting the
+	// history in exactly the scenario this feature exists for.
+	res.Rebased = true
+	// Autostash: AutoPush deliberately does not commit unrelated files, and
+	// pull --rebase refuses to run over a modified tracked file (the TUI writes
+	// .monolog/config.json without committing it).
+	n, err := pullRebaseResolving(repoPath, true)
+	res.Resolved = n
+	if err != nil {
+		// The recovery decision is the caller's: the commit is durable locally
+		// and the next push or `monolog sync` retries.
+		return res, err
+	}
+
+	// Exactly one retry, no loop. Another client can always race in again, and a
+	// push triggered by every mutation must not turn into an unbounded contest
+	// with the remote; the next mutation's push picks up where this one stopped.
+	if _, err := pushWithTimeout(repoPath, timeout); err != nil {
+		return res, fmt.Errorf("push after rebase: %w", err)
+	}
+	res.Pushed = true
+	return res, nil
 }
 
 // pushWithTimeout runs a single `git push`, bounded by timeout, returning git's

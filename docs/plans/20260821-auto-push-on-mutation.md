@@ -450,14 +450,27 @@ the returned SHA still resolves.
 - Modify: `internal/git/autopush.go`
 - Modify: `internal/git/autopush_test.go`
 
-- [ ] implement the rejection branch: set `Rebased: true` **before** recovery, call `pullRebaseResolving(repoPath, true)`, record `Resolved`, then retry the push exactly once (no loop)
-- [ ] return `Rebased`/`Resolved` populated alongside a non-nil error when the retry push fails, so callers can tell that local history was rewritten
-- [ ] return the rebase's own failure (with `Rebased: true`) when `pullRebaseResolving` fails, leaving the recovery decision to the caller
-- [ ] write a test for the real rejection path: clone the bare remote twice, commit+push a different task file from clone B, commit in clone A, `AutoPush` from A → `Rebased: true`, `Pushed: true`, A's commit on the remote, B's task file present in A
-- [ ] write a test for the conflicting-rejection path (both clones edit the same task file) → `Resolved: 1`, later-`UpdatedAt` version wins
-- [ ] write a test for rebase-succeeded-but-retry-push-failed → `Rebased: true` **and** a non-nil error (drive it by making the remote unreachable between the two pushes, e.g. renaming the bare repo dir)
-- [ ] write a test that a rejected push with a dirty tracked file still succeeds via autostash and leaves the dirty file modified afterwards
-- [ ] run tests - must pass before task 5
+- [x] implement the rejection branch: set `Rebased: true` **before** recovery, call `pullRebaseResolving(repoPath, true)`, record `Resolved`, then retry the push exactly once (no loop)
+- [x] return `Rebased`/`Resolved` populated alongside a non-nil error when the retry push fails, so callers can tell that local history was rewritten
+- [x] return the rebase's own failure (with `Rebased: true`) when `pullRebaseResolving` fails, leaving the recovery decision to the caller
+- [x] write a test for the real rejection path: clone the bare remote twice, commit+push a different task file from clone B, commit in clone A, `AutoPush` from A → `Rebased: true`, `Pushed: true`, A's commit on the remote, B's task file present in A
+- [x] write a test for the conflicting-rejection path (both clones edit the same task file) → `Resolved: 1`, later-`UpdatedAt` version wins
+- [x] write a test for rebase-succeeded-but-retry-push-failed → `Rebased: true` **and** a non-nil error (drive it by making the remote unreachable between the two pushes, e.g. renaming the bare repo dir)
+- [x] write a test that a rejected push with a dirty tracked file still succeeds via autostash and leaves the dirty file modified afterwards
+- [x] run tests - must pass before task 5
+
+[decision] The retry-push failure is wrapped as `push after rebase: %w` rather than returned
+verbatim, so the TUI status flash and the CLI warning distinguish "could not push at all" from
+"rebased, then could not push". Matches the file's existing wrapping convention
+(`check remote:`, `check upstream:`).
+
+[deviation] `TestAutoPush_RebasedSurvivesRetryPushFailure` breaks the retry push with a
+`pre-receive` hook in the bare remote (`rejectPushes`) instead of the plan's suggested "rename
+the bare repo dir between the two pushes" — `AutoPush` is one synchronous call, so a test
+cannot interpose between its two pushes. The hook is exact for this fixture because git decides
+a non-fast-forward rejection **client-side** from the ref advertisement and never runs
+receive-pack hooks, so the first push is still rejected as non-fast-forward (driving the rebase)
+while the retry push meets the declining hook.
 
 ### Task 5: Add auto_push config key with env override
 

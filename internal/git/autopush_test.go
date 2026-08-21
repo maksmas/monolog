@@ -236,6 +236,228 @@ func TestAutoPush_BogusRemoteURLReturnsError(t *testing.T) {
 	}
 }
 
+// rejectPushes installs a pre-receive hook in the bare repo that declines every
+// push. It does not affect a non-fast-forward rejection, which git decides on
+// the client from the ref advertisement without ever running receive-pack hooks
+// — so a repo with this hook rejects the first push as non-fast-forward and the
+// retry push after the rebase as a remote decline.
+func rejectPushes(t *testing.T, bare string) {
+	t.Helper()
+	hook := filepath.Join(bare, "hooks", "pre-receive")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write pre-receive hook: %v", err)
+	}
+}
+
+func TestAutoPush_RebasesOnRejectionThenPushes(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// B pushes a DIFFERENT task, so A's push is rejected as non-fast-forward and
+	// the rebase is conflict-free.
+	bTask := pushTask(t, b, model.Task{
+		ID: "01RJB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	aTask := commitTask(t, a, model.Task{
+		ID: "01RJA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	beforeSHA, err := headSHA(a)
+	if err != nil {
+		t.Fatalf("headSHA: %v", err)
+	}
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v", err)
+	}
+	if !res.Rebased {
+		t.Error("Rebased = false, want true after a non-fast-forward rejection")
+	}
+	if !res.Pushed {
+		t.Error("Pushed = false, want true: the retry push should succeed")
+	}
+	if res.Resolved != 0 {
+		t.Errorf("Resolved = %d, want 0 for a conflict-free rebase", res.Resolved)
+	}
+	if res.Skipped {
+		t.Error("Skipped = true, want false")
+	}
+
+	// The rebase rewrote local history, and A's commit reached the remote.
+	afterSHA, err := headSHA(a)
+	if err != nil {
+		t.Fatalf("headSHA after: %v", err)
+	}
+	if afterSHA == beforeSHA {
+		t.Error("local HEAD unchanged; the rebase should have rewritten A's commit")
+	}
+	if got := bareHead(t, bare); got != afterSHA {
+		t.Errorf("remote HEAD = %q, want A's rebased HEAD %q", got, afterSHA)
+	}
+	// Both sides' tasks survive in A.
+	if _, err := os.Stat(filepath.Join(a, bTask)); err != nil {
+		t.Errorf("B's task should be present in A after the rebase: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(a, aTask)); err != nil {
+		t.Errorf("A's own task should survive the rebase: %v", err)
+	}
+	if rebasing, err := IsRebasing(a); err != nil || rebasing {
+		t.Errorf("IsRebasing() = %v, %v; want false, nil", rebasing, err)
+	}
+}
+
+func TestAutoPush_RejectionWithConflictAutoResolves(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// Both clones add the SAME task file: the rejection's rebase hits an add/add
+	// conflict that ResolveConflicts settles on the later UpdatedAt.
+	taskPath := pushTask(t, b, model.Task{
+		ID: "01RC", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	abs := filepath.Join(a, taskPath)
+	writeTaskJSON(t, abs, model.Task{
+		ID: "01RC", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, a, "add", taskPath)
+	gitRun(t, a, "commit", "-m", "A edit")
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v", err)
+	}
+	if !res.Rebased {
+		t.Error("Rebased = false, want true")
+	}
+	if !res.Pushed {
+		t.Error("Pushed = false, want true after the conflict was resolved")
+	}
+	if res.Resolved != 1 {
+		t.Errorf("Resolved = %d, want 1", res.Resolved)
+	}
+	if got := readTaskJSON(t, abs).Title; got != "from A" {
+		t.Errorf("Title = %q, want %q: the later UpdatedAt wins", got, "from A")
+	}
+	head, err := headSHA(a)
+	if err != nil {
+		t.Fatalf("headSHA: %v", err)
+	}
+	if got := bareHead(t, bare); got != head {
+		t.Errorf("remote HEAD = %q, want the resolved local HEAD %q", got, head)
+	}
+	if rebasing, err := IsRebasing(a); err != nil || rebasing {
+		t.Errorf("IsRebasing() = %v, %v; want false, nil", rebasing, err)
+	}
+}
+
+func TestAutoPush_RebasedSurvivesRetryPushFailure(t *testing.T) {
+	// The load-bearing case: the rebase rewrote local SHAs and only then did the
+	// retry push fail. Reporting Rebased false here would leave the TUI's undo
+	// stack holding commits that no longer exist.
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	bTask := pushTask(t, b, model.Task{
+		ID: "01RFB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	// Installed after B's push so only the retry push meets the hook.
+	rejectPushes(t, bare)
+	commitTask(t, a, model.Task{
+		ID: "01RFA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	beforeSHA, err := headSHA(a)
+	if err != nil {
+		t.Fatalf("headSHA: %v", err)
+	}
+	remoteBefore := bareHead(t, bare)
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err == nil {
+		t.Fatal("expected an error when the retry push is declined by the remote")
+	}
+	if !res.Rebased {
+		t.Error("Rebased = false, want true: local history was rewritten before the retry failed")
+	}
+	if res.Pushed {
+		t.Error("Pushed = true, want false: the retry push failed")
+	}
+	if res.Skipped {
+		t.Error("Skipped = true, want false")
+	}
+
+	afterSHA, err := headSHA(a)
+	if err != nil {
+		t.Fatalf("headSHA after: %v", err)
+	}
+	if afterSHA == beforeSHA {
+		t.Fatal("local HEAD unchanged; the fixture did not exercise the rebase")
+	}
+	if _, err := os.Stat(filepath.Join(a, bTask)); err != nil {
+		t.Errorf("B's task should be present in A after the rebase: %v", err)
+	}
+	if got := bareHead(t, bare); got != remoteBefore {
+		t.Errorf("remote HEAD = %q, want unchanged %q: the retry push was declined", got, remoteBefore)
+	}
+	if rebasing, err := IsRebasing(a); err != nil || rebasing {
+		t.Errorf("IsRebasing() = %v, %v; want false, nil", rebasing, err)
+	}
+}
+
+func TestAutoPush_RejectionAutostashesDirtyFile(t *testing.T) {
+	// pull --rebase refuses to run over a modified tracked file, and AutoPush
+	// deliberately does not commit unrelated files — the TUI's applySettings
+	// writes .monolog/config.json without committing it, so without --autostash
+	// every rejected push after a settings change would fail.
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	pushTask(t, b, model.Task{
+		ID: "01DS", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01DA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	dirty := filepath.Join(a, ".monolog", "config.json")
+	const dirtyContent = "{\n  \"theme\": \"dracula\"\n}\n"
+	if err := os.WriteFile(dirty, []byte(dirtyContent), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v", err)
+	}
+	if !res.Rebased || !res.Pushed {
+		t.Errorf("got %+v, want Rebased and Pushed true", res)
+	}
+	data, err := os.ReadFile(dirty)
+	if err != nil {
+		t.Fatalf("read dirty file after autostash: %v", err)
+	}
+	if string(data) != dirtyContent {
+		t.Errorf("autostash should restore the modification; got %q, want %q", string(data), dirtyContent)
+	}
+	// Still uncommitted: AutoPush must not sweep unrelated files into a commit.
+	has, err := HasChanges(a)
+	if err != nil {
+		t.Fatalf("HasChanges: %v", err)
+	}
+	if !has {
+		t.Error("dirty file should still be uncommitted after the autostashed rebase")
+	}
+}
+
 func TestIsNonFastForward(t *testing.T) {
 	tests := []struct {
 		name string
