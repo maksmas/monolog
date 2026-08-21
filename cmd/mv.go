@@ -207,6 +207,12 @@ func newMvCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Moved: %s to %s [%s]\n", task.Title, posLabel, display.ShortID(task.ID))
+
+			// mv's commit lives inside rebalanceAndCommit, which has no writer in
+			// scope — so the push goes here, after the helper returned AND after
+			// the success line, keeping the same output-before-network ordering as
+			// every other mutation command.
+			pushAfter(cmd.ErrOrStderr(), repoPath)
 			return nil
 		},
 	}

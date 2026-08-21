@@ -50,6 +50,8 @@ func newNoteCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Note added: %s [%s]\n", task.Title, display.ShortID(task.ID))
+
+			pushAfter(cmd.ErrOrStderr(), repoPath)
 			return nil
 		},
 	}

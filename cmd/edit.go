@@ -109,6 +109,8 @@ func newEditCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Edited: %s [%s]\n", task.Title, display.ShortID(task.ID))
+
+			pushAfter(cmd.ErrOrStderr(), repoPath)
 			return nil
 		},
 	}

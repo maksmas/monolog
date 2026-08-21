@@ -40,6 +40,8 @@ func newRmCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Removed: %s [%s]\n", title, display.ShortID(task.ID))
+
+			pushAfter(cmd.ErrOrStderr(), repoPath)
 			return nil
 		},
 	}

@@ -517,14 +517,41 @@ string-typed map fails the unmarshal outright.
 - Modify: `cmd/note.go`
 - Modify: `cmd/helpers_test.go`
 
-- [ ] add `var autoPushFn = git.AutoPush` and `pushAfter(w io.Writer, repoPath string)` to `cmd/helpers.go` — no-op when `config.AutoPush()` is false, else `autoPushFn(repoPath, git.CLIPushTimeout)`, warning failures to `w` and returning nothing
-- [ ] add a `pushAfter(cmd.ErrOrStderr(), repoPath)` call **below** the success `Fprintf` in `add.go`, `edit.go`, `rm.go`, `note.go`, and below `done.go`'s existing archive block
-- [ ] add the `pushAfter` call to `cmd/mv.go`'s `RunE` body after `rebalanceAndCommit` returns (its commit is inside the helper, which has no writer in scope)
-- [ ] write tests for `pushAfter` with `autoPushFn` stubbed: called once with the repo path and `CLIPushTimeout` when enabled; not called when `config.AutoPush()` is false
-- [ ] write tests for the failure path (stub returns an error → warning on `w`, no panic, commit still present in git log) and for `Skipped: true` producing no warning output
-- [ ] write a table test over `add`/`edit`/`done`/`mv`/`rm`/`note` asserting the stubbed `autoPushFn` fires exactly once per command — the specific failure mode of a mechanical six-file edit
-- [ ] write a test asserting the success line is printed even when the stubbed push blocks or fails (ordering regression guard)
-- [ ] run tests - must pass before task 7
+- [x] add `var autoPushFn = git.AutoPush` and `pushAfter(w io.Writer, repoPath string)` to `cmd/helpers.go` — no-op when `config.AutoPush()` is false, else `autoPushFn(repoPath, git.CLIPushTimeout)`, warning failures to `w` and returning nothing
+- [x] add a `pushAfter(cmd.ErrOrStderr(), repoPath)` call **below** the success `Fprintf` in `add.go`, `edit.go`, `rm.go`, `note.go`, and below `done.go`'s existing archive block
+- [x] add the `pushAfter` call to `cmd/mv.go`'s `RunE` body after `rebalanceAndCommit` returns (its commit is inside the helper, which has no writer in scope)
+- [x] write tests for `pushAfter` with `autoPushFn` stubbed: called once with the repo path and `CLIPushTimeout` when enabled; not called when `config.AutoPush()` is false
+- [x] write tests for the failure path (stub returns an error → warning on `w`, no panic, commit still present in git log) and for `Skipped: true` producing no warning output
+- [x] write a table test over `add`/`edit`/`done`/`mv`/`rm`/`note` asserting the stubbed `autoPushFn` fires exactly once per command — the specific failure mode of a mechanical six-file edit
+- [x] write a test asserting the success line is printed even when the stubbed push blocks or fails (ordering regression guard)
+- [x] run tests - must pass before task 7
+
+[decision] `cmd/mv.go`'s `pushAfter` sits **after** the `"Moved:"` `Fprintf`, not immediately after
+`rebalanceAndCommit` returns. Both satisfy the plan's "in the `RunE` body after the helper
+returns", and putting it after the output keeps mv's ordering identical to the other five
+commands — the whole point of the push-after-output rule.
+
+[decision] `pushAfter` ignores the returned `PushResult` entirely; only a non-nil error warns.
+That is what makes `Skipped` silent for free (skip returns a nil error), so there is no separate
+skip branch to keep in sync.
+
+[decision] The table test resolves tasks by **full ULID**, not an 8-char prefix: its two seed
+tasks are created in the same millisecond and share their first 8 characters, which
+`store.Resolve` correctly rejects as ambiguous (the same collision CLAUDE.md cites for
+`searchIDWidth`).
+
+[decision] The pure `pushAfter` tests pin config state via a `loadAutoPushConfig(t, bool)` helper
+that writes a throwaway config.json and calls `config.Load`. `config`'s auto-push value is
+package-level and leaks between tests in a package; command-level tests do not need the helper
+because every mutation command re-runs `config.Load` through `openStore` before reaching
+`pushAfter`.
+
+➕ Added beyond the checklist: `TestCLIMutations_NoCommitNoPush` (the `done`-already-done and
+`mv`-already-at-top early returns make no commit, so they must not push either) and
+`TestAddCommand_ConfigAutoPushFalseSkipsPush` (disables via an on-disk `"auto_push": false`
+rather than the env var, exercising `Load` → `AutoPush` → `pushAfter` end to end). The
+wiring was mutation-checked: deleting `mv.go`'s `pushAfter` call makes the table test's `mv`
+subtest fail, confirming the table drives each command rather than passing vacuously.
 
 ### Task 7: Wire auto-push into the TUI with coalescing
 

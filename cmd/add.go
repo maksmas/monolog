@@ -93,6 +93,8 @@ func newAddCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Added: %s [%s]\n", title, display.ShortID(task.ID))
+
+			pushAfter(cmd.ErrOrStderr(), repoPath)
 			return nil
 		},
 	}

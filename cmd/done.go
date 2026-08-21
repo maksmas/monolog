@@ -88,6 +88,8 @@ func newDoneCmd() *cobra.Command {
 					fmt.Fprintln(cmd.OutOrStdout(), "email archived")
 				}
 			}
+
+			pushAfter(cmd.ErrOrStderr(), repoPath)
 			return nil
 		},
 	}

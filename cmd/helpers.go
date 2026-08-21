@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/git"
 	"github.com/maksmas/monolog/internal/store"
 )
 
@@ -35,4 +37,32 @@ func openStore() (*store.Store, string, error) {
 		return nil, "", fmt.Errorf("open store: %w", err)
 	}
 	return s, repoPath, nil
+}
+
+// autoPushFn is the seam tests replace to avoid real network I/O, mirroring
+// archiveFn in done.go. Nothing outside internal/git may touch the network.
+var autoPushFn = git.AutoPush
+
+// pushAfter pushes the commit a mutation just made to the remote, warning
+// failures to w and swallowing them: the commit is durable locally and the next
+// push (or `monolog sync`) catches up, so a mutation must never fail — or change
+// its exit code — because the network did.
+//
+// Call it AFTER the command's user-visible output. Replacing the git.AutoCommit
+// call with a combined commit-and-push would insert up to CLIPushTimeout of
+// network I/O between the store write and the success line, turning
+// `monolog add` from Raycast or the Claude skill into a visible hang on a bad
+// network — exactly where the tool must feel instant. This mirrors done.go's
+// archive ordering, which prints "Done:" and only then talks to Gmail.
+//
+// A skipped push (no remote, or a remote with no upstream) returns a nil error
+// and is therefore silent: a local-only repo is a supported configuration, not
+// something to nag about on every mutation.
+func pushAfter(w io.Writer, repoPath string) {
+	if !config.AutoPush() {
+		return
+	}
+	if _, err := autoPushFn(repoPath, git.CLIPushTimeout); err != nil {
+		fmt.Fprintf(w, "push failed: %v\n", err)
+	}
 }
