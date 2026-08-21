@@ -3,10 +3,12 @@ package git
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/maksmas/monolog/internal/model"
@@ -1147,5 +1149,146 @@ func TestSync_PullsAndPushesThroughSharedRebasePath(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "sync") {
 		t.Errorf("remote should contain A's sync commit, got: %s", out)
+	}
+}
+
+func TestAutoCommitSHA_ConcurrentCallsSerialize(t *testing.T) {
+	// Without repoMu these goroutines race on .git/index.lock, which surfaces
+	// as "Unable to create '.../index.lock': File exists".
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const n = 8
+	type result struct {
+		sha string
+		err error
+	}
+	results := make(chan result, n)
+	var start sync.WaitGroup
+	start.Add(1)
+	// Files are written from the test goroutine (writeTaskJSON calls t.Fatalf,
+	// which is only valid there). Untracked files are invisible to another
+	// caller's `git add <path>` + `git commit`, so each commit still carries
+	// exactly its own file.
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("01CO%04d", i)
+		relPath := filepath.Join(".monolog", "tasks", id+".json")
+		writeTaskJSON(t, filepath.Join(repoPath, relPath), model.Task{
+			ID: id, Title: "concurrent " + id, Status: "open", Schedule: "today",
+			UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+		})
+		go func() {
+			start.Wait()
+			sha, err := AutoCommitSHA(repoPath, "add: "+id, relPath)
+			results <- result{sha: sha, err: err}
+		}()
+	}
+	start.Done()
+
+	seen := make(map[string]bool, n)
+	for i := 0; i < n; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatalf("AutoCommitSHA() error = %v", r.err)
+		}
+		if r.sha == "" {
+			t.Fatal("AutoCommitSHA() returned an empty SHA")
+		}
+		if seen[r.sha] {
+			t.Errorf("duplicate SHA %q: a concurrent commit was attributed to the wrong caller", r.sha)
+		}
+		seen[r.sha] = true
+	}
+
+	// One commit per call, on top of Init's initial commit.
+	out, err := exec.Command("git", "-C", repoPath, "rev-list", "--count", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-list: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != fmt.Sprint(n+1) {
+		t.Errorf("commit count = %s, want %d", got, n+1)
+	}
+	// Nothing may be left uncommitted: each call must have staged and committed
+	// exactly its own file.
+	has, err := HasChanges(repoPath)
+	if err != nil {
+		t.Fatalf("HasChanges: %v", err)
+	}
+	if has {
+		t.Error("working tree should be clean after all concurrent commits")
+	}
+}
+
+func TestAutoCommitSHA_ConcurrentWithSync(t *testing.T) {
+	// The mutex must keep a mutation's commit from interleaving with Sync's
+	// commit/rebase/push. Both calls have to complete without a git-level
+	// failure (notably no .git/index.lock contention).
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// Give Sync real remote work: a diverged commit to rebase onto.
+	bTask := pushTask(t, b, model.Task{
+		ID: "01CS", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	syncErr := make(chan error, 1)
+	go func() {
+		_, err := Sync(a)
+		syncErr <- err
+	}()
+
+	// A concurrent Sync commits everything it finds (`git add -A`), so it may
+	// legitimately absorb the pending write and leave AutoCommitSHA with
+	// nothing to commit. That is a pre-existing interaction between the two
+	// entry points, not lock corruption, so retry with a fresh task until the
+	// commit lands. What repoMu must guarantee is that neither call ever fails
+	// on .git/index.lock or commits onto a detached rebase HEAD.
+	var (
+		sha     string
+		lastErr error
+	)
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("01CT%04d", i)
+		relPath := filepath.Join(".monolog", "tasks", id+".json")
+		writeTaskJSON(t, filepath.Join(a, relPath), model.Task{
+			ID: id, Title: "from A", Status: "open", Schedule: "today",
+			UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+		})
+		sha, lastErr = AutoCommitSHA(a, "add: "+id, relPath)
+		if lastErr == nil {
+			break
+		}
+		if strings.Contains(lastErr.Error(), "index.lock") {
+			t.Fatalf("AutoCommitSHA raced Sync on the git index: %v", lastErr)
+		}
+	}
+	if lastErr != nil {
+		t.Fatalf("AutoCommitSHA() error = %v", lastErr)
+	}
+	if sha == "" {
+		t.Fatal("AutoCommitSHA() returned an empty SHA")
+	}
+
+	if err := <-syncErr; err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	// The repo must be left in a sane, non-rebasing state with B's task pulled in.
+	rebasing, err := IsRebasing(a)
+	if err != nil {
+		t.Fatalf("IsRebasing: %v", err)
+	}
+	if rebasing {
+		t.Error("repo should not be mid-rebase after concurrent commit + sync")
+	}
+	if _, err := os.Stat(filepath.Join(a, bTask)); err != nil {
+		t.Errorf("B's task should be present in A after Sync: %v", err)
+	}
+	if _, err := CommitSubject(a, sha); err != nil {
+		t.Errorf("the committed SHA should still resolve: %v", err)
 	}
 }

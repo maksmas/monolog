@@ -8,12 +8,33 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/maksmas/monolog/internal/model"
 )
 
 // tasksPrefix is the repo-relative path prefix of task JSON files.
 const tasksPrefix = ".monolog/tasks/"
+
+// repoMu serializes every mutating git entry point in this package.
+//
+// A push-only mutex is NOT enough. The auto-push design deliberately lets a
+// mutation's AutoCommitSHA run while a push is in flight, each in its own
+// tea.Cmd goroutine, and a rejected push falls back to pull --rebase. A commit
+// racing that rebase either contends on .git/index.lock — leaving the user with
+// a written task file and a "commit:" error — or commits onto a detached rebase
+// HEAD. Pressing `s` during an auto-push rebase is likewise two concurrent
+// rebases in one worktree. internal/telegram/handler.go already solves this the
+// same way, with one mutex around all its git work.
+//
+// The lock is per-process only: a second monolog process (a Raycast capture, a
+// `monolog add` in another terminal) still degrades to .git/index.lock
+// contention, which callers surface as a warning.
+//
+// Exported entry points that take this lock must never call another locking
+// exported function — Go's sync.Mutex is not reentrant. Shared work therefore
+// lives in unexported, unlocked cores (autoCommit, revert).
+var repoMu sync.Mutex
 
 // Init initializes a new monolog repository at the given path.
 // It creates the directory structure (.monolog/tasks/, .monolog/config.json, .gitignore),
@@ -99,6 +120,14 @@ func Init(path string, remote string) error {
 // commits them with the given message. This is used by mutation commands
 // (add, done, edit, rm, mv) for automatic git commits.
 func AutoCommit(repoPath string, message string, files ...string) error {
+	repoMu.Lock()
+	defer repoMu.Unlock()
+	return autoCommit(repoPath, message, files...)
+}
+
+// autoCommit is AutoCommit's unlocked core, shared with AutoCommitSHA so the
+// latter can hold repoMu across both the commit and the HEAD read.
+func autoCommit(repoPath string, message string, files ...string) error {
 	for _, f := range files {
 		if err := run(repoPath, "git", "add", f); err != nil {
 			return fmt.Errorf("git add %s: %w", f, err)
@@ -123,8 +152,13 @@ func headSHA(repoPath string) (string, error) {
 
 // AutoCommitSHA stages the specified files, commits with the given message,
 // then returns the SHA of the resulting HEAD commit.
+//
+// The commit and the HEAD read happen under one repoMu hold, so a concurrent
+// mutation cannot slip a commit in between and hand back the wrong SHA.
 func AutoCommitSHA(repoPath string, message string, files ...string) (string, error) {
-	if err := AutoCommit(repoPath, message, files...); err != nil {
+	repoMu.Lock()
+	defer repoMu.Unlock()
+	if err := autoCommit(repoPath, message, files...); err != nil {
 		return "", err
 	}
 	sha, err := headSHA(repoPath)
@@ -148,6 +182,14 @@ func CommitSubject(repoPath, sha string) (string, error) {
 // Revert creates a new commit that reverses the named commit (git revert --no-edit).
 // On conflict it runs git revert --abort before returning the error.
 func Revert(repoPath, sha string) error {
+	repoMu.Lock()
+	defer repoMu.Unlock()
+	return revert(repoPath, sha)
+}
+
+// revert is Revert's unlocked core, shared with RevertSHA so the latter can
+// hold repoMu across both the revert and the HEAD read.
+func revert(repoPath, sha string) error {
 	cmd := exec.Command("git", "revert", sha, "--no-edit")
 	cmd.Dir = repoPath
 	out, err := cmd.CombinedOutput()
@@ -165,7 +207,9 @@ func Revert(repoPath, sha string) error {
 // HEAD SHA (the revert commit). On conflict, Revert runs git revert --abort
 // before returning the error. Mirror of AutoCommitSHA for the revert path.
 func RevertSHA(repoPath, sha string) (string, error) {
-	if err := Revert(repoPath, sha); err != nil {
+	repoMu.Lock()
+	defer repoMu.Unlock()
+	if err := revert(repoPath, sha); err != nil {
 		return "", err
 	}
 	newSHA, err := headSHA(repoPath)
@@ -235,6 +279,13 @@ type SyncResult struct {
 // after the local commit. Used by both the `monolog sync` CLI command and
 // the TUI's sync key.
 func Sync(repoPath string) (SyncResult, error) {
+	// Held for the whole call: the commit, the rebase and the push must not
+	// interleave with a concurrent mutation's commit. The helpers called below
+	// (HasChanges, SyncCommit, HasRemote, pullRebaseResolving, Push) are all
+	// lock-free, so this cannot self-deadlock.
+	repoMu.Lock()
+	defer repoMu.Unlock()
+
 	var res SyncResult
 
 	hasChanges, err := HasChanges(repoPath)

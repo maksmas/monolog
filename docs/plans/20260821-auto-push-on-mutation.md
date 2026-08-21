@@ -411,12 +411,20 @@ user submits add modal
 - Modify: `internal/git/git.go`
 - Modify: `internal/git/git_test.go`
 
-- [ ] add package-level `repoMu sync.Mutex` with a comment stating why a push-only mutex is insufficient (concurrent `AutoCommitSHA` during an in-flight rebase → `index.lock` or a commit onto detached rebase HEAD) and that the lock is per-process
-- [ ] acquire `repoMu` in `AutoCommit`, `AutoCommitSHA`, `Revert`, `RevertSHA`, and `Sync`, keeping every exported signature unchanged
-- [ ] verify no lock is held across a call to another locking exported function (`RevertSHA` wraps `Revert` + `headSHA`, `AutoCommitSHA` wraps commit + `headSHA`) — restructure into unexported unlocked cores if a self-deadlock exists
-- [ ] write a test that concurrent `AutoCommitSHA` calls from multiple goroutines all succeed and produce distinct commits (would flake on `index.lock` without the mutex)
-- [ ] write a test that a concurrent `AutoCommitSHA` and `Sync` against a bare fixture remote both complete without error
-- [ ] run tests with `-race` - must pass before task 3
+- [x] add package-level `repoMu sync.Mutex` with a comment stating why a push-only mutex is insufficient (concurrent `AutoCommitSHA` during an in-flight rebase → `index.lock` or a commit onto detached rebase HEAD) and that the lock is per-process
+- [x] acquire `repoMu` in `AutoCommit`, `AutoCommitSHA`, `Revert`, `RevertSHA`, and `Sync`, keeping every exported signature unchanged
+- [x] verify no lock is held across a call to another locking exported function (`RevertSHA` wraps `Revert` + `headSHA`, `AutoCommitSHA` wraps commit + `headSHA`) — restructure into unexported unlocked cores if a self-deadlock exists — split out unexported `autoCommit`/`revert` cores; `Sync`'s callees (`HasChanges`, `SyncCommit`, `HasRemote`, `pullRebaseResolving`, `Push`) are all lock-free
+- [x] write a test that concurrent `AutoCommitSHA` calls from multiple goroutines all succeed and produce distinct commits (would flake on `index.lock` without the mutex)
+- [x] write a test that a concurrent `AutoCommitSHA` and `Sync` against a bare fixture remote both complete without error
+- [x] run tests with `-race` - must pass before task 3
+
+⚠️ `TestAutoCommitSHA_ConcurrentWithSync` retries its `AutoCommitSHA` with a fresh task ID:
+a concurrent `Sync` stages **everything** (`git add -A`), so it can legitimately absorb the
+pending write and leave the mutation with nothing to commit ("nothing to commit" → exit 1).
+That interaction predates this task and is out of `repoMu`'s remit (the mutex serializes
+*calls*, it cannot make a write+commit pair atomic). The test asserts what the mutex owns
+instead: neither call ever fails on `.git/index.lock`, the repo is not left mid-rebase, and
+the returned SHA still resolves.
 
 ### Task 3: Add git.AutoPush core (push, classify, skip, mid-rebase guard)
 
