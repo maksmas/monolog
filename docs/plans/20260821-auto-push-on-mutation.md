@@ -610,12 +610,34 @@ trigger, and removing the `pushInFlight` gate each make the corresponding test f
 - Modify: `internal/tui/email_test.go`
 - Modify: `cmd/email_test.go`
 
-- [ ] dispatch `m.autoPushCmd()` from the TUI's `emailSyncResult` handler (`model.go:1057`) when `Created > 0` — the email path returns `emailSyncResult`, not `taskSavedMsg`, so Task 7's trigger never fires for it
-- [ ] add a `pushAfter(cmd.ErrOrStderr(), repoPath)` call after `email.Sync` returns in `cmd/email.go`, below its summary output
-- [ ] keep the push in the callers, not in `internal/email` — that package MUST NOT import `internal/config` (CLAUDE.md) and its batch commit at `sync.go:128` stays as-is
-- [ ] write a test that a TUI email sync creating tasks dispatches exactly one push, and that a zero-created sync dispatches none
-- [ ] write a test that `monolog email sync` calls the stubbed `autoPushFn` once after a successful import
-- [ ] run tests - must pass before task 9
+- [x] dispatch `m.autoPushCmd()` from the TUI's `emailSyncResult` handler (`model.go:1057`) when `Created > 0` — the email path returns `emailSyncResult`, not `taskSavedMsg`, so Task 7's trigger never fires for it
+- [x] add a `pushAfter(cmd.ErrOrStderr(), repoPath)` call after `email.Sync` returns in `cmd/email.go`, below its summary output
+- [x] keep the push in the callers, not in `internal/email` — that package MUST NOT import `internal/config` (CLAUDE.md) and its batch commit at `sync.go:128` stays as-is
+- [x] write a test that a TUI email sync creating tasks dispatches exactly one push, and that a zero-created sync dispatches none
+- [x] write a test that `monolog email sync` calls the stubbed `autoPushFn` once after a successful import
+- [x] run tests - must pass before task 9
+
+[decision] Both call sites gate on `Created > 0`, and both sit below the existing
+`err != nil` early return — which means the `Created > 0 && Err != nil` shape (tasks written to
+disk but `git.AutoCommit` failed, `internal/email/sync.go:128`) pushes nothing. That is correct:
+no commit exists to push, and the next mutation's push carries those files once they are
+committed. Pinned from both sides by `TestEmailSyncResult_NoPushWithoutCommit`'s
+"commit failed after writes" case.
+
+[decision] The TUI handler's `if msg.created > 0 { reload }` block was inverted into an early
+`if msg.created == 0 { return m, nil }` so the reload and the push share one guard instead of
+the push needing a second `created > 0` check after the block.
+
+➕ Added beyond the checklist: `TestEmailSyncResult_NoPushWhenAutoPushDisabled` and
+`TestEmailSyncCommand_PushFailureIsNonFatal` (the email path must honor the same off switch and
+the same non-fatal contract as the six mutation commands),
+`TestEmailSyncResult_PushCoalescesWithInFlightPush` (an import landing during a mutation's push
+queues one follow-up rather than a second concurrent push — the email ticker fires on its own
+schedule, so this overlap is routine rather than hypothetical), and
+`TestEmailSync_EndToEndDispatchesPush` (drives the real `emailSyncCmd` → `email.Sync` → batch
+commit → `emailSyncResult` chain instead of a synthesized message). Both new call sites were
+mutation-checked: deleting the TUI dispatch fails the two TUI dispatch tests, and deleting the
+`pushAfter` call fails the CLI push and non-fatal tests.
 
 ### Task 9: Surface push state in the status bar and help
 

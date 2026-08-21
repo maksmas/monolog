@@ -18,6 +18,7 @@ import (
 
 	"github.com/maksmas/monolog/internal/config"
 	"github.com/maksmas/monolog/internal/email"
+	"github.com/maksmas/monolog/internal/git"
 )
 
 // fakeEmailGmail is a recording stub used by every cmd-level email test.
@@ -261,6 +262,112 @@ func TestEmailSyncCommand_PropagatesSyncError(t *testing.T) {
 
 	if err := rootCmd.Execute(); err == nil {
 		t.Fatal("expected error when ListLabeled fails, got nil")
+	}
+}
+
+// TestEmailSyncCommand_PushesAfterImport pins that email.Sync's batch commit
+// reaches the remote. It is the seventh commit site in the codebase and the
+// only one not covered by the six-command table in helpers_test.go, so without
+// this call Gmail-imported tasks stay local forever.
+func TestEmailSyncCommand_PushesAfterImport(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	enableEmailConfig(t, dir)
+
+	fake := &fakeEmailGmail{
+		listIDs: []string{"msg1"},
+		messages: map[string]*email.Message{
+			"msg1": {ID: "msg1", Subject: "Hello", From: "Alice <a@example.com>", Snippet: "snip1"},
+		},
+	}
+	stubEmailFactory(t, fake, time.Now().Add(time.Hour), nil)
+	calls := stubAutoPushFn(t, git.PushResult{Pushed: true}, nil)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"email", "sync"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("email sync error = %v\noutput: %s", err, buf.String())
+	}
+
+	if len(*calls) != 1 {
+		t.Fatalf("autoPushFn calls = %d, want 1\noutput: %s", len(*calls), buf.String())
+	}
+	if (*calls)[0].repoPath != dir {
+		t.Errorf("push repoPath = %q, want %q", (*calls)[0].repoPath, dir)
+	}
+	if (*calls)[0].timeout != git.CLIPushTimeout {
+		t.Errorf("push timeout = %v, want CLIPushTimeout (%v)", (*calls)[0].timeout, git.CLIPushTimeout)
+	}
+}
+
+// TestEmailSyncCommand_ZeroCreatedSkipsPush pins the other half: email.Sync
+// skips its batch commit entirely when nothing new arrived, so there is no
+// commit to push and a no-new-mail sync must stay off the network.
+func TestEmailSyncCommand_ZeroCreatedSkipsPush(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	enableEmailConfig(t, dir)
+
+	// No labeled messages at all → Created == 0, no commit.
+	stubEmailFactory(t, &fakeEmailGmail{}, time.Now().Add(time.Hour), nil)
+	calls := stubAutoPushFn(t, git.PushResult{Pushed: true}, nil)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"email", "sync"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("email sync error = %v\noutput: %s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "created 0 task(s)") {
+		t.Errorf("expected 'created 0 task(s)', got: %s", buf.String())
+	}
+	if len(*calls) != 0 {
+		t.Errorf("autoPushFn calls = %d for a zero-created sync, want 0", len(*calls))
+	}
+}
+
+// TestEmailSyncCommand_PushFailureIsNonFatal pins the non-fatal contract for
+// the email path: a failing push warns on stderr, leaves the exit status
+// clean, and never rolls back the imported tasks.
+func TestEmailSyncCommand_PushFailureIsNonFatal(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	enableEmailConfig(t, dir)
+
+	fake := &fakeEmailGmail{
+		listIDs: []string{"msg1"},
+		messages: map[string]*email.Message{
+			"msg1": {ID: "msg1", Subject: "Hello", From: "Alice <a@example.com>", Snippet: "snip1"},
+		},
+	}
+	stubEmailFactory(t, fake, time.Now().Add(time.Hour), nil)
+	stubAutoPushFn(t, git.PushResult{}, errors.New("dial tcp: no route to host"))
+
+	rootCmd := NewRootCmd()
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	rootCmd.SetOut(out)
+	rootCmd.SetErr(errBuf)
+	rootCmd.SetArgs([]string{"email", "sync"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("push failure must not fail the command; got %v", err)
+	}
+	if !strings.Contains(out.String(), "created 1 task(s)") {
+		t.Errorf("success line missing from stdout: %s", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "push failed") {
+		t.Errorf("expected 'push failed' warning on stderr, got: %s", errBuf.String())
+	}
+	if tasks := readTasks(t, dir); len(tasks) != 1 {
+		t.Errorf("imported tasks = %d, want 1 — a failed push must not roll back the import", len(tasks))
 	}
 }
 

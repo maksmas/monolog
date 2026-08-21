@@ -89,6 +89,15 @@ func newEmailSyncCmd() *cobra.Command {
 				return res.Err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "created %d task(s)\n", res.Created)
+			// email.Sync's batch commit is the seventh commit site in the
+			// codebase and lives inside internal/email, which must not import
+			// internal/config — so the push stays here in the caller. Below
+			// the output, like every other mutation command. A zero-created
+			// sync made no commit (and an err return above means the commit
+			// itself failed), so there is nothing to push in either case.
+			if res.Created > 0 {
+				pushAfter(cmd.ErrOrStderr(), repoPath)
+			}
 			return nil
 		},
 	}

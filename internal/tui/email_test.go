@@ -349,6 +349,183 @@ func TestEmailSyncResult_PositiveCreatedTriggersReload(t *testing.T) {
 	}
 }
 
+// TestEmailSyncResult_PositiveCreatedDispatchesPush pins that email.Sync's
+// batch commit reaches the remote. The email path returns emailSyncResult, not
+// taskSavedMsg, so the taskSavedMsg push trigger never fires for it — without
+// this dispatch Gmail-imported tasks stay local forever.
+func TestEmailSyncResult_PositiveCreatedDispatchesPush(t *testing.T) {
+	m := newTestModelWithEmail(t,
+		model.Task{ID: "01ONE", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+	m.emailSyncing = true
+
+	next, cmd := m.Update(emailSyncResult{created: 2})
+	m = next.(*Model)
+
+	if !m.pushInFlight {
+		t.Error("pushInFlight = false after an email import; the coalescing gate must be armed")
+	}
+	pushes := msgsOfType[autoPushResult](runCmds(cmd))
+	if len(pushes) != 1 {
+		t.Fatalf("got %d autoPushResult msgs, want 1", len(pushes))
+	}
+	if rec.count() != 1 {
+		t.Fatalf("runAutoPush calls = %d, want 1", rec.count())
+	}
+	if rec.paths[0] != m.repoPath {
+		t.Errorf("push repoPath = %q, want %q", rec.paths[0], m.repoPath)
+	}
+	if rec.timeouts[0] != git.DefaultPushTimeout {
+		t.Errorf("push timeout = %v, want git.DefaultPushTimeout (%v)", rec.timeouts[0], git.DefaultPushTimeout)
+	}
+}
+
+// TestEmailSyncResult_NoPushWithoutCommit covers the emailSyncResult shapes
+// that carry no commit: a zero-created run (email.Sync skips its batch commit
+// entirely) and a failed run — including the created>0-but-commit-failed case,
+// where the tasks are on disk but nothing was committed.
+func TestEmailSyncResult_NoPushWithoutCommit(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  emailSyncResult
+	}{
+		{"zero created", emailSyncResult{created: 0}},
+		{"list failed", emailSyncResult{err: errors.New("list labeled: api down")}},
+		{"commit failed after writes", emailSyncResult{created: 2, err: errors.New("auto-commit: boom")}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModelWithEmail(t,
+				model.Task{ID: "01ONE", Title: "alpha", Status: "open", Schedule: "today",
+					Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+			)
+			rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+			m.emailSyncing = true
+
+			next, cmd := m.Update(c.msg)
+			m = next.(*Model)
+
+			if m.pushInFlight {
+				t.Error("pushInFlight = true with no commit to push")
+			}
+			if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+				t.Errorf("got %d autoPushResult msgs, want 0", len(got))
+			}
+			if rec.count() != 0 {
+				t.Errorf("runAutoPush calls = %d, want 0", rec.count())
+			}
+		})
+	}
+}
+
+// TestEmailSyncResult_NoPushWhenAutoPushDisabled pins the off switch on the
+// email path too: an import still reloads and flashes, but never pushes.
+func TestEmailSyncResult_NoPushWhenAutoPushDisabled(t *testing.T) {
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "1")
+	m := newTestModelWithEmail(t,
+		model.Task{ID: "01ONE", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if m.autoPushEnabled {
+		t.Fatal("precondition: auto-push should be disabled by MONOLOG_NO_AUTOPUSH=1")
+	}
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	next, cmd := m.Update(emailSyncResult{created: 2})
+	m = next.(*Model)
+
+	if m.pushInFlight {
+		t.Error("pushInFlight = true with auto-push disabled")
+	}
+	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+		t.Errorf("got %d autoPushResult msgs with auto-push disabled, want 0", len(got))
+	}
+	if rec.count() != 0 {
+		t.Errorf("runAutoPush calls = %d with auto-push disabled, want 0", rec.count())
+	}
+	if !contains(m.statusMsg, "2 imported") {
+		t.Errorf("statusMsg = %q — the import flash must survive with pushing off", m.statusMsg)
+	}
+}
+
+// TestEmailSyncResult_PushCoalescesWithInFlightPush pins that an email import
+// landing while a mutation's push is still in flight does not start a second
+// concurrent push — it sets pushPending and the in-flight push's handler fires
+// the single follow-up.
+func TestEmailSyncResult_PushCoalescesWithInFlightPush(t *testing.T) {
+	m := newTestModelWithEmail(t,
+		model.Task{ID: "01ONE", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+	m.pushInFlight = true
+
+	next, cmd := m.Update(emailSyncResult{created: 1})
+	m = next.(*Model)
+
+	if !m.pushPending {
+		t.Error("pushPending = false; an import during an in-flight push must queue a follow-up")
+	}
+	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+		t.Errorf("got %d autoPushResult msgs, want 0 — no second concurrent push", len(got))
+	}
+	if rec.count() != 0 {
+		t.Errorf("runAutoPush calls = %d, want 0 while a push is in flight", rec.count())
+	}
+
+	// The in-flight push returning drains the pending flag with exactly one push.
+	next, cmd = m.Update(autoPushResult{})
+	m = next.(*Model)
+	if m.pushPending {
+		t.Error("pushPending not cleared by the in-flight push's result")
+	}
+	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 1 {
+		t.Errorf("got %d autoPushResult msgs from the coalesced follow-up, want 1", len(got))
+	}
+	if rec.count() != 1 {
+		t.Errorf("runAutoPush calls = %d after the follow-up, want 1", rec.count())
+	}
+}
+
+// TestEmailSync_EndToEndDispatchesPush drives the whole email path — real
+// email.Sync against a fake Gmail, real batch commit, real emailSyncResult —
+// rather than a synthesized message, so the wiring cannot rot while the
+// message-level tests keep passing.
+func TestEmailSync_EndToEndDispatchesPush(t *testing.T) {
+	m := newTestModelWithEmail(t)
+	fake := &fakeGmail{
+		listIDs: []string{"msg1"},
+		messages: map[string]*email.Message{
+			"msg1": {ID: "msg1", Subject: "Hello", From: "Alice <a@x.com>", Snippet: "snip1"},
+		},
+	}
+	stubEmailClientBuilder(t, fake, nil)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	res, ok := m.emailSyncCmd()().(emailSyncResult)
+	if !ok {
+		t.Fatalf("emailSyncCmd did not produce an emailSyncResult")
+	}
+	if res.err != nil || res.created != 1 {
+		t.Fatalf("sync res = %+v, want created 1 and no error", res)
+	}
+
+	next, cmd := m.Update(res)
+	m = next.(*Model)
+	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 1 {
+		t.Fatalf("got %d autoPushResult msgs from the real email flow, want 1", len(got))
+	}
+	if rec.count() != 1 {
+		t.Errorf("runAutoPush calls = %d, want 1", rec.count())
+	}
+	// The reload ran, so the imported task is visible.
+	if len(m.allTasks) != 1 {
+		t.Errorf("allTasks = %d after import, want 1", len(m.allTasks))
+	}
+}
+
 func TestEmailNoOpMsg_IsAccepted(t *testing.T) {
 	// Confirm the Update handler swallows the no-op message without any
 	// state change.

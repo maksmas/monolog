@@ -1137,13 +1137,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("email: %d imported", msg.created)
 		// Reload only when something changed — avoids flicker on the
 		// no-new-mail case.
-		if msg.created > 0 {
-			if err := m.reloadAll(); err != nil {
-				m.err = err
-			}
-			m.recomputeLayout()
+		if msg.created == 0 {
+			// A zero-created sync made no commit (email.Sync skips its batch
+			// commit entirely when nothing was written), so there is nothing
+			// to push.
+			return m, nil
 		}
-		return m, nil
+		if err := m.reloadAll(); err != nil {
+			m.err = err
+		}
+		m.recomputeLayout()
+		// email.Sync's batch commit is a seventh commit site that never
+		// produces a taskSavedMsg, so the taskSavedMsg push trigger does not
+		// cover it — dispatch the push here or Gmail-imported tasks never
+		// reach the remote. Reached only on err == nil, which excludes the
+		// created>0-but-commit-failed case: no commit, nothing to push.
+		// autoPushCmd handles the disabled case and the in-flight coalescing
+		// itself, so no extra guard is needed.
+		return m, m.autoPushCmd()
 
 	case emailNoOpMsg:
 		// Email integration is disabled; nothing to do. The cmd exists so
