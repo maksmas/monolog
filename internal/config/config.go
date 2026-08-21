@@ -111,6 +111,35 @@ func defaultTelegramConfig() TelegramConfig {
 // telegramCfg holds the in-session telegram config populated by Load.
 var telegramCfg = defaultTelegramConfig()
 
+// defaultAutoPush is the documented default for auto-push-on-mutation: ON.
+// The bug this feature fixes is that pushing does not happen, so shipping it
+// opt-in would ship the broken behavior.
+const defaultAutoPush = true
+
+// autoPush holds the in-session auto-push setting populated by Load.
+var autoPush = defaultAutoPush
+
+// resetAutoPushToDefaults sets autoPush back to the documented default.
+// Called by Load before applying the "auto_push" key from disk so a
+// previously-loaded value is not preserved across configurations.
+func resetAutoPushToDefaults() {
+	autoPush = defaultAutoPush
+}
+
+// AutoPush reports whether mutations should push to the remote in the
+// background. Resolution order:
+//  1. MONOLOG_NO_AUTOPUSH=1 env var → false (exact "1" match, mirroring the
+//     MONOLOG_NO_LINKS and MONOLOG_NO_WATCH escape hatches; "true"/"yes" do
+//     NOT disable)
+//  2. the "auto_push" key loaded from config.json
+//  3. true (the default when the key is absent)
+func AutoPush() bool {
+	if os.Getenv("MONOLOG_NO_AUTOPUSH") == "1" {
+		return false
+	}
+	return autoPush
+}
+
 // Telegram returns the current telegram-integration settings. Defaults
 // are applied for any keys missing from the file: enabled=false,
 // allowed_user_ids=nil, pull_interval_seconds=30, browse_limit=20.
@@ -314,6 +343,7 @@ func applyTelegramBlock(b telegramBlock) {
 func Load(monologDir string) error {
 	resetEmailCfgToDefaults()
 	resetTelegramCfgToDefaults()
+	resetAutoPushToDefaults()
 
 	data, err := os.ReadFile(configPath(monologDir))
 	if os.IsNotExist(err) {
@@ -326,6 +356,10 @@ func Load(monologDir string) error {
 		DateFormat string         `json:"date_format"`
 		Email      *emailBlock    `json:"email,omitempty"`
 		Telegram   *telegramBlock `json:"telegram,omitempty"`
+		// AutoPush is a POINTER on purpose: an absent key must keep the
+		// true default while an explicit "auto_push": false disables the
+		// feature. A plain bool would make a missing key mean false.
+		AutoPush *bool `json:"auto_push,omitempty"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil // malformed JSON, keep defaults
@@ -341,13 +375,20 @@ func Load(monologDir string) error {
 	if cfg.Telegram != nil {
 		applyTelegramBlock(*cfg.Telegram)
 	}
+	if cfg.AutoPush != nil {
+		autoPush = *cfg.AutoPush
+	}
 	return nil
 }
 
 // Save writes the given theme and dateFormat values into config.json at
 // monologDir. It reads the existing file first so that keys it does not own
-// (e.g. "default_schedule", "editor") are preserved. A missing file is
-// treated as an empty object.
+// (e.g. "default_schedule", "editor", "auto_push") are preserved. A missing
+// file is treated as an empty object.
+//
+// Save deliberately does NOT write "auto_push": the read-modify-write already
+// round-trips it, and writing the in-session package var here would clobber an
+// explicit on-disk false back to true in any process where Load did not run.
 func Save(monologDir, theme, dateFormatLayout string) error {
 	p := configPath(monologDir)
 

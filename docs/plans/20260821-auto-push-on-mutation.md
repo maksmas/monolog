@@ -480,15 +480,30 @@ while the retry push meets the declining hook.
 - Modify: `internal/git/git.go`
 - Modify: `internal/git/git_test.go`
 
-- [ ] add `autoPush` package var defaulting to `true`, plus `resetAutoPushToDefaults()` called at the top of `Load` alongside the existing email/telegram resets
-- [ ] add `AutoPush *bool` (`json:"auto_push,omitempty"`, pointer so absent ≠ false) to `Load`'s anonymous config struct and apply it when non-nil
-- [ ] add `func AutoPush() bool` returning `false` when `os.Getenv("MONOLOG_NO_AUTOPUSH") == "1"`, else the loaded value
-- [ ] add `"auto_push": true` to the config.json template written by `git.Init`
-- [ ] write tests for `Load` (absent key → true; explicit `false` → false; explicit `true` → true; malformed JSON → default true)
-- [ ] write tests for the `MONOLOG_NO_AUTOPUSH=1` override via `t.Setenv` (overrides an on-disk `true`; unset → config value; a non-`1` value like `true`/`yes` does **not** disable, matching the existing escape hatches)
-- [ ] write a test that `config.Save` round-trips an existing `auto_push` key untouched (asserting the no-change decision, and guarding against a future regression that starts writing it)
-- [ ] update the `git.Init` test asserting config.json contents to expect the new key
-- [ ] run tests - must pass before task 6
+- [x] add `autoPush` package var defaulting to `true`, plus `resetAutoPushToDefaults()` called at the top of `Load` alongside the existing email/telegram resets
+- [x] add `AutoPush *bool` (`json:"auto_push,omitempty"`, pointer so absent ≠ false) to `Load`'s anonymous config struct and apply it when non-nil
+- [x] add `func AutoPush() bool` returning `false` when `os.Getenv("MONOLOG_NO_AUTOPUSH") == "1"`, else the loaded value
+- [x] add `"auto_push": true` to the config.json template written by `git.Init`
+- [x] write tests for `Load` (absent key → true; explicit `false` → false; explicit `true` → true; malformed JSON → default true)
+- [x] write tests for the `MONOLOG_NO_AUTOPUSH=1` override via `t.Setenv` (overrides an on-disk `true`; unset → config value; a non-`1` value like `true`/`yes` does **not** disable, matching the existing escape hatches)
+- [x] write a test that `config.Save` round-trips an existing `auto_push` key untouched (asserting the no-change decision, and guarding against a future regression that starts writing it)
+- [x] update the `git.Init` test asserting config.json contents to expect the new key
+- [x] run tests - must pass before task 6
+
+[decision] `Save` itself is unchanged, per the plan. Two tests pin the decision from both sides:
+`TestSavePreservesAutoPushKey` (an on-disk `false` survives a `Save` made from a process whose
+in-session var is `true` — the exact clobber a future regression would introduce) and
+`TestSaveDoesNotAddAutoPushWhenAbsent` (a config with no key does not gain one). `Save`'s doc
+comment now states why it is deliberately not an `auto_push` writer.
+
+[decision] `TestInit_CreatesDirectoryStructure` now unmarshals config.json into
+`map[string]any` instead of `map[string]string` — `auto_push` is a bool, so the old
+string-typed map fails the unmarshal outright.
+
+➕ Added beyond the checklist: `TestLoadResetsAutoPushBetweenCalls` (covers
+`resetAutoPushToDefaults`, mirroring the existing email/telegram carry-over tests) and
+`TestAutoPushEnvOverrideCannotEnableDisabledConfig` (the env var is a kill switch only —
+`MONOLOG_NO_AUTOPUSH=0` must not re-enable an on-disk `false`).
 
 ### Task 6: Wire auto-push into CLI mutation commands
 

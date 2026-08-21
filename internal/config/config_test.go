@@ -959,3 +959,244 @@ func TestAllFormatsReturnsThreeEntries(t *testing.T) {
 		}
 	}
 }
+
+// --- auto_push ---
+
+func resetAutoPush(t *testing.T) {
+	t.Helper()
+	prev := autoPush
+	t.Cleanup(func() { autoPush = prev })
+}
+
+// writeConfigDoc writes an arbitrary JSON document into
+// tmpDir/.monolog/config.json. Unlike writeConfigJSON it accepts non-string
+// values (auto_push is a bool) and does not touch MONOLOG_DIR.
+func writeConfigDoc(t *testing.T, tmpDir string, doc map[string]any) {
+	t.Helper()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir .monolog: %v", err)
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), data, 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+}
+
+func TestAutoPushDefaultsToTrue(t *testing.T) {
+	resetAutoPush(t)
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "")
+	autoPush = defaultAutoPush
+	if !AutoPush() {
+		t.Errorf("AutoPush() = false, want true by default")
+	}
+}
+
+func TestLoadAutoPush(t *testing.T) {
+	tests := []struct {
+		name string
+		doc  map[string]any
+		want bool
+	}{
+		{name: "absent key keeps default", doc: map[string]any{"theme": "default"}, want: true},
+		{name: "explicit false disables", doc: map[string]any{"auto_push": false}, want: false},
+		{name: "explicit true enables", doc: map[string]any{"auto_push": true}, want: true},
+		{name: "empty document keeps default", doc: map[string]any{}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetAutoPush(t)
+			resetDateFormat(t)
+			t.Setenv("MONOLOG_NO_AUTOPUSH", "")
+			tmpDir := t.TempDir()
+			writeConfigDoc(t, tmpDir, tt.doc)
+			if err := Load(tmpDir); err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := AutoPush(); got != tt.want {
+				t.Errorf("AutoPush() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadAutoPushMissingFileKeepsDefault(t *testing.T) {
+	resetAutoPush(t)
+	resetDateFormat(t)
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "")
+	autoPush = false // prove the default is restored even with no file on disk
+	if err := Load(t.TempDir()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !AutoPush() {
+		t.Errorf("AutoPush() = false, want true when config.json is absent")
+	}
+}
+
+func TestLoadAutoPushMalformedJSONKeepsDefault(t *testing.T) {
+	resetAutoPush(t)
+	resetDateFormat(t)
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "")
+	tmpDir := t.TempDir()
+	monologDir := filepath.Join(tmpDir, ".monolog")
+	if err := os.MkdirAll(monologDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(monologDir, "config.json"), []byte(`{"auto_push": fals`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load returned error for malformed JSON: %v", err)
+	}
+	if !AutoPush() {
+		t.Errorf("AutoPush() = false, want default true after malformed JSON")
+	}
+}
+
+func TestLoadResetsAutoPushBetweenCalls(t *testing.T) {
+	// First Load disables via an explicit false; a second Load against a
+	// config with no auto_push key must NOT carry that value forward.
+	resetAutoPush(t)
+	resetDateFormat(t)
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "")
+
+	disabledDir := t.TempDir()
+	writeConfigDoc(t, disabledDir, map[string]any{"auto_push": false})
+	if err := Load(disabledDir); err != nil {
+		t.Fatalf("Load (disabled): %v", err)
+	}
+	if AutoPush() {
+		t.Fatalf("AutoPush() = true after explicit false")
+	}
+
+	emptyDir := t.TempDir()
+	writeConfigDoc(t, emptyDir, map[string]any{"theme": "default"})
+	if err := Load(emptyDir); err != nil {
+		t.Fatalf("Load (empty): %v", err)
+	}
+	if !AutoPush() {
+		t.Errorf("AutoPush() = false after Load with no auto_push key, want true (carry-over leak)")
+	}
+}
+
+func TestAutoPushEnvOverride(t *testing.T) {
+	// Exact "1" match only, matching MONOLOG_NO_LINKS / MONOLOG_NO_WATCH.
+	tests := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{name: "1 disables", env: "1", want: false},
+		{name: "unset keeps config value", env: "", want: true},
+		{name: "true does not disable", env: "true", want: true},
+		{name: "yes does not disable", env: "yes", want: true},
+		{name: "0 does not disable", env: "0", want: true},
+		{name: "01 does not disable", env: "01", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetAutoPush(t)
+			resetDateFormat(t)
+			tmpDir := t.TempDir()
+			writeConfigDoc(t, tmpDir, map[string]any{"auto_push": true})
+			if err := Load(tmpDir); err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			t.Setenv("MONOLOG_NO_AUTOPUSH", tt.env)
+			if got := AutoPush(); got != tt.want {
+				t.Errorf("AutoPush() with MONOLOG_NO_AUTOPUSH=%q = %v, want %v", tt.env, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAutoPushEnvOverrideCannotEnableDisabledConfig(t *testing.T) {
+	// The env var is a kill switch only — it never turns auto-push back ON.
+	resetAutoPush(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	writeConfigDoc(t, tmpDir, map[string]any{"auto_push": false})
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "0")
+	if AutoPush() {
+		t.Errorf("AutoPush() = true, want false: env var must not re-enable a disabled config")
+	}
+}
+
+func TestSavePreservesAutoPushKey(t *testing.T) {
+	// Save is deliberately not an auto_push writer: its read-modify-write
+	// round-trips the key untouched. Writing the in-session package var there
+	// would clobber an explicit on-disk false back to true in any process
+	// where Load never ran. This test pins that decision.
+	resetAutoPush(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	writeConfigDoc(t, tmpDir, map[string]any{
+		"theme":       "default",
+		"date_format": "02-01-2006",
+		"auto_push":   false,
+	})
+
+	// Deliberately leave the in-session var at its true default (no Load) —
+	// that is the process state a regression would clobber from.
+	autoPush = true
+	if err := Save(tmpDir, "dracula", "2006-01-02"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".monolog", "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, ok := cfg["auto_push"]; !ok || got != false {
+		t.Errorf("auto_push = %v (present=%v), want false preserved by Save", got, ok)
+	}
+	// The keys Save does own still change.
+	if cfg["theme"] != "dracula" {
+		t.Errorf("theme = %v, want dracula", cfg["theme"])
+	}
+	if cfg["date_format"] != "2006-01-02" {
+		t.Errorf("date_format = %v, want 2006-01-02", cfg["date_format"])
+	}
+
+	// And the preserved value survives a reload.
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "")
+	if err := Load(tmpDir); err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if AutoPush() {
+		t.Errorf("AutoPush() = true after Save+Load, want false")
+	}
+}
+
+func TestSaveDoesNotAddAutoPushWhenAbsent(t *testing.T) {
+	// A config.json with no auto_push key must not gain one from Save —
+	// otherwise Save becomes an auto_push writer by the back door.
+	resetAutoPush(t)
+	resetDateFormat(t)
+	tmpDir := t.TempDir()
+	writeConfigDoc(t, tmpDir, map[string]any{"theme": "default"})
+	if err := Save(tmpDir, "dracula", "02-01-2006"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".monolog", "config.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := cfg["auto_push"]; ok {
+		t.Errorf("Save wrote an auto_push key (%v); it must stay read-modify-write only", cfg["auto_push"])
+	}
+}

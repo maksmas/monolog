@@ -41,7 +41,8 @@ func TestInit_CreatesDirectoryStructure(t *testing.T) {
 		t.Fatalf("failed to read config.json: %v", err)
 	}
 
-	var config map[string]string
+	// map[string]any rather than map[string]string: "auto_push" is a bool.
+	var config map[string]any
 	if err := json.Unmarshal(data, &config); err != nil {
 		t.Fatalf("config.json is not valid JSON: %v", err)
 	}
@@ -56,6 +57,9 @@ func TestInit_CreatesDirectoryStructure(t *testing.T) {
 	}
 	if config["date_format"] != "02-01-2006" {
 		t.Errorf("date_format = %q, want %q", config["date_format"], "02-01-2006")
+	}
+	if config["auto_push"] != true {
+		t.Errorf("auto_push = %v, want true", config["auto_push"])
 	}
 
 	// Check .gitignore exists

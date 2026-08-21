@@ -58,7 +58,8 @@ func Init(path string, remote string) error {
   "default_schedule": "today",
   "editor": "$EDITOR",
   "theme": "default",
-  "date_format": "02-01-2006"
+  "date_format": "02-01-2006",
+  "auto_push": true
 }
 `)
 	if err := os.WriteFile(configPath, configData, 0o644); err != nil {
