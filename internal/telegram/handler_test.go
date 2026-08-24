@@ -846,7 +846,7 @@ func TestHandleSlashReadOnlyPrependsBanner(t *testing.T) {
 	if len(bot.sent) != 3 {
 		t.Fatalf("expected 1 banner + 2 rows = 3, got %d", len(bot.sent))
 	}
-	if !strings.Contains(bot.sent[0].HTML, "read-only") {
+	if bot.sent[0].HTML != readOnlyBanner {
 		t.Fatalf("expected first message to be the banner, got %q", bot.sent[0].HTML)
 	}
 }
@@ -866,7 +866,7 @@ func TestHandleSlashReadOnlyBannerOnEmptyBucket(t *testing.T) {
 	if len(bot.sent) != 2 {
 		t.Fatalf("expected banner + empty-bucket = 2 messages, got %d", len(bot.sent))
 	}
-	if !strings.Contains(bot.sent[0].HTML, "read-only") {
+	if bot.sent[0].HTML != readOnlyBanner {
 		t.Fatalf("expected banner first, got %q", bot.sent[0].HTML)
 	}
 	if !strings.Contains(bot.sent[1].HTML, "nothing") {
@@ -1901,7 +1901,7 @@ func TestTaskPrefixFromRow(t *testing.T) {
 // not.
 
 func TestCommandPullsOnceWhenStaleThenSkipsInsideTheWindow(t *testing.T) {
-	fn, count := countingPull(nil)
+	fn, count := countingPull()
 	withPullFunc(t, fn)
 	clk := newMutableClock(handlerTestNow)
 	h, bot, s, _ := newTestHandlerWithClock(t, []int64{100}, clk.now)
@@ -1942,7 +1942,7 @@ func TestCommandPullsOnceWhenStaleThenSkipsInsideTheWindow(t *testing.T) {
 }
 
 func TestCaptureDoesNotPrePullButDoneCallbackDoes(t *testing.T) {
-	fn, count := countingPull(nil)
+	fn, count := countingPull()
 	withPullFunc(t, fn)
 	withSyncFunc(t, noopSync)
 	h, bot, s, _ := newTestHandler(t, []int64{100})
@@ -1988,7 +1988,7 @@ func TestCaptureDoesNotPrePullButDoneCallbackDoes(t *testing.T) {
 }
 
 func TestNoteReplyPrePulls(t *testing.T) {
-	fn, count := countingPull(nil)
+	fn, count := countingPull()
 	withPullFunc(t, fn)
 	withSyncFunc(t, noopSync)
 	h, _, s, _ := newTestHandler(t, []int64{100})
@@ -2102,4 +2102,107 @@ func containsAll(haystack, needles []string) bool {
 		}
 	}
 	return true
+}
+
+// TestEveryBrowseCommandPrePullsFromCold is the per-handler twin of
+// TestCommandPullsOnceWhenStaleThenSkipsInsideTheWindow, which only exercises
+// /week, /active and /all from INSIDE the freshness window — where the expected
+// count is 1 whether or not those handlers call the gate at all. Each row here
+// starts from a cold handler, so deleting h.pullBeforeCommand() from any single
+// browse handler fails exactly that row.
+func TestEveryBrowseCommandPrePullsFromCold(t *testing.T) {
+	for _, cmd := range []string{"/today", "/week", "/active", "/all"} {
+		t.Run(cmd, func(t *testing.T) {
+			fn, count := countingPull()
+			withPullFunc(t, fn)
+			h, bot, s, _ := newTestHandler(t, []int64{100})
+			seedBrowseTasks(t, s)
+
+			if err := h.Handle(context.Background(), Update{
+				UpdateID: 1,
+				Message:  &Message{ChatID: 5, UserID: 100, Text: cmd},
+			}); err != nil {
+				t.Fatalf("Handle %s: %v", cmd, err)
+			}
+			if got := count(); got != 1 {
+				t.Fatalf("%s from a cold handler pulls=%d want 1: the handler is not wired to the freshness gate", cmd, got)
+			}
+			if len(bot.sent) == 0 {
+				t.Fatalf("%s sent no reply", cmd)
+			}
+		})
+	}
+}
+
+// TestDoneCallbackPrePullHealsReadOnly covers the deliberate ordering in
+// handleCallback: the gate runs BEFORE the readOnly guard, so a button tap on a
+// healthy network clears a stale conflict flag and lets the write through.
+func TestDoneCallbackPrePullHealsReadOnly(t *testing.T) {
+	fn, count := countingPull()
+	withPullFunc(t, fn)
+	withSyncFunc(t, noopSync)
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	ids := seedBrowseTasks(t, s)
+	h.SetReadOnly(true)
+
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb1", UserID: 100, ChatID: 5, MessageID: 9, Data: "done:" + ids[0]},
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("pulls=%d want 1", got)
+	}
+	if h.IsReadOnly() {
+		t.Error("IsReadOnly() = true; a clean pre-pull must clear the flag")
+	}
+	if got, _ := s.Get(ids[0]); got.Status != "done" {
+		t.Errorf("task status = %q, want done: the healed handler must let the write through", got.Status)
+	}
+	if len(bot.sent) == 0 && len(bot.edits) == 0 {
+		t.Error("expected the callback to reply")
+	}
+}
+
+// TestNoteReplyRefusesWhileReadOnlyEvenOnAHealthyNetwork is the mirror: the
+// note path puts its gate AFTER the readOnly guard on purpose, so a conflicted
+// bot refuses the write without paying for a network round-trip first.
+func TestNoteReplyRefusesWhileReadOnlyEvenOnAHealthyNetwork(t *testing.T) {
+	fn, count := countingPull()
+	withPullFunc(t, fn)
+	withSyncFunc(t, noopSync)
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	ids := seedBrowseTasks(t, s)
+	before, err := s.Get(ids[0])
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	h.SetReadOnly(true)
+
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID: 5, UserID: 100, Text: "a note",
+			ReplyTo: &Message{ChatID: 5, Text: ids[0][:8] + " ship login bug fix"},
+		},
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := count(); got != 0 {
+		t.Fatalf("pulls=%d want 0: the read-only guard runs first on the note path", got)
+	}
+	if !h.IsReadOnly() {
+		t.Error("IsReadOnly() = false; the note path must not heal the flag")
+	}
+	after, err := s.Get(ids[0])
+	if err != nil {
+		t.Fatalf("get after: %v", err)
+	}
+	if after.Body != before.Body {
+		t.Errorf("body changed while read-only: %q -> %q", before.Body, after.Body)
+	}
+	if len(bot.sent) != 1 || bot.sent[0].HTML != readOnlyMessage {
+		t.Errorf("expected the read-only refusal, got %+v", bot.sent)
+	}
 }
