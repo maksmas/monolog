@@ -863,8 +863,12 @@ cobra tree, and pins `sync` in `skillProhibitedSubcommands`) passes unchanged.
 
 **External system updates:**
 
-- No bot-side change is needed — `telegram.Serve`'s existing `PullInterval` ticker picks up the
-  pushed commits. No redeploy required.
+- The bot **does** need a redeploy (`make build-bot-linux BOT_ARCH=... && make deploy-bot
+  DEPLOY_HOST=...`). This bullet was written before Task 10, which changed
+  `internal/telegram/{handler,sync}.go` to pull before serving a state-dependent command. Without
+  the redeploy the running bot falls back to its `PullInterval` ticker alone — up to 30s of
+  staleness, i.e. exactly the symptom Task 10 exists to fix, and the "`/today` reflects the laptop
+  within seconds" smoke test in `docs/deploy/README.md` will not pass.
 - Machines with an existing `~/.monolog/.monolog/config.json` will not have the `auto_push`
   key; the pointer-based default means they get auto-push enabled without editing anything.
 - Behavior change for the Claude skill: its unprompted `--tags claude -s someday` captures now

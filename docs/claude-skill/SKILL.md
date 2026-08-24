@@ -8,7 +8,9 @@ allowed-tools: Bash(monolog add *) Bash(monolog note *) Bash(monolog search *) B
 
 `monolog` is the user's personal backlog — one JSON file per task in a git repo, driven entirely from the CLI. Use it to file work that will outlive the current session, and to look up what is already filed.
 
-Every write auto-commits and then pushes that commit to the user's remote in the background, so what you file reaches their other devices — including their phone — without them doing anything. The push is silent on success and non-fatal on failure: if it cannot reach the remote the commit simply stays local until the next one gets through. Nothing about that needs handling from you; it happens inside `add` and `note`.
+Every write auto-commits and then pushes that commit to the user's remote, so what you file reaches their other devices — including their phone — without them doing anything. The push happens inside `add` and `note`, after the success line and before the command exits, so on a bad network the command can take a few extra seconds. It is silent on success and non-fatal on failure: if it cannot reach the remote the commit simply stays local until the next one gets through.
+
+A `push failed: <err>` line on stderr is **not** a write failure. The task was created and committed, and the exit code is still 0. Ignore it — do not retry, do not run `monolog sync`, and do not report it to the user as a broken write.
 
 ## The bar for filing
 

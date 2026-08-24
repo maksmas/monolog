@@ -66,7 +66,7 @@ monolog                             # launch the interactive TUI
 
 **Tags & the reserved `active` tag.** Tasks carry comma-separated tags. The reserved `active` tag marks a task as part of your current working set — active tasks render in green and get their own panel in the TUI. See [Active tasks](#active-tasks).
 
-**Storage & git sync.** Each task is a single JSON file at `<repo>/.monolog/tasks/<ULID>.json`. IDs are [ULIDs](https://github.com/oklog/ulid) — time-sortable and globally unique, so you can address a task by typing just a prefix. Every mutation auto-commits to git and then pushes that commit to the remote in the background, so a task filed on the laptop reaches the other devices without a manual sync. Pushes are silent on success and never fail the mutation: if the network is down the commit stays local and the next push (or `s` in the TUI) catches up. A push rejected because the remote moved on falls back to `pull --rebase --autostash` with the usual conflict resolution and retries once. Because each task is its own file, two devices editing different tasks rebase without conflicts. Ordering uses fractional positions with automatic rebalancing. The default data directory is `~/.monolog` (override with `MONOLOG_DIR`).
+**Storage & git sync.** Each task is a single JSON file at `<repo>/.monolog/tasks/<ULID>.json`. IDs are [ULIDs](https://github.com/oklog/ulid) — time-sortable and globally unique, so you can address a task by typing just a prefix. Every mutation auto-commits to git and then pushes that commit to the remote, so a task filed on the laptop reaches the other devices without a manual sync. The TUI pushes in the background; the CLI pushes right after printing its success line, so on a bad network `monolog add` can take a few extra seconds to exit. Pushes are silent on success and never fail the mutation: if the network is down the commit stays local and the next push (or `s` in the TUI) catches up. A push rejected because the remote moved on falls back to `pull --rebase --autostash` with the usual conflict resolution and retries once. Because each task is its own file, two devices editing different tasks rebase without conflicts. Ordering uses fractional positions with automatic rebalancing. The default data directory is `~/.monolog` (override with `MONOLOG_DIR`).
 
 ## Commands
 
@@ -285,7 +285,11 @@ Persistent settings live in `<MONOLOG_DIR>/.monolog/config.json`:
 
 The TUI settings modal (`,`) writes `theme` and `date_format`; the optional `email` and `telegram` blocks (documented below) are hand-edited or written by their respective `auth`/`serve` flows. Unknown keys are preserved on save.
 
-`auto_push` controls whether mutations push to the remote in the background. It defaults to `true` — an absent key means enabled, so existing repos get auto-push without editing anything. Set it to `false` to keep commits local, or set `MONOLOG_NO_AUTOPUSH=1` for a one-off; the env var is a kill switch only and cannot re-enable a config file that says `false`. Repos with no remote (or a remote with no upstream branch) skip the push silently.
+`auto_push` controls whether mutations push to the remote. It defaults to `true` — an absent key means enabled, so existing repos get auto-push without editing anything. Set it to `false` to keep commits local, or set `MONOLOG_NO_AUTOPUSH=1` for a one-off; the env var is a kill switch only and cannot re-enable a config file that says `false`.
+
+Repos with no remote skip the push silently, as do a detached HEAD and a repo with several remotes and no `origin`. A repo whose remote you added by hand after `monolog init` has no upstream branch yet; the first push sets one with `git push --set-upstream`, so it starts syncing without further setup.
+
+If the repo is left mid-rebase, auto-push refuses to run and every mutation warns `push failed: repository is mid-rebase; resolve manually` until you finish or abort the rebase yourself.
 
 Auto-push is quiet when it works. In the TUI a `↑` at the right of the stats bar means a push is still in flight — useful to glance at before closing the laptop. A failure flashes `push failed: <err>` on the status bar and leaves the commit exactly where it is; the CLI prints the same warning on stderr after its success line, so an exit code never changes because the network did.
 
@@ -429,6 +433,8 @@ Monolog ships a long-polling Telegram bot that lets you capture, browse, and com
 
    Defaults if omitted: `enabled=false`, `allowed_user_ids=[]` (rejects everyone — explicit allow-list is the only auth), `pull_interval_seconds=30`, `browse_limit=20`.
 
+   `pull_interval_seconds` is only the idle safety net. Any command that reads or acts on existing state (`/today`, `/week`, `/active`, `/all`, and the inline buttons) pulls first, rate-limited to one fetch per 5s on a clock shared with the ticker — so a laptop-side `monolog add` shows up on the phone within seconds regardless of the interval, and lowering it buys little.
+
 4. Run `monolog telegram serve --token <token>` for an ad-hoc local run, or follow the systemd deployment below for an always-on bot.
 
 ### Interaction model
@@ -457,11 +463,11 @@ Slash commands cover the read-only side:
 
 The `allowed_user_ids` array is the only authentication layer. Updates from any user ID not in the list are silently dropped — the bot does not reply, does not log, and does not reveal its existence to drive-by queries. Callback queries from non-allowed users get a silent `AnswerCallback` so Telegram stops the loading spinner on their button, but no message or edit is sent.
 
-Rotating: edit the array in `config.json`, commit, and either restart the bot or wait for the next pull tick to pick up the change.
+Rotating: edit the array in `config.json`, commit, and then restart the bot. The allow-list is read once at startup — `config.Telegram()` is passed into `telegram.Serve` by value — so pulling a new `config.json` has no effect until the process restarts.
 
 ### Read-only mode on sync conflict
 
-Every write path (capture, Done, Active, note-reply) ends with `git sync` (commit → pull --rebase → push). When the rebase fails the bot flips into read-only mode: subsequent writes reply with `⚠️ sync conflict, change not saved — resolve on laptop` and browse output prepends a `⚠️ read-only — sync conflict pending` banner. The state heals automatically on the next clean pull (every `pull_interval_seconds`), or you can restart the bot after resolving the conflict on the laptop.
+Every write path (capture, Done, Active, note-reply) ends with `git sync` (commit → pull --rebase → push). When the rebase fails the bot flips into read-only mode: subsequent writes reply with `⚠️ sync conflict, change not saved — resolve on laptop` and browse output prepends a `⚠️ read-only — sync conflict pending` banner. The state heals automatically on the next clean pull — either the background ticker or the pull a command runs before serving it, so a `/today` or a button tap heals it too — or you can restart the bot after resolving the conflict on the laptop.
 
 ### Token precedence
 
