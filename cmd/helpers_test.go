@@ -14,6 +14,20 @@ import (
 	"github.com/maksmas/monolog/internal/git"
 )
 
+// TestMain neutralizes the autoPushFn seam for the whole package, so no test
+// outside internal/git can reach the network. Mirror of internal/tui's TestMain.
+//
+// Load-bearing, not belt-and-braces: every mutation command now calls pushAfter,
+// and cmd/init_test.go and cmd/sync_test.go build repos with real bare remotes.
+// The first mutation test run against one of those fixtures would otherwise push
+// for real, with no stub in sight.
+func TestMain(m *testing.M) {
+	autoPushFn = func(string, time.Duration) (git.PushResult, error) {
+		return git.PushResult{Skipped: true}, nil
+	}
+	os.Exit(m.Run())
+}
+
 // pushCall records a single invocation of the auto-push seam so tests can
 // assert on the repo path and the timeout budget the CLI passes in.
 type pushCall struct {
@@ -36,22 +50,18 @@ func stubAutoPushFn(t *testing.T, res git.PushResult, retErr error) *[]pushCall 
 	return &calls
 }
 
-// loadAutoPushConfig pins the config package's in-session auto_push value, so
-// the pure pushAfter tests do not inherit whatever the previously-run test in
-// this package happened to load. Command-level tests do not need it: every
-// mutation command re-runs config.Load against its own repo via openStore
+// enableAutoPushConfig pins the config package's in-session auto_push value to
+// true, so the pure pushAfter tests do not inherit whatever the previously-run
+// test in this package happened to load. Command-level tests do not need it:
+// every mutation command re-runs config.Load against its own repo via openStore
 // before it reaches pushAfter.
-func loadAutoPushConfig(t *testing.T, enabled bool) {
+func enableAutoPushConfig(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".monolog"), 0o755); err != nil {
 		t.Fatalf("mkdir .monolog: %v", err)
 	}
-	body := `{"auto_push": false}` + "\n"
-	if enabled {
-		body = `{"auto_push": true}` + "\n"
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".monolog", "config.json"), []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".monolog", "config.json"), []byte(`{"auto_push": true}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write config.json: %v", err)
 	}
 	if err := config.Load(dir); err != nil {
@@ -75,7 +85,7 @@ func runCLI(t *testing.T, args ...string) (stdout, stderr string, err error) {
 // --- pushAfter unit tests ---
 
 func TestPushAfter_CallsSeamWithRepoPathAndCLITimeout(t *testing.T) {
-	loadAutoPushConfig(t, true)
+	enableAutoPushConfig(t)
 	calls := stubAutoPushFn(t, git.PushResult{Pushed: true}, nil)
 
 	w := new(bytes.Buffer)
@@ -97,7 +107,7 @@ func TestPushAfter_CallsSeamWithRepoPathAndCLITimeout(t *testing.T) {
 
 func TestPushAfter_DisabledByEnvDoesNotCallSeam(t *testing.T) {
 	// On-disk true, env kill switch on: the env var must win.
-	loadAutoPushConfig(t, true)
+	enableAutoPushConfig(t)
 	t.Setenv("MONOLOG_NO_AUTOPUSH", "1")
 	calls := stubAutoPushFn(t, git.PushResult{Pushed: true}, nil)
 
@@ -113,7 +123,7 @@ func TestPushAfter_DisabledByEnvDoesNotCallSeam(t *testing.T) {
 }
 
 func TestPushAfter_SkippedProducesNoWarning(t *testing.T) {
-	loadAutoPushConfig(t, true)
+	enableAutoPushConfig(t)
 	// No remote / no upstream is a supported local-only configuration, not a
 	// misconfiguration to nag about on every mutation.
 	calls := stubAutoPushFn(t, git.PushResult{Skipped: true}, nil)
@@ -130,7 +140,7 @@ func TestPushAfter_SkippedProducesNoWarning(t *testing.T) {
 }
 
 func TestPushAfter_FailureWarnsAndSwallows(t *testing.T) {
-	loadAutoPushConfig(t, true)
+	enableAutoPushConfig(t)
 	stubAutoPushFn(t, git.PushResult{}, errors.New("dial tcp: no route to host"))
 
 	w := new(bytes.Buffer)
@@ -139,6 +149,52 @@ func TestPushAfter_FailureWarnsAndSwallows(t *testing.T) {
 	got := w.String()
 	if !strings.Contains(got, "push failed") || !strings.Contains(got, "no route to host") {
 		t.Errorf("expected a warning naming the failure, got: %q", got)
+	}
+}
+
+func TestPushAfter_AutoResolvedConflictIsReported(t *testing.T) {
+	// A rejected push rebases, and ResolveConflicts settles a task-file conflict
+	// by keeping the newer UpdatedAt and DISCARDING the other side. Staying
+	// silent here would let `monolog edit` drop a phone-side edit with no output
+	// at all, while `monolog sync` and the TUI both report the same count.
+	enableAutoPushConfig(t)
+	stubAutoPushFn(t, git.PushResult{Pushed: true, Rebased: true, Resolved: 2}, nil)
+
+	w := new(bytes.Buffer)
+	pushAfter(w, "/some/repo")
+
+	if got := w.String(); !strings.Contains(got, "auto-resolved 2 conflicts") {
+		t.Errorf("expected the resolved-conflict count on the writer, got: %q", got)
+	}
+}
+
+func TestPushAfter_PlainRebaseWithoutConflictsStaysSilent(t *testing.T) {
+	enableAutoPushConfig(t)
+	stubAutoPushFn(t, git.PushResult{Pushed: true, Rebased: true}, nil)
+
+	w := new(bytes.Buffer)
+	pushAfter(w, "/some/repo")
+
+	if got := w.String(); got != "" {
+		t.Errorf("a conflict-free rebase must stay silent, got: %q", got)
+	}
+}
+
+func TestPushAfter_ReportsConflictsEvenWhenTheRetryPushFails(t *testing.T) {
+	// The rebase already discarded a losing version; the user needs to hear
+	// about it whether or not the retry push then made it to the remote.
+	enableAutoPushConfig(t)
+	stubAutoPushFn(t, git.PushResult{Rebased: true, Resolved: 1}, errors.New("push after rebase: network down"))
+
+	w := new(bytes.Buffer)
+	pushAfter(w, "/some/repo")
+
+	got := w.String()
+	if !strings.Contains(got, "auto-resolved 1 conflicts") {
+		t.Errorf("expected the resolved-conflict count, got: %q", got)
+	}
+	if !strings.Contains(got, "push failed") {
+		t.Errorf("expected the push warning too, got: %q", got)
 	}
 }
 

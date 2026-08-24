@@ -96,23 +96,21 @@ func toKeyMsg(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
-// runCmd executes cmd and feeds the resulting msg back through the model.
-// Returns the model after the follow-up Update. Panics if cmd is nil.
-// It expands tea.BatchMsg the way the Bubble Tea runtime does, feeding each
-// leaf message through Update in order. Update batches more than one cmd on
-// several paths now (archive + auto-push after a mutation), and without the
-// expansion the batch's own BatchMsg would fall through Update's type switch
-// and the real messages would never be delivered.
+// runCmd executes cmd, feeds the resulting msg back through the model, and
+// keeps following whatever Update hands back until the chain is quiescent.
+// Returns the settled model. Fails the test if cmd is nil.
+//
+// It is a thin wrapper over drive, deliberately: the two used to differ, and
+// the difference was a trap. runCmd dropped the cmd Update returned, so after
+// any mutation the batched autoPushCmd never ran and pushInFlight stayed stuck
+// true — every later push in that test then coalesced away to nothing, and any
+// push assertion written on top silently under-asserted.
 func runCmd(t *testing.T, m *Model, cmd tea.Cmd) *Model {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("runCmd: nil cmd")
 	}
-	for _, msg := range runCmds(cmd) {
-		next, _ := m.Update(msg)
-		m = next.(*Model)
-	}
-	return m
+	return drive(t, m, cmd)
 }
 
 // findTabByLabel returns the index of the tab with the given label,
@@ -11264,19 +11262,30 @@ func TestHelpModalContent_MentionsAutoPush(t *testing.T) {
 
 // --- Task 11 acceptance: verification-level coverage -------------------------
 
-// drive fully settles a mutation: it feeds cmd's messages through Update and
-// keeps draining the cmds those Updates return, so the batched auto-push
-// actually executes and its autoPushResult lands (clearing pushInFlight)
-// before the next mutation runs.
+// maxDriveRounds bounds how many Update → cmd → Update rounds drive follows.
+// Nothing in the model legitimately chains that deep — the longest real chain
+// is mutation → batch(archive, auto-push) → coalesced follow-up push, three
+// rounds — so hitting the cap means either a cmd loop or a chain long enough
+// that stopping quietly would make the caller's assertions vacuous.
+const maxDriveRounds = 10
+
+// drive fully settles a mutation: it feeds cmd's messages through Update, the
+// way the Bubble Tea runtime does (expanding tea.BatchMsg into its leaves), and
+// keeps draining the cmds those Updates return until the chain is quiescent.
+// That matters because the batched auto-push has to actually execute and its
+// autoPushResult has to land — clearing pushInFlight — before the next mutation
+// runs, or every later push coalesces away into nothing.
 //
-// runCmd deliberately discards Update's returned cmd, which is right for tests
-// that only care about the mutation itself but leaves pushInFlight stuck true —
-// every later mutation in that test then coalesces instead of pushing. Tests
-// that count pushes across a sequence of mutations need this instead.
+// runCmd is a thin wrapper over this; see its comment for why they are no
+// longer two different things.
 func drive(t *testing.T, m *Model, cmd tea.Cmd) *Model {
 	t.Helper()
 	pending := []tea.Cmd{cmd}
-	for round := 0; round < 10 && len(pending) > 0; round++ {
+	for round := 0; len(pending) > 0; round++ {
+		if round == maxDriveRounds {
+			t.Fatalf("drive: cmd chain still producing work after %d rounds; "+
+				"either a cmd loops or the chain outgrew the cap", maxDriveRounds)
+		}
 		var next []tea.Cmd
 		for _, c := range pending {
 			for _, msg := range runCmds(c) {
@@ -11416,5 +11425,100 @@ func TestNewModel_AutoPushDisabledByConfigFile(t *testing.T) {
 	}
 	if rec.count() != 0 {
 		t.Errorf("runAutoPush calls = %d, want 0", rec.count())
+	}
+}
+
+// TestHelpLine_MultiLineStatusStaysOneRow pins the status row against the
+// multi-line git errors auto-push now produces on every offline mutation.
+// recomputeLayout budgets exactly one row for the help line, so rendering
+// git's full combined output verbatim would return more rows than the terminal
+// has and garble the alt-screen layout.
+func TestHelpLine_MultiLineStatusStaysOneRow(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 60
+	m.statusMsg = "push failed: git [push]: exit status 128\n" +
+		"fatal: could not read Username for 'https://github.com': No such device or address\n" +
+		"hint: see git help credential\n"
+
+	got := m.helpLine()
+
+	if strings.Contains(got, "\n") {
+		t.Errorf("helpLine() spans %d rows, want 1:\n%q", strings.Count(got, "\n")+1, got)
+	}
+	if w := lipgloss.Width(got); w > m.width {
+		t.Errorf("helpLine() width = %d, want <= %d:\n%q", w, m.width, got)
+	}
+	if !strings.Contains(got, "push failed") {
+		t.Errorf("helpLine() dropped the leading context: %q", got)
+	}
+}
+
+// TestHelpLine_MultiLineErrorStaysOneRow is the m.err twin: the same clamp has
+// to apply to the error branch, which renders the same class of git output.
+func TestHelpLine_MultiLineErrorStaysOneRow(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 40
+	m.err = errors.New("git [commit]: exit status 1\nnothing to commit, working tree clean\n")
+
+	got := m.helpLine()
+
+	if strings.Contains(got, "\n") {
+		t.Errorf("helpLine() spans %d rows, want 1:\n%q", strings.Count(got, "\n")+1, got)
+	}
+	if w := lipgloss.Width(got); w > m.width {
+		t.Errorf("helpLine() width = %d, want <= %d:\n%q", w, m.width, got)
+	}
+}
+
+// TestAutoPushResult_RebasedWithPendingFollowUpPush covers the one combination
+// the auto-push tests missed: a mutation landed during a push that then came
+// back rebased, so the coalesced follow-up push is dispatched in the same
+// Update that nils both stacks and reloads.
+func TestAutoPushResult_RebasedWithPendingFollowUpPush(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+	m.pushInFlight = true
+	m.pushPending = true
+	m.undoStack = []string{"u1"}
+	m.redoStack = []string{"r1"}
+
+	if err := m.store.Create(model.Task{ID: "01REMOTE", Title: "from remote", Status: "open",
+		Schedule: expectSchedule(t, "today"), Position: 2000, UpdatedAt: "2026-04-14T00:00:00Z"}); err != nil {
+		t.Fatalf("seed remote task: %v", err)
+	}
+
+	next, cmd := m.Update(autoPushResult{rebased: true, resolved: 2})
+	m = next.(*Model)
+
+	if m.undoStack != nil || m.redoStack != nil {
+		t.Errorf("stacks = %v/%v, want both nil after a rebase", m.undoStack, m.redoStack)
+	}
+	if !contains(m.statusMsg, "auto-resolved 2 conflicts") {
+		t.Errorf("statusMsg = %q, want the resolved-conflict flash", m.statusMsg)
+	}
+	if m.pushPending {
+		t.Error("pushPending = true, want false: the follow-up must be consumed, not left armed")
+	}
+	if !m.pushInFlight {
+		t.Error("pushInFlight = false, want true: the follow-up push was just dispatched")
+	}
+	if cmd == nil {
+		t.Fatal("Update returned no cmd, want the coalesced follow-up push")
+	}
+	m = drive(t, m, cmd)
+	if got := rec.count(); got != 1 {
+		t.Errorf("runAutoPush calls = %d, want exactly 1 follow-up push for the whole burst", got)
+	}
+	found := false
+	for _, id := range taskIDsInLists(m) {
+		if id == "01REMOTE" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("task IDs in lists = %v, want 01REMOTE present — the rebase must reload", taskIDsInLists(m))
 	}
 }

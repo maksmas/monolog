@@ -3286,12 +3286,30 @@ func (m *Model) renderHelpBar(pairs ...[2]string) string {
 	)
 }
 
+// clampStatus collapses a message onto the single terminal row the help line is
+// budgeted.
+//
+// recomputeLayout sizes the list as `m.height - 4 - …`, i.e. it assumes the help
+// row is exactly one line. Every error coming out of internal/git is multi-line
+// — runOut appends git's full combined output — so rendering one verbatim
+// returns more rows than the terminal has and garbles the alt-screen layout.
+// Auto-push made that the DEFAULT outcome of every mutation while offline
+// (`fatal: could not read Username…` is two lines), where before it took an
+// explicit `s`.
+func (m *Model) clampStatus(s string) string {
+	// Fields collapses every run of whitespace, newlines included, into a
+	// single space — git's indented hint blocks read fine that way.
+	flat := strings.Join(strings.Fields(s), " ")
+	// statusStyle pads one column on each side.
+	return truncateTitle(flat, m.width-2)
+}
+
 func (m *Model) helpLine() string {
 	if m.err != nil {
-		return m.styles.statusStyle.Render("error: " + m.err.Error())
+		return m.styles.statusStyle.Render(m.clampStatus("error: " + m.err.Error()))
 	}
 	if m.statusMsg != "" {
-		return m.styles.statusStyle.Render(m.statusMsg)
+		return m.styles.statusStyle.Render(m.clampStatus(m.statusMsg))
 	}
 	switch m.mode {
 	case modeNormal:

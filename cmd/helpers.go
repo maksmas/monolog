@@ -55,14 +55,24 @@ var autoPushFn = git.AutoPush
 // network — exactly where the tool must feel instant. This mirrors done.go's
 // archive ordering, which prints "Done:" and only then talks to Gmail.
 //
-// A skipped push (no remote, or a remote with no upstream) returns a nil error
-// and is therefore silent: a local-only repo is a supported configuration, not
+// A skipped push (no remote, or a detached HEAD) returns a nil error and is
+// therefore silent: a local-only repo is a supported configuration, not
 // something to nag about on every mutation.
+//
+// An auto-resolved conflict is NOT silent. A rejected push falls back to
+// pull --rebase, and ResolveConflicts settles a task-file conflict by keeping
+// the newer UpdatedAt and discarding the other side — dropping a phone-side
+// edit with no output at all would be the one case where silence costs data.
+// `monolog sync` and the TUI both report the same count.
 func pushAfter(w io.Writer, repoPath string) {
 	if !config.AutoPush() {
 		return
 	}
-	if _, err := autoPushFn(repoPath, git.CLIPushTimeout); err != nil {
+	res, err := autoPushFn(repoPath, git.CLIPushTimeout)
+	if res.Resolved > 0 {
+		fmt.Fprintf(w, "Synced (auto-resolved %d conflicts)\n", res.Resolved)
+	}
+	if err != nil {
 		fmt.Fprintf(w, "push failed: %v\n", err)
 	}
 }
