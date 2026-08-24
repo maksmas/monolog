@@ -923,6 +923,18 @@ func TestRedactCredentials(t *testing.T) {
 			want: "remote: https://***@github.com/u/t.git",
 		},
 		{
+			// git accepts an unencoded "@" inside the password, so a regex that
+			// stops at the first one redacts "user:p" and leaks the rest.
+			name: "password containing an at-sign is fully redacted",
+			in:   "fatal: unable to access 'https://user:p@sw0rd@github.com/u/t.git/'",
+			want: "fatal: unable to access 'https://***@github.com/u/t.git/'",
+		},
+		{
+			name: "two urls on one line are redacted independently",
+			in:   "https://a:secret1@host/x https://b:secret2@host/y",
+			want: "https://***@host/x https://***@host/y",
+		},
+		{
 			name: "ssh scp-style address is untouched",
 			in:   "fatal: unable to access 'git@github.com:maksmas/monolog-tasks.git'",
 			want: "fatal: unable to access 'git@github.com:maksmas/monolog-tasks.git'",
@@ -958,5 +970,203 @@ func TestAutoPush_ErrorRedactsRemoteCredentials(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "ghp_supersecret") {
 		t.Errorf("error leaks the remote's token: %v", err)
+	}
+}
+
+// TestAutoPush_FirstPushRebasesOntoANonEmptyRemote is the other half of
+// TestAutoPush_SetsUpstreamOnFirstPush, and the case that actually happens: the
+// user creates the GitHub repo with a README (or a second device pushed first),
+// so the very first `push --set-upstream` is REJECTED.
+//
+// A rejected push does not record the upstream it asked for, so the rebase
+// fallback has nothing to infer one from: a bare `git rebase` there dies with
+// "There is no tracking information for the current branch" and the repo can
+// never push again — every mutation, forever. The remote branch is therefore
+// named explicitly all the way through the fallback.
+func TestAutoPush_FirstPushRebasesOntoANonEmptyRemote(t *testing.T) {
+	dir := t.TempDir()
+	bare := filepath.Join(dir, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	// Seed the remote the way "create the repo with a README" does.
+	seed := filepath.Join(dir, "seed")
+	if err := Init(seed, bare); err != nil {
+		t.Fatalf("Init(seed) error = %v", err)
+	}
+	branch := baseBranch(t, seed)
+	gitRun(t, bare, "symbolic-ref", "HEAD", "refs/heads/"+branch)
+	pushTask(t, seed, model.Task{
+		ID: "01NE", Title: "already on the remote", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	remoteHeadBefore := bareHead(t, bare)
+
+	// A separate clone with the remote added by hand and no upstream, holding a
+	// commit the remote does not have.
+	a := cloneOf(t, bare, "clone-a")
+	gitRun(t, a, "branch", "--unset-upstream")
+	if hasUpstream(a) {
+		t.Fatal("fixture should have no upstream")
+	}
+	gitRun(t, a, "reset", "--hard", remoteHeadBefore+"~1")
+	commitTask(t, a, model.Task{
+		ID: "01NF", Title: "local only", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v; the first push must recover from a rejection", err)
+	}
+	if !res.Rebased {
+		t.Error("Rebased = false, want true: the rejection was recoverable")
+	}
+	if !res.Pushed {
+		t.Error("Pushed = false, want true")
+	}
+	if !hasUpstream(a) {
+		t.Error("hasUpstream() = false; the retry push should have recorded it")
+	}
+	localHead, err := headSHA(a)
+	if err != nil {
+		t.Fatalf("headSHA: %v", err)
+	}
+	if got := bareHead(t, bare); got != localHead {
+		t.Errorf("remote HEAD = %q, want the rebased local commit %q", got, localHead)
+	}
+	// The remote's own task survived the rebase.
+	if _, err := os.Stat(filepath.Join(a, ".monolog", "tasks", "01NE.json")); err != nil {
+		t.Errorf("the remote's task should be present locally after the rebase: %v", err)
+	}
+}
+
+// TestAutoPush_FetchFailureIsNotReportedAsARebase pins where Rebased flips.
+//
+// The TUI throws away its whole undo and redo history whenever Rebased is true,
+// because a rebase rewrites local SHAs. A fetch rewrites nothing — so a push
+// rejected against a remote whose fetch then fails (here: a reachable pushurl
+// and a broken fetch url) must NOT cost the user their undo stack, on this
+// mutation or on any of the ones that follow while the network is down.
+func TestAutoPush_FetchFailureIsNotReportedAsARebase(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01FF1", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01FF2", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// Push reaches the real bare repo (and is rejected as non-fast-forward);
+	// fetch goes to a path that does not exist and fails.
+	gitRun(t, a, "config", "remote.origin.pushurl", bare)
+	gitRun(t, a, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err == nil {
+		t.Fatal("AutoPush() error = nil, want the failed fetch surfaced")
+	}
+	if res.Rebased {
+		t.Error("Rebased = true, want false: the call died in the fetch, which rewrites nothing")
+	}
+	if res.Pushed {
+		t.Error("Pushed = true, want false")
+	}
+}
+
+func TestTasksDirty(t *testing.T) {
+	tests := []struct {
+		name  string
+		file  string // path relative to .monolog/tasks/
+		body  string
+		track bool // commit it first, then modify
+		want  bool
+	}{
+		{name: "clean repo", want: false},
+		{
+			name: "stray untracked .DS_Store is not a task write",
+			file: ".DS_Store", body: "\x00\x01", want: false,
+		},
+		{
+			name: "editor swap file is not a task write",
+			file: ".01ABC.json.swp", body: "swap", want: false,
+		},
+		{
+			name: "untracked task json is a pending create",
+			file: "01ABC.json", body: `{"id":"01ABC"}`, want: true,
+		},
+		{
+			name: "modified tracked task json is a pending edit",
+			file: "01ABD.json", body: `{"id":"01ABD"}`, track: true, want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoPath := filepath.Join(t.TempDir(), "repo")
+			if err := Init(repoPath, ""); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			if tt.file != "" {
+				abs := filepath.Join(repoPath, ".monolog", "tasks", tt.file)
+				if err := os.WriteFile(abs, []byte(tt.body), 0o644); err != nil {
+					t.Fatalf("write %s: %v", tt.file, err)
+				}
+				if tt.track {
+					gitRun(t, repoPath, "add", "-A")
+					gitRun(t, repoPath, "commit", "-m", "track "+tt.file)
+					if err := os.WriteFile(abs, []byte(tt.body+" edited"), 0o644); err != nil {
+						t.Fatalf("modify %s: %v", tt.file, err)
+					}
+				}
+			}
+			got, err := tasksDirty(repoPath)
+			if err != nil {
+				t.Fatalf("tasksDirty: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("tasksDirty() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAutoPush_StrayFileDoesNotDeferTheRebaseForever is the user-visible half of
+// TestTasksDirty. `git status --porcelain` lists untracked files and monolog's
+// .gitignore excludes nothing, so a single .DS_Store dropped into
+// .monolog/tasks/ by a Finder visit would make the deferral guard permanent:
+// every rejection answered with ErrRebaseDeferred, nothing ever reaching the
+// remote again, with no recovery short of the manual `monolog sync` this
+// feature exists to remove.
+func TestAutoPush_StrayFileDoesNotDeferTheRebaseForever(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01SF1", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01SF2", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	stray := filepath.Join(a, ".monolog", "tasks", ".DS_Store")
+	if err := os.WriteFile(stray, []byte("\x00finder"), 0o644); err != nil {
+		t.Fatalf("write .DS_Store: %v", err)
+	}
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if errors.Is(err, ErrRebaseDeferred) {
+		t.Fatal("AutoPush() deferred the rebase over a stray .DS_Store; auto-push would never recover")
+	}
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v", err)
+	}
+	if !res.Rebased || !res.Pushed {
+		t.Errorf("res = %+v, want a rebase followed by a successful push", res)
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Errorf("the stray file should be left alone: %v", err)
 	}
 }

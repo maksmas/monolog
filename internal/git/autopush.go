@@ -93,6 +93,15 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 
 	// A configured upstream is the common case and needs no further probing;
 	// only its absence costs the extra `git remote` / `git symbolic-ref` forks.
+	//
+	// up stays zero (meaning "@{upstream}") whenever one is configured. When it
+	// is not, it is filled in and carried all the way to the rebase fallback:
+	// a rejected `push --set-upstream` does NOT record the upstream it asked
+	// for, so a rebase that tried to infer one afterwards would die with "There
+	// is no tracking information for the current branch" — leaving the
+	// remote-added-by-hand repo, the exact case --set-upstream exists for,
+	// permanently unable to push whenever the remote already had commits.
+	var up upstreamRef
 	pushArgs := []string{"push"}
 	if !hasUpstream(repoPath) {
 		remote, err := pushRemote(repoPath)
@@ -106,6 +115,7 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 			res.Skipped = true
 			return res, nil
 		}
+		up = upstreamRef{remote: remote, branch: branch}
 		pushArgs = append(pushArgs, "--set-upstream", remote, branch)
 	}
 
@@ -137,20 +147,22 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 		return res, ErrRebaseDeferred
 	}
 
-	// Rebased is set BEFORE the recovery runs and is reported on every return
-	// path below, error included. Once the rebase has touched the repo the
-	// local SHAs may already have been rewritten, so a caller told otherwise
-	// (the TUI's undo/redo stacks) would keep holding SHAs that no longer
-	// resolve — and revertStackCmd silently drops such an entry, corrupting the
-	// history in exactly the scenario this feature exists for.
-	res.Rebased = true
 	// Autostash: AutoPush deliberately does not commit unrelated files, and the
 	// rebase refuses to run over a modified tracked file (the TUI writes
 	// .monolog/config.json without committing it).
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultFetchTimeout)
 	defer cancel()
-	n, err := pullRebaseResolving(ctx, repoPath, true, noPromptEnv)
-	res.Resolved = n
+	reb, err := pullRebaseResolving(ctx, repoPath, true, noPromptEnv, up)
+	// Rebased is reported on every return path below, error included: from the
+	// moment `git rebase` is invoked the local SHAs may already have been
+	// rewritten, so a caller told otherwise (the TUI's undo/redo stacks) would
+	// keep holding SHAs that no longer resolve — and revertStackCmd silently
+	// drops such an entry, corrupting the history in exactly the scenario this
+	// feature exists for. It stays FALSE when the call died in the fetch, which
+	// rewrites nothing: an unreachable remote must not cost the user their undo
+	// history on every single mutation.
+	res.Rebased = reb.Started
+	res.Resolved = reb.Resolved
 	if err != nil {
 		// The recovery decision is the caller's: the commit is durable locally
 		// and the next push or `monolog sync` retries.
@@ -177,13 +189,41 @@ func pushWithTimeout(repoPath string, timeout time.Duration, args ...string) (st
 }
 
 // tasksDirty reports whether any task JSON file has uncommitted changes.
+//
+// Untracked entries that are not *.json are ignored on purpose. `git status
+// --porcelain` lists them (nothing in monolog's .gitignore excludes them), so a
+// single `.DS_Store` dropped in .monolog/tasks/ by a Finder visit — or an
+// editor swap file — would otherwise make this true forever, and AutoPush would
+// answer every non-fast-forward rejection with ErrRebaseDeferred for good: the
+// user's tasks would stop reaching the remote until they noticed and ran
+// `monolog sync` by hand. An untracked *.json IS still dirty, because a
+// concurrent store.Create between its write and its commit looks exactly like
+// that, and that is the write this guard exists to protect.
 func tasksDirty(repoPath string) (bool, error) {
 	out, err := runOut(context.Background(), repoPath, nil,
 		"git", "status", "--porcelain", "--", tasksPrefix)
 	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(out) != "", nil
+	for _, line := range strings.Split(out, "\n") {
+		// Porcelain v1 format: two status characters, a space, then the path.
+		if len(line) < 4 {
+			continue
+		}
+		if line[:2] == "??" && !isTaskFile(line[3:]) {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// isTaskFile reports whether a porcelain path names a task JSON file. git
+// C-quotes paths containing unusual bytes, so the surrounding quotes are
+// trimmed before the suffix test — a ULID filename never needs quoting, but
+// mistaking a quoted `"…/x.json"` for a stray file would skip the guard.
+func isTaskFile(path string) bool {
+	return strings.HasSuffix(strings.TrimSuffix(strings.TrimSpace(path), `"`), ".json")
 }
 
 // isNonFastForward reports whether combined git-push output indicates the push

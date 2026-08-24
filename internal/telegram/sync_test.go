@@ -32,7 +32,7 @@ var errTestPullDisabled = errors.New("pull disabled in tests")
 // call SetReadOnly(true) and then assert on read-only behavior. Tests that
 // want a pull to happen install their own stub via withPullFunc.
 func TestMain(m *testing.M) {
-	pullFunc = func(string) error { return errTestPullDisabled }
+	pullFunc = func(string, time.Duration) error { return errTestPullDisabled }
 	os.Exit(m.Run())
 }
 
@@ -74,7 +74,18 @@ func countingPull() (func(string) error, func() int) {
 // test. Cleanup restores whatever was installed before — which for most tests
 // is TestMain's failing stub, not the production git.PullRebase. Mirrors the
 // pattern used elsewhere in this repo for the `emailAuthorize` swappable seam.
+//
+// The fetch timeout is dropped here because almost no test cares which budget
+// the caller passed; the ones that do use withTimedPullFunc.
 func withPullFunc(t *testing.T, fn func(string) error) {
+	t.Helper()
+	withTimedPullFunc(t, func(repoPath string, _ time.Duration) error { return fn(repoPath) })
+}
+
+// withTimedPullFunc is withPullFunc for tests that assert on the fetch budget
+// the caller chose — the on-demand command path deliberately uses a shorter one
+// than the background ticker.
+func withTimedPullFunc(t *testing.T, fn func(string, time.Duration) error) {
 	t.Helper()
 	prev := pullFunc
 	pullFunc = fn
@@ -1108,5 +1119,95 @@ func TestServeStartupPullStampsSharedClock(t *testing.T) {
 	// just pulled.
 	if got := count(); got != 1 {
 		t.Fatalf("pulls=%d want 1 (startup pull must stamp the shared clock)", got)
+	}
+}
+
+// TestCommandDoesNotFetchAgainBehindTheTicker pins the freshness re-check that
+// happens AFTER h.mu is taken.
+//
+// pullBeforeCommand's first check runs outside the lock, so a command arriving
+// while the background ticker is mid-fetch used to queue on the mutex, wait out
+// that whole fetch, and then immediately run a second one of its own — two
+// fetch timeouts back to back on a degraded network, far past the few seconds
+// Telegram allows before a tapped button stops spinning.
+func TestCommandDoesNotFetchAgainBehindTheTicker(t *testing.T) {
+	clk := newMutableClock(handlerTestNow)
+	h, _, _, _ := newTestHandlerWithClock(t, []int64{100}, clk.now)
+
+	var fetches int32
+	tickerInside := make(chan struct{})
+	releaseTicker := make(chan struct{})
+	withPullFunc(t, func(string) error {
+		if atomic.AddInt32(&fetches, 1) == 1 {
+			close(tickerInside)
+			<-releaseTicker
+		}
+		return nil
+	})
+
+	// The ticker's pull, holding h.mu inside the fetch.
+	tickerDone := make(chan struct{})
+	go func() {
+		defer close(tickerDone)
+		_ = h.pullOnce()
+	}()
+	<-tickerInside
+
+	// A command arrives while that fetch is in flight. It must block on the
+	// mutex, then find the clock freshly stamped and serve local state.
+	commandDone := make(chan struct{})
+	go func() {
+		defer close(commandDone)
+		h.pullBeforeCommand()
+	}()
+
+	// Give the command goroutine time to reach the mutex before releasing.
+	time.Sleep(50 * time.Millisecond)
+	close(releaseTicker)
+	<-tickerDone
+	<-commandDone
+
+	if got := atomic.LoadInt32(&fetches); got != 1 {
+		t.Errorf("fetches = %d, want 1: the command must not re-fetch what the ticker just pulled", got)
+	}
+}
+
+// TestCommandPullUsesTheShorterFetchBudget pins the split budgets: the idle
+// ticker may spend git.DefaultFetchTimeout on a fetch, but a command has a
+// person watching a spinner and Telegram expects a callback answered within
+// seconds.
+func TestCommandPullUsesTheShorterFetchBudget(t *testing.T) {
+	clk := newMutableClock(handlerTestNow)
+	h, _, _, _ := newTestHandlerWithClock(t, []int64{100}, clk.now)
+
+	var mu sync.Mutex
+	var budgets []time.Duration
+	withTimedPullFunc(t, func(_ string, d time.Duration) error {
+		mu.Lock()
+		defer mu.Unlock()
+		budgets = append(budgets, d)
+		return nil
+	})
+
+	h.pullBeforeCommand() // cold clock → pulls
+	clk.advance(commandPullMaxAge + time.Second)
+	if err := h.pullOnce(); err != nil { // the ticker's path
+		t.Fatalf("pullOnce: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(budgets) != 2 {
+		t.Fatalf("fetches = %d, want 2 (one command, one ticker)", len(budgets))
+	}
+	if budgets[0] != commandFetchTimeout {
+		t.Errorf("command fetch budget = %v, want commandFetchTimeout %v", budgets[0], commandFetchTimeout)
+	}
+	if budgets[1] != git.DefaultFetchTimeout {
+		t.Errorf("ticker fetch budget = %v, want git.DefaultFetchTimeout %v", budgets[1], git.DefaultFetchTimeout)
+	}
+	if commandFetchTimeout >= git.DefaultFetchTimeout {
+		t.Errorf("commandFetchTimeout %v should be shorter than git.DefaultFetchTimeout %v",
+			commandFetchTimeout, git.DefaultFetchTimeout)
 	}
 }

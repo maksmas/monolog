@@ -108,7 +108,7 @@ func mutateAndAutoPush(t *testing.T, repoPath, taskID, title string) {
 func TestEndToEnd_LaptopMutationReachesBotBrowseWithoutTheTicker(t *testing.T) {
 	// The real pull, not the package-wide test stub: the point of this test is
 	// that a genuine `git pull --rebase` lands the laptop's pushed commit.
-	withPullFunc(t, git.PullRebase)
+	withTimedPullFunc(t, git.PullRebase)
 
 	laptop, botRepo, botStore := twoCloneFixture(t)
 
@@ -176,7 +176,7 @@ func TestEndToEnd_LaptopMutationReachesBotBrowseWithoutTheTicker(t *testing.T) {
 // user's very first command must show it. lastPull is zero on a fresh Handler,
 // so the gate treats it as stale and fetches immediately — no ticker wait.
 func TestEndToEnd_BotSeesLaptopTaskOnFirstCommandAfterStartup(t *testing.T) {
-	withPullFunc(t, git.PullRebase)
+	withTimedPullFunc(t, git.PullRebase)
 
 	laptop, botRepo, botStore := twoCloneFixture(t)
 

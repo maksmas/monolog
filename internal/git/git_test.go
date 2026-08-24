@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1042,12 +1043,12 @@ func TestPullRebaseResolving_CleanFastForward(t *testing.T) {
 		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
 	})
 
-	n, err := pullRebaseResolving(context.Background(), a, false, nil)
+	res, err := pullRebaseResolving(context.Background(), a, false, nil, upstreamRef{})
 	if err != nil {
 		t.Fatalf("pullRebaseResolving() error = %v", err)
 	}
-	if n != 0 {
-		t.Errorf("resolved = %d, want 0 on a clean fast-forward", n)
+	if res.Resolved != 0 {
+		t.Errorf("resolved = %d, want 0 on a clean fast-forward", res.Resolved)
 	}
 	if _, err := os.Stat(filepath.Join(a, taskPath)); err != nil {
 		t.Errorf("B's task should be present in A after the pull: %v", err)
@@ -1073,12 +1074,12 @@ func TestPullRebaseResolving_AutoResolvesConflict(t *testing.T) {
 	gitRun(t, a, "add", taskPath)
 	gitRun(t, a, "commit", "-m", "A edit")
 
-	n, err := pullRebaseResolving(context.Background(), a, false, nil)
+	res, err := pullRebaseResolving(context.Background(), a, false, nil, upstreamRef{})
 	if err != nil {
 		t.Fatalf("pullRebaseResolving() error = %v", err)
 	}
-	if n != 1 {
-		t.Errorf("resolved = %d, want 1", n)
+	if res.Resolved != 1 {
+		t.Errorf("resolved = %d, want 1", res.Resolved)
 	}
 	if got := readTaskJSON(t, absA); got.Title != "from A" {
 		t.Errorf("later UpdatedAt should win; got Title = %q", got.Title)
@@ -1111,17 +1112,17 @@ func TestPullRebaseResolving_AutostashPreservesDirtyFile(t *testing.T) {
 	}
 
 	// Without autostash, git refuses to rebase over unstaged changes.
-	if _, err := pullRebaseResolving(context.Background(), a, false, nil); err == nil {
+	if _, err := pullRebaseResolving(context.Background(), a, false, nil, upstreamRef{}); err == nil {
 		t.Fatal("expected pullRebaseResolving(autostash=false) to fail with a dirty tracked file")
 	}
 
 	// With autostash it succeeds and the modification is restored afterwards.
-	n, err := pullRebaseResolving(context.Background(), a, true, nil)
+	res, err := pullRebaseResolving(context.Background(), a, true, nil, upstreamRef{})
 	if err != nil {
 		t.Fatalf("pullRebaseResolving(autostash=true) error = %v", err)
 	}
-	if n != 0 {
-		t.Errorf("resolved = %d, want 0", n)
+	if res.Resolved != 0 {
+		t.Errorf("resolved = %d, want 0", res.Resolved)
 	}
 	data, err := os.ReadFile(dirty)
 	if err != nil {
@@ -1350,5 +1351,146 @@ func TestAutoCommitSHA_ConcurrentWithSync(t *testing.T) {
 	}
 	if _, err := CommitSubject(a, sha); err != nil {
 		t.Errorf("the committed SHA should still resolve: %v", err)
+	}
+}
+
+// gitOut runs a read-only git command in the given repo and returns its output.
+func gitOut(t *testing.T, repoPath string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", repoPath}, args...)...).Output()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v", args, repoPath, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// dirtyConfig writes an uncommitted change to the tracked .monolog/config.json,
+// mirroring what the TUI's settings modal does (config.Save writes the file and
+// nothing commits it), and returns its repo-relative path.
+func dirtyConfig(t *testing.T, repoPath, content string) string {
+	t.Helper()
+	rel := filepath.Join(".monolog", "config.json")
+	if err := os.WriteFile(filepath.Join(repoPath, rel), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	return rel
+}
+
+// TestPullRebaseResolving_AutostashConflictIsNotSilentSuccess pins the one git
+// exit status that lies. `git rebase --autostash` returns ZERO when the rebase
+// itself succeeded but reapplying the stash at the end conflicted: it prints
+// "Applying autostash resulted in conflicts", leaves unmerged index entries and
+// conflict markers in the worktree, and still says "Successfully rebased".
+//
+// Taken at face value that reports as a clean sync while every later commit
+// fails with "Committing is not possible because you have unmerged files" — and
+// `monolog sync`'s `git add -A` would stage the conflict markers and push a
+// corrupted config.json to every device.
+func TestPullRebaseResolving_AutostashConflictIsNotSilentSuccess(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// B changes the shared config file and pushes it.
+	cfgRel := dirtyConfig(t, b, "{\n  \"theme\": \"dracula\"\n}\n")
+	gitRun(t, b, "add", cfgRel)
+	gitRun(t, b, "commit", "-m", "B theme")
+	gitRun(t, b, "push")
+
+	// A has an uncommitted change to the same file, so the autostash pop
+	// conflicts — two devices changing theme is all it takes.
+	dirtyConfig(t, a, "{\n  \"theme\": \"nord\"\n}\n")
+
+	res, err := pullRebaseResolving(context.Background(), a, true, nil, upstreamRef{})
+	if err == nil {
+		t.Fatal("pullRebaseResolving() error = nil; a conflicting autostash pop must not report success")
+	}
+	if !strings.Contains(err.Error(), "stash") {
+		t.Errorf("error should tell the user where their changes went; got %v", err)
+	}
+	if !res.Started {
+		t.Error("Started = false, want true: the rebase itself ran")
+	}
+
+	// The repo must be left usable, not wedged with unmerged paths.
+	paths, uErr := unmergedPaths(a)
+	if uErr != nil {
+		t.Fatalf("unmergedPaths: %v", uErr)
+	}
+	if len(paths) != 0 {
+		t.Errorf("unmerged paths = %v, want none: the worktree must not be left mid-conflict", paths)
+	}
+	data, rErr := os.ReadFile(filepath.Join(a, cfgRel))
+	if rErr != nil {
+		t.Fatalf("read config.json: %v", rErr)
+	}
+	if strings.Contains(string(data), "<<<<<<<") {
+		t.Errorf("config.json still holds conflict markers:\n%s", data)
+	}
+
+	// The user's own version is recoverable — git kept it as a stash entry.
+	if stash := gitOut(t, a, "stash", "list"); stash == "" {
+		t.Error("git stash list is empty; the stashed local change was lost")
+	}
+
+	// And the next mutation can still commit.
+	commitTask(t, a, model.Task{
+		ID: "01AC", Title: "later mutation", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+}
+
+// TestRunOut_WaitDelayOnASuccessfulCommandIsNotAFailure covers the second thing
+// cmd.WaitDelay bounds, which is not a failure at all: a process that exits 0
+// while a grandchild still holds the inherited output pipe. git spawns exactly
+// those — git-credential-cache--daemon inherits stderr and lives for its 900s
+// idle timeout — so without the ProcessState check a successful push would be
+// reported to the user as "push failed: ... WaitDelay expired before I/O
+// complete".
+func TestRunOut_WaitDelayOnASuccessfulCommandIsNotAFailure(t *testing.T) {
+	// Exits 0 immediately; the backgrounded child keeps the pipe open well past
+	// waitDelay, exactly like the credential-cache daemon.
+	sleep := strconv.Itoa(int(waitDelay/time.Second) + 2)
+	out, err := runOut(context.Background(), t.TempDir(), nil,
+		"sh", "-c", "sleep "+sleep+" & echo pushed")
+	if err != nil {
+		t.Fatalf("runOut() error = %v, want nil: the command exited 0", err)
+	}
+	if !strings.Contains(out, "pushed") {
+		t.Errorf("out = %q, want the command's output", out)
+	}
+}
+
+// TestSyncUnattended_PullsAndPushesLikeSync is the parity guard for the
+// bounded, prompt-free Sync variant the TUI and the bot use: same commit,
+// rebase and push behavior, only the network budget differs.
+func TestSyncUnattended_PullsAndPushesLikeSync(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	bTask := pushTask(t, b, model.Task{
+		ID: "01SU", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// An uncommitted local write, which Sync commits before pulling.
+	writeTaskJSON(t, filepath.Join(a, ".monolog", "tasks", "01SA.json"), model.Task{
+		ID: "01SA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	res, err := SyncUnattended(a)
+	if err != nil {
+		t.Fatalf("SyncUnattended() error = %v", err)
+	}
+	if !res.Committed {
+		t.Error("Committed = false, want true")
+	}
+	if !res.HasRemote {
+		t.Error("HasRemote = false, want true")
+	}
+	if _, err := os.Stat(filepath.Join(a, bTask)); err != nil {
+		t.Errorf("B's task should have been pulled in: %v", err)
+	}
+	if !strings.Contains(gitOut(t, bare, "log", "--oneline"), "sync") {
+		t.Error("A's sync commit never reached the remote")
 	}
 }

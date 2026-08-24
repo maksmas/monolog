@@ -27,9 +27,12 @@ func taskRelPath(taskID string) string {
 // We do NOT inject these per-Handler because they would multiply the
 // constructor surface; package-level vars keep the Handler struct lean
 // and tests reset them via t.Cleanup.
+// syncFunc is git.SyncUnattended, not git.Sync: the bot has no terminal, so a
+// credential prompt would block the fetch or push forever while holding both
+// h.mu and the git package's repo mutex.
 var (
 	pullFunc = git.PullRebase
-	syncFunc = git.Sync
+	syncFunc = git.SyncUnattended
 )
 
 // commitAndSync stages the given file, commits with the given message,
@@ -117,6 +120,35 @@ var (
 func (h *Handler) pullOnce() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.pullLocked(git.DefaultFetchTimeout)
+}
+
+// pullIfStale is pullOnce for the on-demand command path: it re-reads the
+// freshness clock AFTER taking h.mu and skips the pull when another pull
+// completed while it was queued.
+//
+// The re-check is the whole point. pullBeforeCommand's pre-check happens
+// outside the lock, so a command arriving while the background ticker is
+// mid-fetch would wait out that fetch and then immediately run a second,
+// redundant one — two fetch timeouts back to back on a degraded network, well
+// past the few seconds Telegram gives us to answer a callback query before the
+// user's button stops spinning.
+//
+// Its fetch also gets the shorter commandFetchTimeout, because a browse or a
+// button tap has a person waiting on it, unlike the ticker.
+func (h *Handler) pullIfStale() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pullFresh() {
+		return nil
+	}
+	return h.pullLocked(commandFetchTimeout)
+}
+
+// pullLocked is the shared body of pullOnce/pullIfStale. Callers MUST hold
+// h.mu. fetchTimeout is handed to git.PullRebase, which bounds its network half
+// with it.
+func (h *Handler) pullLocked(fetchTimeout time.Duration) error {
 	// Stamp the shared freshness clock on the way out — whether the pull
 	// succeeded, failed, or recovered from a conflict. lastPull is a
 	// rate-limit for pullIfStale, not a success ledger: an errored pull
@@ -124,7 +156,7 @@ func (h *Handler) pullOnce() error {
 	// the very next command would make an offline bot feel hung. The
 	// ticker retries on its own schedule either way.
 	defer func() { h.recordPull(h.now()) }()
-	if err := pullFunc(h.repoPath); err != nil {
+	if err := pullFunc(h.repoPath, fetchTimeout); err != nil {
 		rebasing, rbErr := isRebasingFunc(h.repoPath)
 		if rbErr != nil || !rebasing {
 			return err
@@ -160,10 +192,24 @@ func (h *Handler) pullOnce() error {
 // — tapping ✅ on three tasks in a row — costs one fetch rather than three.
 const commandPullMaxAge = 5 * time.Second
 
+// commandFetchTimeout bounds the network half of an on-demand pull. It is
+// deliberately shorter than git.DefaultFetchTimeout, which the idle ticker
+// uses: a command has a person watching a spinner, and Telegram expects a
+// callback query to be answered within seconds. Serving slightly stale tasks
+// beats a button that appears to do nothing.
+const commandFetchTimeout = 5 * time.Second
+
 // recordPull stamps the shared freshness clock. EVERY completed pull calls it,
-// the ticker's and the on-demand one alike (both go through pullOnce), so the
+// the ticker's and the on-demand one alike (both go through pullLocked), so the
 // two never double-fetch the same commits.
 func (h *Handler) recordPull(t time.Time) { h.lastPull.Store(t.UnixNano()) }
+
+// pullFresh reports whether the local clone was pulled recently enough to serve
+// a command without fetching again. lastPull == 0 means nothing has ever
+// pulled, and 1970 is comfortably stale — no zero-time special case needed.
+func (h *Handler) pullFresh() bool {
+	return h.now().UnixNano()-h.lastPull.Load() <= int64(commandPullMaxAge)
+}
 
 // pullBeforeCommand is the freshness gate: it pulls when the shared clock says
 // the local clone may have fallen behind, and does nothing at all — no network,
@@ -173,24 +219,27 @@ func (h *Handler) recordPull(t time.Time) { h.lastPull.Store(t.UnixNano()) }
 // serves whatever is on disk. A command must never fail because the network
 // blipped; the readOnly banner already communicates a pending conflict and the
 // ticker retries. The stall is bounded too — pullFunc is git.PullRebase, whose
-// network half runs under git.DefaultFetchTimeout — which matters because this
-// runs on the single-threaded update path and pullOnce holds h.mu, so an
-// unbounded fetch here would stall every browse, callback and note reply, not
-// just the ticker.
+// network half runs under the commandFetchTimeout passed by pullIfStale —
+// which matters because this runs on the single-threaded update path and the
+// pull holds h.mu, so an unbounded fetch here would stall every browse,
+// callback and note reply, not just the ticker.
+//
+// The freshness check is deliberately made twice: once here, lock-free, so a
+// fresh clone costs a command nothing at all, and once inside pullIfStale under
+// h.mu, so a command queued behind the ticker's fetch does not then fetch again
+// itself.
 //
 // Call it from OUTSIDE h.mu and BEFORE the reply is built. Both constraints
-// are load-bearing: pullOnce takes h.mu (so calling this under the lock
+// are load-bearing: pullIfStale takes h.mu (so calling this under the lock
 // self-deadlocks), and a pull that lands after the store read is worthless.
 // h.mu is never held across a bot SendMessage, so the pull always completes
 // before any HTTP call.
 func (h *Handler) pullBeforeCommand() {
-	// lastPull == 0 means nothing has ever pulled, and 1970 is comfortably
-	// stale — no zero-time special case needed.
-	if h.now().UnixNano()-h.lastPull.Load() <= int64(commandPullMaxAge) {
+	if h.pullFresh() {
 		return
 	}
-	// pullOnce stamps lastPull on every exit path, success or not.
-	if err := h.pullOnce(); err != nil {
+	// pullIfStale stamps lastPull on every exit path it pulls on, success or not.
+	if err := h.pullIfStale(); err != nil {
 		fmt.Fprintf(h.writer, "telegram: command pull: %v\n", err)
 	}
 }

@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,6 +44,12 @@ const tasksPrefix = ".monolog/tasks/"
 // network step under the lock is therefore bounded (see pushWithTimeout and
 // pullRebaseResolving's context-bounded fetch); the ceiling is two push
 // timeouts plus one fetch timeout, not "until ssh gives up".
+//
+// The one exception is the interactive Sync, which deliberately runs unbounded
+// with credential prompting left on — but it is only reachable from the
+// one-shot `monolog sync` process, where nothing else contends for the lock.
+// Every in-process caller that shares this mutex with a background push (the
+// TUI, the Telegram bot) uses SyncUnattended, which is bounded.
 //
 // The lock is per-process only. A second monolog process (a Raycast capture, a
 // `monolog add` in another terminal, the Claude skill) can now run
@@ -282,18 +289,27 @@ func SyncCommit(repoPath string) error {
 // indefinitely.
 const DefaultFetchTimeout = 15 * time.Second
 
-// PullRebase fetches (bounded by DefaultFetchTimeout, with interactive
-// prompting disabled) and rebases the current branch onto its upstream.
+// PullRebase fetches (bounded by fetchTimeout, with interactive prompting
+// disabled) and rebases the current branch onto its upstream.
+//
+// fetchTimeout <= 0 falls back to DefaultFetchTimeout. Callers on a latency
+// budget — the Telegram bot must answer a callback query within seconds or the
+// user's button spins — pass something shorter.
 //
 // Lock-free by design — see repoMu. Its only caller, internal/telegram,
 // serializes all of its git work under its own handler mutex.
-func PullRebase(repoPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultFetchTimeout)
+func PullRebase(repoPath string, fetchTimeout time.Duration) error {
+	if fetchTimeout <= 0 {
+		fetchTimeout = DefaultFetchTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
 	if _, err := runOut(ctx, repoPath, noPromptEnv, "git", "fetch"); err != nil {
 		return err
 	}
-	return run(repoPath, "git", "rebase")
+	// The upstream is named explicitly, exactly as `git pull --rebase` does it
+	// — see rebaseTarget.
+	return run(repoPath, "git", "rebase", upstreamRef{}.rebaseTarget())
 }
 
 // Push runs git push. Lock-free by design — see repoMu; Sync calls it while
@@ -315,9 +331,32 @@ type SyncResult struct {
 
 // Sync commits pending changes, pulls with rebase (auto-resolving conflicts
 // via ResolveConflicts), and pushes. If no remote is configured, it stops
-// after the local commit. Used by both the `monolog sync` CLI command and
-// the TUI's sync key.
+// after the local commit.
+//
+// This is the INTERACTIVE variant, for `monolog sync`: its network steps are
+// unbounded and credential prompting is left on, because the user ran a
+// foreground command and can answer a prompt or Ctrl-C a slow fetch. Callers
+// that cannot do either must use SyncUnattended.
 func Sync(repoPath string) (SyncResult, error) {
+	return syncRepo(repoPath, true)
+}
+
+// SyncUnattended is Sync for callers that own the terminal and cannot answer a
+// credential prompt: the TUI (Bubble Tea holds the tty in raw mode on the
+// alt-screen, so git's /dev/tty prompt is unanswerable and invisible) and the
+// Telegram bot (no terminal at all).
+//
+// Both network steps are bounded and prompting is disabled, which matters
+// beyond the sync itself: Sync holds repoMu, so a fetch or push blocked on an
+// unanswerable prompt would also block every subsequent mutation's commit —
+// the TUI would silently stop saving until the process was killed.
+func SyncUnattended(repoPath string) (SyncResult, error) {
+	return syncRepo(repoPath, false)
+}
+
+// syncRepo is the shared body of Sync/SyncUnattended. interactive selects the
+// prompt-and-wait behavior described on each.
+func syncRepo(repoPath string, interactive bool) (SyncResult, error) {
 	// Held for the whole call: the commit, the rebase and the push must not
 	// interleave with a concurrent mutation's commit. The helpers called below
 	// (HasChanges, SyncCommit, HasRemote, pullRebaseResolving, Push) are all
@@ -348,16 +387,29 @@ func Sync(repoPath string) (SyncResult, error) {
 	res.HasRemote = true
 
 	// Sync commits pending changes above, so the working tree is already clean
-	// and the rebase does not need an autostash. Unbounded and prompt-enabled:
-	// the user pressed `s` (or ran `monolog sync`) and is at the keyboard, so a
-	// credential prompt is expected behavior and a slow fetch is visible work.
-	n, err := pullRebaseResolving(context.Background(), repoPath, false, nil)
+	// and the rebase does not need an autostash.
+	ctx := context.Background()
+	env := noPromptEnv
+	if interactive {
+		env = nil
+	} else {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultFetchTimeout)
+		defer cancel()
+	}
+	out, err := pullRebaseResolving(ctx, repoPath, false, env, upstreamRef{})
 	if err != nil {
 		return res, err
 	}
-	res.Resolved = n
+	res.Resolved = out.Resolved
 
-	if err := Push(repoPath); err != nil {
+	if interactive {
+		if err := Push(repoPath); err != nil {
+			return res, fmt.Errorf("push: %w", err)
+		}
+		return res, nil
+	}
+	if _, err := pushWithTimeout(repoPath, DefaultPushTimeout, "push"); err != nil {
 		return res, fmt.Errorf("push: %w", err)
 	}
 	return res, nil
@@ -516,7 +568,12 @@ const waitDelay = 2 * time.Second
 // credentialsRe matches the userinfo component of a remote URL. git echoes the
 // full URL back in "fatal: unable to access '<url>'", so an HTTPS remote with
 // an embedded token leaks it into whatever surfaces the error.
-var credentialsRe = regexp.MustCompile(`://[^/@\s]+@`)
+//
+// The character class excludes "/" and whitespace but NOT "@", so the match
+// runs to the LAST "@" of the authority: a password may legally contain an
+// unencoded "@" (git accepts `https://user:p@ss@host/`), and stopping at the
+// first one would redact `user:p` and leak the rest of the password.
+var credentialsRe = regexp.MustCompile(`://[^/\s]+@`)
 
 // redactCredentials strips embedded credentials out of git output before it is
 // surfaced to a terminal, a log or the TUI status bar.
@@ -560,16 +617,86 @@ func runOut(ctx context.Context, dir string, extraEnv []string, name string, arg
 	// Bound the post-kill pipe wait so ctx actually is the ceiling — see waitDelay.
 	cmd.WaitDelay = waitDelay
 	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if err != nil && !waitDelayAfterSuccess(cmd, err) {
 		return string(out), gitError(name, args, err, out)
 	}
 	return string(out), nil
 }
 
+// waitDelayAfterSuccess reports whether err is nothing but the WaitDelay timer
+// firing on a command that itself exited 0.
+//
+// WaitDelay bounds two different things, and only one of them is a failure:
+// a process that outlives its killed context, and a process that exits cleanly
+// while a grandchild still holds the inherited output pipe. git spawns exactly
+// such grandchildren — git-credential-cache--daemon inherits stderr and lives
+// for its 900s idle timeout — so on an HTTPS remote with credential.helper=cache
+// a perfectly successful push returns exec.ErrWaitDelay. Without this check
+// that push is reported to the user as "push failed: ... WaitDelay expired
+// before I/O complete" despite having reached the remote.
+//
+// ProcessState.Success() is what discriminates: a context kill leaves a signal
+// status, so a genuinely hung command still surfaces as an error.
+func waitDelayAfterSuccess(cmd *exec.Cmd, err error) bool {
+	return errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success()
+}
+
+// upstreamRef names the branch a rebase should replay onto. The zero value
+// means "the branch's own configured upstream", which is the normal case;
+// AutoPush's first push fills it in because a branch that has no upstream yet
+// still has a remote branch to rebase onto.
+type upstreamRef struct {
+	remote string // e.g. "origin"
+	branch string // e.g. "main"
+}
+
+// explicit reports whether the ref names a concrete remote branch.
+func (u upstreamRef) explicit() bool { return u.remote != "" && u.branch != "" }
+
+// fetchArgs returns the `git fetch` argument list that makes rebaseTarget
+// resolvable. The explicit form matters on a branch with no upstream: a bare
+// `git fetch` there falls back to "origin", which is wrong (or absent) when the
+// sole remote is named something else.
+func (u upstreamRef) fetchArgs() []string {
+	if u.explicit() {
+		return []string{"fetch", u.remote, u.branch}
+	}
+	return []string{"fetch"}
+}
+
+// rebaseTarget returns the ref to rebase onto.
+//
+// It is always passed explicitly, never left for `git rebase` to infer, for two
+// reasons. A branch with no upstream cannot infer one at all — bare `git rebase`
+// dies with "There is no tracking information for the current branch", which is
+// exactly the dead end AutoPush's --set-upstream first push used to fall into.
+// And git turns --fork-point ON when no upstream argument is given and OFF when
+// one is; `git pull --rebase` passes the ref, so naming it here keeps the
+// semantics this code replaced (fork-point can silently drop local commits if
+// the upstream is ever rewound).
+func (u upstreamRef) rebaseTarget() string {
+	if u.explicit() {
+		return u.remote + "/" + u.branch
+	}
+	return "@{upstream}"
+}
+
+// rebaseOutcome reports what pullRebaseResolving did, alongside its error.
+type rebaseOutcome struct {
+	// Resolved is the number of task-file conflicts auto-resolved.
+	Resolved int
+	// Started is true once `git rebase` has been invoked, i.e. from the point
+	// local history may have been rewritten. It stays false when the call fails
+	// in the fetch, which touches nothing local — the distinction is what keeps
+	// AutoPush from telling the TUI to throw away its undo/redo stacks on every
+	// mutation while the network is down.
+	Started bool
+}
+
 // pullRebaseResolving pulls with rebase (autostashing local modifications when
-// autostash is true), auto-resolving task-file conflicts via ResolveConflicts,
-// and returns the number of resolved files. Extracted from Sync so the manual
-// sync path and the automatic push path share identical conflict semantics.
+// autostash is true), auto-resolving task-file conflicts via ResolveConflicts.
+// Extracted from Sync so the manual sync path and the automatic push path share
+// identical conflict semantics.
 //
 // It is `git pull --rebase` split in two on purpose. The fetch is the only
 // network step and is bounded by ctx: killing a fetch is safe, it leaves no
@@ -580,31 +707,78 @@ func runOut(ctx context.Context, dir string, extraEnv []string, name string, arg
 // ctx; extraEnv reaches the fetch only, since the rebase talks to nobody.
 //
 // Errors are returned already wrapped ("pull: ", "resolve conflicts: ",
-// "rebase continue: ") so callers can surface them verbatim. On a resolution or
-// continue failure the rebase is aborted, leaving the worktree clean.
-func pullRebaseResolving(ctx context.Context, repoPath string, autostash bool, extraEnv []string) (int, error) {
-	if _, err := runOut(ctx, repoPath, extraEnv, "git", "fetch"); err != nil {
-		return 0, fmt.Errorf("pull: %w", err)
+// "rebase continue: ", "autostash: ") so callers can surface them verbatim. On
+// a resolution or continue failure the rebase is aborted, leaving the worktree
+// clean.
+func pullRebaseResolving(ctx context.Context, repoPath string, autostash bool, extraEnv []string, up upstreamRef) (rebaseOutcome, error) {
+	var res rebaseOutcome
+	if _, err := runOut(ctx, repoPath, extraEnv, "git", up.fetchArgs()...); err != nil {
+		return res, fmt.Errorf("pull: %w", err)
 	}
 	args := []string{"rebase"}
 	if autostash {
 		args = append(args, "--autostash")
 	}
+	args = append(args, up.rebaseTarget())
+	res.Started = true
 	if err := run(repoPath, "git", args...); err != nil {
 		rebasing, rbErr := IsRebasing(repoPath)
 		if rbErr != nil || !rebasing {
-			return 0, fmt.Errorf("pull: %w", err)
+			return res, fmt.Errorf("pull: %w", err)
 		}
 		n, resErr := ResolveConflicts(repoPath)
 		if resErr != nil {
 			_ = RebaseAbort(repoPath)
-			return 0, fmt.Errorf("resolve conflicts: %w", resErr)
+			return res, fmt.Errorf("resolve conflicts: %w", resErr)
 		}
 		if err := RebaseContinue(repoPath); err != nil {
 			_ = RebaseAbort(repoPath)
-			return 0, fmt.Errorf("rebase continue: %w", err)
+			return res, fmt.Errorf("rebase continue: %w", err)
 		}
-		return n, nil
+		res.Resolved = n
 	}
-	return 0, nil
+	if autostash {
+		if err := recoverAutostash(repoPath); err != nil {
+			return res, err
+		}
+	}
+	return res, nil
+}
+
+// recoverAutostash cleans up after a conflicting autostash pop.
+//
+// `git rebase --autostash` exits ZERO when the rebase itself succeeded but
+// reapplying the stash at the end conflicted; it prints "Applying autostash
+// resulted in conflicts. Your changes are safe in the stash." and leaves the
+// worktree with conflict markers and unmerged index entries. Nothing downstream
+// notices: the caller reports success, the TUI flashes "Synced", and then every
+// later `git commit` fails with "Committing is not possible because you have
+// unmerged files" while `monolog sync`'s `git add -A` happily stages the
+// conflict-marker text and pushes it to every device.
+//
+// So the unmerged paths are checked directly rather than trusting the exit
+// status. Recovery restores each one to HEAD, which is the version the rebase
+// just produced — the local modification is not lost, git kept it as a real
+// stash entry, which the returned error names so the user can `git stash pop`
+// it deliberately. Task files cannot reach here (AutoPush declines to rebase at
+// all while one is uncommitted, see tasksDirty); in practice this is
+// .monolog/config.json, changed on two devices.
+func recoverAutostash(repoPath string) error {
+	paths, err := unmergedPaths(repoPath)
+	if err != nil {
+		return fmt.Errorf("autostash: %w", err)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	for _, p := range paths {
+		// `checkout HEAD -- <path>` resets index AND worktree for that path,
+		// which is what clears the unmerged entry; `checkout --ours` would
+		// leave the index unmerged and the repo just as wedged.
+		if cErr := run(repoPath, "git", "checkout", "HEAD", "--", p); cErr != nil {
+			return fmt.Errorf("autostash: reapplying stashed changes to %s conflicted and could not be undone: %w", p, cErr)
+		}
+	}
+	return fmt.Errorf("autostash: local changes to %s conflicted with the rebase and were left in the stash; recover them with `git stash pop`",
+		strings.Join(paths, ", "))
 }
