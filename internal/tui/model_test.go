@@ -11261,3 +11261,160 @@ func TestHelpModalContent_MentionsAutoPush(t *testing.T) {
 		t.Errorf("help modal still carries the pre-auto-push bare `s  sync` line:\n%s", help)
 	}
 }
+
+// --- Task 11 acceptance: verification-level coverage -------------------------
+
+// drive fully settles a mutation: it feeds cmd's messages through Update and
+// keeps draining the cmds those Updates return, so the batched auto-push
+// actually executes and its autoPushResult lands (clearing pushInFlight)
+// before the next mutation runs.
+//
+// runCmd deliberately discards Update's returned cmd, which is right for tests
+// that only care about the mutation itself but leaves pushInFlight stuck true —
+// every later mutation in that test then coalesces instead of pushing. Tests
+// that count pushes across a sequence of mutations need this instead.
+func drive(t *testing.T, m *Model, cmd tea.Cmd) *Model {
+	t.Helper()
+	pending := []tea.Cmd{cmd}
+	for round := 0; round < 10 && len(pending) > 0; round++ {
+		var next []tea.Cmd
+		for _, c := range pending {
+			for _, msg := range runCmds(c) {
+				nm, out := m.Update(msg)
+				m = nm.(*Model)
+				if out != nil {
+					next = append(next, out)
+				}
+			}
+		}
+		pending = next
+	}
+	return m
+}
+
+// TestUndoRedo_SurvivesSeveralAutoPushedMutations is the acceptance check that
+// undo and redo still work after a run of auto-pushed mutations. The existing
+// undo/redo tests either hand-set the stacks or leave the push cmd unrun; this
+// one settles every push for real, so each mutation and each revert commit goes
+// through a completed push before the next keypress.
+//
+// The invariant under test: a plain (non-rebasing) push never rewrites local
+// history, so undoStack/redoStack must survive it intact and the reverts must
+// still resolve.
+func TestUndoRedo_SurvivesSeveralAutoPushedMutations(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01P1", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01P2", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01P3", Title: "third", Status: "open", Schedule: "today",
+			Position: 3000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	// Three real mutations, each fully settled.
+	for i := 1; i <= 3; i++ {
+		next, cmd := key(t, m, "d")
+		m = drive(t, next, cmd)
+		if m.err != nil {
+			t.Fatalf("done #%d error: %v", i, m.err)
+		}
+		if got := rec.count(); got != i {
+			t.Fatalf("after %d mutations: runAutoPush calls = %d, want %d (one push per mutation)", i, got, i)
+		}
+		if m.pushInFlight || m.pushPending {
+			t.Fatalf("after mutation #%d: pushInFlight=%v pushPending=%v, want both false once the push returned",
+				i, m.pushInFlight, m.pushPending)
+		}
+		if len(m.undoStack) != i {
+			t.Fatalf("after %d auto-pushed mutations: undoStack len = %d, want %d — a plain push must not clear it",
+				i, len(m.undoStack), i)
+		}
+	}
+
+	// Undo twice. Each undo is a real `git revert`, and each produces a commit
+	// that must itself be pushed.
+	for i := 1; i <= 2; i++ {
+		next, cmd := key(t, m, "u")
+		m = drive(t, next, cmd)
+		if m.err != nil {
+			t.Fatalf("undo #%d error: %v", i, m.err)
+		}
+	}
+	if len(m.undoStack) != 1 || len(m.redoStack) != 2 {
+		t.Fatalf("after two undos: undoStack=%d redoStack=%d, want 1 and 2", len(m.undoStack), len(m.redoStack))
+	}
+	if got := rec.count(); got != 5 {
+		t.Errorf("runAutoPush calls = %d after 3 mutations + 2 undos, want 5 — undo commits push too", got)
+	}
+
+	// Redo once: the revert-of-the-revert re-applies the third done.
+	next, cmd := key(t, m, "ctrl+y")
+	m = drive(t, next, cmd)
+	if m.err != nil {
+		t.Fatalf("redo error: %v", m.err)
+	}
+	if len(m.undoStack) != 2 || len(m.redoStack) != 1 {
+		t.Fatalf("after the redo: undoStack=%d redoStack=%d, want 2 and 1", len(m.undoStack), len(m.redoStack))
+	}
+	if got := rec.count(); got != 6 {
+		t.Errorf("runAutoPush calls = %d after the redo, want 6 — redo commits push too", got)
+	}
+
+	// The task state really round-tripped: 3 done, 2 undone, 1 redone → 2 done.
+	doneTab := findTabByLabel(t, m, "Done")
+	if got := len(m.lists[doneTab].Items()); got != 2 {
+		t.Errorf("Done tab items = %d, want 2 after 3 dones, 2 undos and 1 redo", got)
+	}
+}
+
+// TestNewModel_AutoPushDisabledByConfigFile is the TUI half of the config-file
+// off switch. The env-var path is pinned by TestNewModel_AutoPushDisabledByEnv;
+// this drives `"auto_push": false` on disk all the way through config.Load →
+// newModel → a real mutation, and asserts no push is dispatched.
+func TestNewModel_AutoPushDisabledByConfigFile(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	if err := git.Init(repoPath, ""); err != nil {
+		t.Fatalf("git.Init: %v", err)
+	}
+	// git.Init writes "auto_push": true; overwrite it before config.Load so the
+	// disabled value is what the Model snapshots.
+	cfgPath := filepath.Join(repoPath, ".monolog", "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"theme": "default", "date_format": "02-01-2006", "auto_push": false}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", repoPath)
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "") // the file, not the env var, must do the disabling
+	if err := config.Load(repoPath); err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := store.New(filepath.Join(repoPath, ".monolog", "tasks"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if err := s.Create(model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+		Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	m, err := newModel(s, repoPath, Options{})
+	if err != nil {
+		t.Fatalf("newModel: %v", err)
+	}
+
+	if m.autoPushEnabled {
+		t.Fatal(`autoPushEnabled = true with "auto_push": false on disk, want false`)
+	}
+
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+	next, cmd := m.Update(taskSavedMsg{sha: "abc123", status: "Added: alpha"})
+	m = next.(*Model)
+	if m.pushInFlight {
+		t.Error("pushInFlight = true with auto-push disabled by config file")
+	}
+	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+		t.Errorf("got %d autoPushResult msgs, want 0", len(got))
+	}
+	if rec.count() != 0 {
+		t.Errorf("runAutoPush calls = %d, want 0", rec.count())
+	}
+}

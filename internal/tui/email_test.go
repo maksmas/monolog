@@ -1031,4 +1031,3 @@ func TestHelpLine_SyncCopyEnabled_TagView(t *testing.T) {
 		t.Errorf("tag-view helpLine missing 'full sync (git+email)': %q", h)
 	}
 }
-

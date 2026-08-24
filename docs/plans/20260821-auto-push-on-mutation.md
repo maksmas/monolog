@@ -732,15 +732,66 @@ pair. Four behaviors were mutation-checked: dropping `recordPull` from `Serve`, 
 
 ### Task 11: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify `MONOLOG_NO_AUTOPUSH=1` and `"auto_push": false` both fully disable pushing, and that a no-remote repo is unaffected (covered by Task 5 and Task 3 tests — confirm they assert it end-to-end)
-- [ ] verify undo/redo still work after several auto-pushed mutations, and that a rebase-triggering push clears the stacks (covered by Task 7 tests — confirm coverage)
-- [ ] verify no `internal/` import rules were violated: `internal/email` and `internal/telegram` still do not import `internal/config`
-- [ ] run full test suite: `go test ./...`
-- [ ] verify the end-to-end latency claim: a TUI-created task is visible to a Telegram browse command without waiting for the pull ticker
-- [ ] run the suite with `-race`: `go test -race ./...` (this plan adds a mutex and concurrent goroutine paths)
-- [ ] run lint: `go vet ./...`
-- [ ] e2e tests: n/a (no UI e2e harness in this project — see Testing Strategy)
+**Files:**
+- Create: `internal/telegram/endtoend_test.go`
+- Modify: `internal/tui/model_test.go`
+- Modify: `cmd/helpers_test.go`
+- Modify: `internal/tui/email_test.go`
+
+- [x] verify all requirements from Overview are implemented — `internal/git/autopush.go` implements the full 7-step algorithm (repoMu → `IsRebasing`/`ErrRebaseInProgress` → `HasRemote` → `hasUpstream` → timed push → narrow reject classification → `Rebased` set before recovery → `pullRebaseResolving(_, true)` → one retry). All 13 wiring sites present: 6 CLI mutations + `cmd/email.go` via `pushAfter`, 3 TUI `autoPushCmd()` dispatches (`taskSavedMsg`, coalesced follow-up, `emailSyncResult`), 5 telegram `pullBeforeCommand()` sites (`handleBrowse`/`handleActive`/`handleAll`/`handleCallback`/`handleNoteReply`) with `handleCapture` deliberately excluded
+- [x] verify `MONOLOG_NO_AUTOPUSH=1` and `"auto_push": false` both fully disable pushing, and that a no-remote repo is unaffected (covered by Task 5 and Task 3 tests — confirm they assert it end-to-end) — ⚠️ coverage was **asymmetric**, see the gap note below; closed with `TestAddCommand_EnvDisablesPushEndToEnd` and `TestNewModel_AutoPushDisabledByConfigFile`. No-remote is genuinely end-to-end already (`TestAutoPush_SkipsWithoutRemote` asserts `Skipped`, nil error, unchanged HEAD and a clean tree; `TestAutoPush_SkipsWithoutUpstream` additionally asserts the bare remote stayed empty)
+- [x] verify undo/redo still work after several auto-pushed mutations, and that a rebase-triggering push clears the stacks (covered by Task 7 tests — confirm coverage) — the rebase half was genuinely covered (`TestAutoPushResult_RebasedClearsStacksAndReloads`, `TestAutoPushResult_RebasedWithErrorStillClearsStacks`); the "several auto-pushed mutations" half was **not**, see the gap note below. Closed with `TestUndoRedo_SurvivesSeveralAutoPushedMutations`
+- [x] verify no `internal/` import rules were violated: `internal/email` and `internal/telegram` still do not import `internal/config` — confirmed by grep: the only importers of `internal/config` are `cmd`, `internal/store` and `internal/tui`, all permitted
+- [x] run full test suite: `go test ./...` — pass
+- [x] verify the end-to-end latency claim: a TUI-created task is visible to a Telegram browse command without waiting for the pull ticker — **automated**, not reasoned about: `TestEndToEnd_LaptopMutationReachesBotBrowseWithoutTheTicker` and `TestEndToEnd_BotSeesLaptopTaskOnFirstCommandAfterStartup` in `internal/telegram/endtoend_test.go`
+- [x] run the suite with `-race`: `go test -race ./...` (this plan adds a mutex and concurrent goroutine paths) — pass
+- [x] run lint: `go vet ./...` — pass
+- [x] e2e tests: n/a (no UI e2e harness in this project — see Testing Strategy)
+
+⚠️ **Gap 1 — the end-to-end latency claim was never actually tested.** Task 10's
+`TestRemoteTaskAppearsOnTheCommandAfterTheGateExpires` fakes `pullFunc` with a closure that
+seeds the store directly, so it pins the *gate* but proves nothing about a real pushed commit
+reaching the bot's clone. New `internal/telegram/endtoend_test.go` builds the real topology —
+bare remote + a "laptop" clone + a "bot" clone — and runs every link for real: `store.Create`
+→ `git.AutoCommitSHA` → `git.AutoPush` → bare remote → the handler's freshness-gated
+**production** `git.PullRebase` → the browse reply. `Serve` is never called, so no ticker
+exists in the test: anything the bot sees arrived through the per-command gate alone. The
+middle assertion pins the honest bound — inside `commandPullMaxAge` the gate serves local
+state, so worst-case visibility is 5s (the gate), not 30s (the ticker) and not "never" (the
+bug). Mutation-checked: swapping the real pull back for a no-op fails both tests.
+
+⚠️ **Gap 2 — "undo/redo after several auto-pushed mutations" was only covered incidentally.**
+Every existing multi-mutation undo/redo test runs through `runCmd`, which **discards the cmd
+`Update` returns** — so the batched `autoPushCmd` was never executed and `pushInFlight` stayed
+stuck `true` after the first mutation, silently coalescing every later push away. Those tests
+therefore proved undo/redo works *without* pushes completing, not *after* them. New
+`TestUndoRedo_SurvivesSeveralAutoPushedMutations` adds a `drive` helper that drains `Update`'s
+returned cmds so each push actually runs and its `autoPushResult` lands, then asserts one push
+per mutation across 3 dones + 2 undos + 1 redo (6 pushes), stacks intact throughout, and the
+real task state round-tripping. Mutation-checked: changing the handler's `if msg.rebased` to
+`if true` fails it.
+
+⚠️ **Gap 3 — the two off switches had asymmetric end-to-end coverage.** The CLI proved the
+config-file path end to end (`TestAddCommand_ConfigAutoPushFalseSkipsPush`) but the env path
+only at the `pushAfter` unit level; the TUI proved the env path (`TestNewModel_AutoPushDisabledByEnv`)
+but had no config-file test at all. Both twins added, so each surface now pins both switches
+through a real mutation.
+
+[decision] The end-to-end test lives in `internal/telegram` and un-stubs `pullFunc` to the real
+`git.PullRebase`. This bends the Testing Strategy's "no test outside `internal/git` touches the
+network" only in letter, not in spirit: the remote is a local `git init --bare` directory, so
+nothing leaves the machine, and that package's tests already shell out to real git
+(`initTelegramTestRepo` → `git.Init`, `commitAndSync` → `git.AutoCommit`). Only `pullFunc`
+was previously stubbed, and stubbing it is exactly what hid Gap 1.
+
+[deviation] The stray trailing blank line removed from `internal/tui/email_test.go` turned out
+to **predate this branch** — `git show 67dc606:internal/tui/email_test.go` is already
+gofmt-dirty for the same reason, so it was not this branch's drift as assumed. Removed anyway:
+this branch rewrote large parts of that file across Tasks 7-9, the change is a single
+behavior-free blank line, and it drops one entry from `gofmt -l`. The other pre-existing
+gofmt hits (`cmd/email.go`, `cmd/pager.go`, `internal/schedule/schedule_test.go`,
+`internal/telegram/{convert,convert_test,handler,sync}.go`, `internal/tui/theme.go`) are
+untouched, as they are unrelated to this plan.
 
 ### Task 12: [Final] Update documentation
 

@@ -234,6 +234,38 @@ func TestAddCommand_ConfigAutoPushFalseSkipsPush(t *testing.T) {
 	}
 }
 
+// TestAddCommand_EnvDisablesPushEndToEnd is the env-var twin of
+// TestAddCommand_ConfigAutoPushFalseSkipsPush. The kill switch is only useful
+// if it survives the whole command path — git.Init writes "auto_push": true
+// into the repo, openStore loads it, and MONOLOG_NO_AUTOPUSH=1 still has to
+// win by the time pushAfter runs.
+func TestAddCommand_EnvDisablesPushEndToEnd(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+	t.Setenv("MONOLOG_NO_AUTOPUSH", "1")
+
+	calls := stubAutoPushFn(t, git.PushResult{Pushed: true}, nil)
+
+	stdout, stderr, err := runCLI(t, "add", "Env kill switch")
+	if err != nil {
+		t.Fatalf("add error = %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Added: Env kill switch") {
+		t.Errorf("success line missing from stdout: %q", stdout)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("expected no push with MONOLOG_NO_AUTOPUSH=1, got %d calls", len(*calls))
+	}
+	// The mutation itself is unaffected: the commit still lands locally.
+	out, gerr := exec.Command("git", "-C", dir, "log", "--oneline", "-1").Output()
+	if gerr != nil {
+		t.Fatalf("git log failed: %v", gerr)
+	}
+	if !strings.Contains(string(out), "add: Env kill switch") {
+		t.Errorf("disabling auto-push must not disable the commit, git log -1: %s", out)
+	}
+}
+
 // TestCLIMutations_EachPushesExactlyOnce drives every mutation command end to
 // end and asserts the seam fires exactly once. This is the failure mode of a
 // mechanical six-file edit: a missed (or duplicated) pushAfter call in one
