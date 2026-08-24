@@ -989,7 +989,10 @@ func writeConfigDoc(t *testing.T, tmpDir string, doc map[string]any) {
 func TestAutoPushDefaultsToTrue(t *testing.T) {
 	resetAutoPush(t)
 	t.Setenv("MONOLOG_NO_AUTOPUSH", "")
-	autoPush = defaultAutoPush
+	// Load with no file on disk leaves the package default in place.
+	if err := Load(t.TempDir()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if !AutoPush() {
 		t.Errorf("AutoPush() = false, want true by default")
 	}
@@ -1085,12 +1088,14 @@ func TestLoadResetsAutoPushBetweenCalls(t *testing.T) {
 func TestAutoPushEnvOverride(t *testing.T) {
 	// Exact "1" match only, matching MONOLOG_NO_LINKS / MONOLOG_NO_WATCH.
 	tests := []struct {
-		name string
-		env  string
-		want bool
+		name  string
+		env   string
+		unset bool // genuinely absent from the environment, not set to ""
+		want  bool
 	}{
 		{name: "1 disables", env: "1", want: false},
-		{name: "unset keeps config value", env: "", want: true},
+		{name: "absent keeps config value", unset: true, want: true},
+		{name: "empty keeps config value", env: "", want: true},
 		{name: "true does not disable", env: "true", want: true},
 		{name: "yes does not disable", env: "yes", want: true},
 		{name: "0 does not disable", env: "0", want: true},
@@ -1105,9 +1110,16 @@ func TestAutoPushEnvOverride(t *testing.T) {
 			if err := Load(tmpDir); err != nil {
 				t.Fatalf("Load: %v", err)
 			}
+			// t.Setenv("...", "") sets the variable to the empty string, which
+			// is a different state from unset — cover both.
 			t.Setenv("MONOLOG_NO_AUTOPUSH", tt.env)
+			if tt.unset {
+				if err := os.Unsetenv("MONOLOG_NO_AUTOPUSH"); err != nil {
+					t.Fatalf("unsetenv: %v", err)
+				}
+			}
 			if got := AutoPush(); got != tt.want {
-				t.Errorf("AutoPush() with MONOLOG_NO_AUTOPUSH=%q = %v, want %v", tt.env, got, tt.want)
+				t.Errorf("AutoPush() with MONOLOG_NO_AUTOPUSH=%q (unset=%v) = %v, want %v", tt.env, tt.unset, got, tt.want)
 			}
 		})
 	}

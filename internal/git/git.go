@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/maksmas/monolog/internal/model"
 )
@@ -16,7 +18,8 @@ import (
 // tasksPrefix is the repo-relative path prefix of task JSON files.
 const tasksPrefix = ".monolog/tasks/"
 
-// repoMu serializes every mutating git entry point in this package.
+// repoMu serializes the mutating git entry points in this package:
+// AutoCommit, AutoCommitSHA, Revert, RevertSHA, Sync and AutoPush.
 //
 // A push-only mutex is NOT enough. The auto-push design deliberately lets a
 // mutation's AutoCommitSHA run while a push is in flight, each in its own
@@ -27,9 +30,27 @@ const tasksPrefix = ".monolog/tasks/"
 // rebases in one worktree. internal/telegram/handler.go already solves this the
 // same way, with one mutex around all its git work.
 //
-// The lock is per-process only: a second monolog process (a Raycast capture, a
-// `monolog add` in another terminal) still degrades to .git/index.lock
-// contention, which callers surface as a warning.
+// Deliberately NOT locked: PullRebase and Push are lock-free primitives, since
+// Sync calls Push while already holding this mutex (sync.Mutex is not
+// reentrant) and PullRebase's only caller, internal/telegram, serializes all of
+// its git work under its own handler mutex. A future in-process caller — the
+// plan's "periodic background pull ticker in the TUI", say — must either take
+// repoMu itself or route through Sync, or it will race AutoPush's rebase in
+// exactly the way this mutex exists to prevent.
+//
+// Holding it costs latency: AutoPush keeps the lock across its push and any
+// rebase fallback, so a mutation's commit can wait on a slow network. Every
+// network step under the lock is therefore bounded (see pushWithTimeout and
+// pullRebaseResolving's context-bounded fetch); the ceiling is two push
+// timeouts plus one fetch timeout, not "until ssh gives up".
+//
+// The lock is per-process only. A second monolog process (a Raycast capture, a
+// `monolog add` in another terminal, the Claude skill) can now run
+// `pull --rebase --autostash` of its own, which moves HEAD and rewrites the
+// worktree while this process is mid-commit — .git/index.lock guards the index,
+// not the rebase sequence, so a concurrent commit can land on a rewritten HEAD
+// or have its autostash restored under it. Cross-process serialization is out
+// of scope; callers surface whatever git reports as a warning.
 //
 // Exported entry points that take this lock must never call another locking
 // exported function — Go's sync.Mutex is not reentrant. Shared work therefore
@@ -254,12 +275,29 @@ func SyncCommit(repoPath string) error {
 	return nil
 }
 
-// PullRebase runs git pull --rebase.
+// DefaultFetchTimeout bounds the network half of an automatic pull-rebase.
+// Every caller of PullRebase is an unattended background path (the Telegram
+// bot's ticker and its per-command freshness gate), and each one holds a lock
+// while it runs, so a half-open connection must not be able to stall it
+// indefinitely.
+const DefaultFetchTimeout = 15 * time.Second
+
+// PullRebase fetches (bounded by DefaultFetchTimeout, with interactive
+// prompting disabled) and rebases the current branch onto its upstream.
+//
+// Lock-free by design — see repoMu. Its only caller, internal/telegram,
+// serializes all of its git work under its own handler mutex.
 func PullRebase(repoPath string) error {
-	return run(repoPath, "git", "pull", "--rebase")
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultFetchTimeout)
+	defer cancel()
+	if _, err := runOut(ctx, repoPath, noPromptEnv, "git", "fetch"); err != nil {
+		return err
+	}
+	return run(repoPath, "git", "rebase")
 }
 
-// Push runs git push.
+// Push runs git push. Lock-free by design — see repoMu; Sync calls it while
+// already holding the mutex.
 func Push(repoPath string) error {
 	return run(repoPath, "git", "push")
 }
@@ -310,8 +348,10 @@ func Sync(repoPath string) (SyncResult, error) {
 	res.HasRemote = true
 
 	// Sync commits pending changes above, so the working tree is already clean
-	// and the rebase does not need an autostash.
-	n, err := pullRebaseResolving(repoPath, false)
+	// and the rebase does not need an autostash. Unbounded and prompt-enabled:
+	// the user pressed `s` (or ran `monolog sync`) and is at the keyboard, so a
+	// credential prompt is expected behavior and a slow fetch is visible work.
+	n, err := pullRebaseResolving(context.Background(), repoPath, false, nil)
 	if err != nil {
 		return res, err
 	}
@@ -441,14 +481,67 @@ func gitShow(repoPath, ref string) ([]byte, error) {
 	return cmd.Output()
 }
 
+// gitEnv returns the process environment with git's own messages pinned to the
+// C locale, plus any extra entries.
+//
+// Pinning the locale is load-bearing, not cosmetic: git has no distinguishing
+// exit status for a push rejection, so isNonFastForward classifies what git
+// printed. A git built with NLS under a non-English LANG prints translated
+// prose, which would silently turn every rejection into an unrecoverable
+// "push failed" warning on every mutation.
+func gitEnv(extra ...string) []string {
+	env := append(os.Environ(), "LC_ALL=C", "LANG=C")
+	return append(env, extra...)
+}
+
+// noPromptEnv disables git's interactive credential prompting. Unattended
+// pushes must never grab the terminal: git and ssh open /dev/tty directly
+// rather than reading stdin, so an HTTPS remote with no credential helper would
+// write a prompt over the Bubble Tea alt-screen and eat the user's keystrokes
+// after every mutation. With prompting off git fails fast instead, which
+// isNonFastForward classifies as a non-rejection error and the caller surfaces
+// as a warning.
+//
+// Deliberately NOT applied to `monolog sync` or `monolog init`, where the user
+// is at the keyboard and a credential prompt is the expected behavior.
+var noPromptEnv = []string{"GIT_TERMINAL_PROMPT=0"}
+
+// waitDelay bounds how long Wait blocks on the output pipes after a command's
+// process is gone. Without it a killed `git push` still waits for every
+// inherited writer to close its descriptor — and the ssh or credential-helper
+// grandchild git spawned holds one, so a half-open connection would keep the
+// call (and repoMu) alive long past the context deadline.
+const waitDelay = 2 * time.Second
+
+// credentialsRe matches the userinfo component of a remote URL. git echoes the
+// full URL back in "fatal: unable to access '<url>'", so an HTTPS remote with
+// an embedded token leaks it into whatever surfaces the error.
+var credentialsRe = regexp.MustCompile(`://[^/@\s]+@`)
+
+// redactCredentials strips embedded credentials out of git output before it is
+// surfaced to a terminal, a log or the TUI status bar.
+func redactCredentials(s string) string {
+	return credentialsRe.ReplaceAllString(s, "://***@")
+}
+
+// gitError formats a failed command uniformly, with credentials redacted out of
+// both the argument list and git's output.
+func gitError(name string, args []string, err error, out []byte) error {
+	return fmt.Errorf("%s: %w\n%s",
+		redactCredentials(fmt.Sprintf("%s %v", name, args)),
+		err,
+		redactCredentials(string(out)))
+}
+
 // run executes a command in the given directory, returning an error with
 // combined output if the command fails.
 func run(dir string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s %v: %w\n%s", name, args, err, out)
+		return gitError(name, args, err, out)
 	}
 	return nil
 }
@@ -457,12 +550,18 @@ func run(dir string, name string, args ...string) error {
 // is returned on both the success and the failure path so callers can classify
 // a failure by what git printed (git signals push rejections on stderr with a
 // generic exit code, so there is no status to switch on).
-func runOut(ctx context.Context, dir string, name string, args ...string) (string, error) {
+//
+// extraEnv is appended to the C-locale environment; pass noPromptEnv for the
+// unattended paths.
+func runOut(ctx context.Context, dir string, extraEnv []string, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.Env = gitEnv(extraEnv...)
+	// Bound the post-kill pipe wait so ctx actually is the ceiling — see waitDelay.
+	cmd.WaitDelay = waitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("%s %v: %w\n%s", name, args, err, out)
+		return string(out), gitError(name, args, err, out)
 	}
 	return string(out), nil
 }
@@ -472,15 +571,22 @@ func runOut(ctx context.Context, dir string, name string, args ...string) (strin
 // and returns the number of resolved files. Extracted from Sync so the manual
 // sync path and the automatic push path share identical conflict semantics.
 //
+// It is `git pull --rebase` split in two on purpose. The fetch is the only
+// network step and is bounded by ctx: killing a fetch is safe, it leaves no
+// .git/rebase-merge behind. The rebase that follows is purely local and
+// deliberately runs unbounded — killing git mid-rebase would strand the repo in
+// a state nothing in this package recovers from. Callers that must not block
+// indefinitely (AutoPush holds repoMu across this call) get their ceiling from
+// ctx; extraEnv reaches the fetch only, since the rebase talks to nobody.
+//
 // Errors are returned already wrapped ("pull: ", "resolve conflicts: ",
 // "rebase continue: ") so callers can surface them verbatim. On a resolution or
 // continue failure the rebase is aborted, leaving the worktree clean.
-//
-// Not context-aware: killing git mid-rebase would leave .git/rebase-merge
-// behind, and nothing in this package recovers from that. Callers' timeouts
-// therefore bound their pushes, not this call.
-func pullRebaseResolving(repoPath string, autostash bool) (int, error) {
-	args := []string{"pull", "--rebase"}
+func pullRebaseResolving(ctx context.Context, repoPath string, autostash bool, extraEnv []string) (int, error) {
+	if _, err := runOut(ctx, repoPath, extraEnv, "git", "fetch"); err != nil {
+		return 0, fmt.Errorf("pull: %w", err)
+	}
+	args := []string{"rebase"}
 	if autostash {
 		args = append(args, "--autostash")
 	}

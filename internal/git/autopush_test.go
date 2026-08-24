@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maksmas/monolog/internal/model"
 )
@@ -16,11 +17,19 @@ import (
 // echoes back "HEAD" instead of failing.
 func bareHead(t *testing.T, bare string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", bare, "rev-parse", "--verify", "HEAD").Output()
-	if err != nil {
+	out, err := exec.Command("git", "-C", bare, "rev-parse", "--verify", "--quiet", "HEAD").Output()
+	if err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	// Exit 1 with no output is the legitimate "no commits yet" answer; anything
+	// else is a broken fixture that must not masquerade as an empty repo and
+	// silently satisfy a `bareHead(...) != ""` assertion.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	t.Fatalf("rev-parse --verify HEAD in %s: %v", bare, err)
+	return ""
 }
 
 // commitTask writes, stages and commits a task in the given clone without
@@ -113,9 +122,11 @@ func TestAutoPush_SkipsWithoutRemote(t *testing.T) {
 	}
 }
 
-func TestAutoPush_SkipsWithoutUpstream(t *testing.T) {
+func TestAutoPush_SetsUpstreamOnFirstPush(t *testing.T) {
 	// A remote added by hand after `monolog init` has an origin but no tracking
-	// branch. Without the upstream check this would warn on every mutation.
+	// branch. Skipping silently forever there reintroduces the exact "my tasks
+	// never reach GitHub" symptom the feature exists to fix, so the first push
+	// sets the upstream as it goes.
 	dir := t.TempDir()
 	bare := filepath.Join(dir, "remote.git")
 	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
@@ -126,30 +137,99 @@ func TestAutoPush_SkipsWithoutUpstream(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	gitRun(t, repoPath, "remote", "add", "origin", bare)
+	if hasUpstream(repoPath) {
+		t.Fatal("fixture should have no upstream before the first push")
+	}
 
-	hasRemote, err := HasRemote(repoPath)
+	commitTask(t, repoPath, model.Task{
+		ID: "01UP", Title: "first push", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	localHead, err := headSHA(repoPath)
 	if err != nil {
-		t.Fatalf("HasRemote: %v", err)
-	}
-	if !hasRemote {
-		t.Fatal("fixture should have a remote configured")
-	}
-	if up, err := hasUpstream(repoPath); err != nil || up {
-		t.Fatalf("hasUpstream() = %v, %v; want false, nil for a branch with no tracking ref", up, err)
+		t.Fatalf("headSHA: %v", err)
 	}
 
 	res, err := AutoPush(repoPath, DefaultPushTimeout)
 	if err != nil {
-		t.Fatalf("AutoPush() error = %v, want nil when no upstream is configured", err)
+		t.Fatalf("AutoPush() error = %v", err)
+	}
+	if !res.Pushed {
+		t.Error("Pushed = false, want true: the first push should set the upstream and land")
+	}
+	if res.Skipped {
+		t.Error("Skipped = true, want false: a remote with no upstream must not be a silent no-op")
+	}
+	if got := bareHead(t, bare); got != localHead {
+		t.Errorf("remote HEAD = %q, want the pushed local commit %q", got, localHead)
+	}
+	if !hasUpstream(repoPath) {
+		t.Error("hasUpstream() = false after the first push; --set-upstream should have stuck")
+	}
+	// The second push must be a plain one against the upstream just recorded.
+	commitTask(t, repoPath, model.Task{
+		ID: "01UQ", Title: "second push", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	if res, err := AutoPush(repoPath, DefaultPushTimeout); err != nil || !res.Pushed {
+		t.Fatalf("second AutoPush() = %+v, %v; want a plain successful push", res, err)
+	}
+}
+
+func TestAutoPush_SkipsOnDetachedHEAD(t *testing.T) {
+	// A detached HEAD has no branch to track and nothing sane to push, so it
+	// must stay a silent no-op rather than warning on every mutation.
+	dir := t.TempDir()
+	bare := filepath.Join(dir, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	repoPath := filepath.Join(dir, "clone")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	gitRun(t, repoPath, "remote", "add", "origin", bare)
+	sha, err := headSHA(repoPath)
+	if err != nil {
+		t.Fatalf("headSHA: %v", err)
+	}
+	gitRun(t, repoPath, "checkout", "--detach", sha)
+
+	res, err := AutoPush(repoPath, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v, want nil on a detached HEAD", err)
 	}
 	if !res.Skipped {
-		t.Error("Skipped = false, want true with a remote but no upstream")
+		t.Error("Skipped = false, want true on a detached HEAD")
 	}
 	if res.Pushed || res.Rebased || res.Resolved != 0 {
 		t.Errorf("skip must be a pure no-op, got %+v", res)
 	}
 	if got := bareHead(t, bare); got != "" {
 		t.Errorf("remote HEAD = %q, want empty: nothing may have been pushed", got)
+	}
+}
+
+func TestAutoPush_SkipsWithSeveralRemotesAndNoOrigin(t *testing.T) {
+	// Guessing between two hand-added remotes would push a user's tasks
+	// somewhere they never asked for; skipping silently is the safe default.
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "clone")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	gitRun(t, repoPath, "remote", "add", "work", filepath.Join(dir, "work.git"))
+	gitRun(t, repoPath, "remote", "add", "backup", filepath.Join(dir, "backup.git"))
+
+	res, err := AutoPush(repoPath, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v, want nil with no default remote", err)
+	}
+	if !res.Skipped {
+		t.Error("Skipped = false, want true when no remote is an obvious default")
+	}
+	if res.Pushed || res.Rebased {
+		t.Errorf("skip must be a pure no-op, got %+v", res)
 	}
 }
 
@@ -485,6 +565,18 @@ func TestIsNonFastForward(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "branch behind hint",
+			out: "hint: Updates were rejected because the tip of your current branch is behind\n" +
+				"hint: its remote counterpart.\n",
+			want: true,
+		},
+		{
+			name: "tag rejection reuses the same hint prefix but no rebase fixes it",
+			out: " ! [rejected]        v1 -> v1 (already exists)\n" +
+				"hint: Updates were rejected because the tag already exists in the remote.\n",
+			want: false,
+		},
+		{
 			name: "marker casing is ignored",
 			out:  " ! [rejected]        main -> main (NON-FAST-FORWARD)\n",
 			want: true,
@@ -544,11 +636,7 @@ func TestIsNonFastForward(t *testing.T) {
 func TestHasUpstream_WithTrackingBranch(t *testing.T) {
 	_, a := setupRemoteFixture(t)
 
-	up, err := hasUpstream(a)
-	if err != nil {
-		t.Fatalf("hasUpstream() error = %v", err)
-	}
-	if !up {
+	if !hasUpstream(a) {
 		t.Error("hasUpstream() = false, want true for a branch pushed with -u")
 	}
 }
@@ -563,22 +651,312 @@ func TestHasUpstream_DetachedHEAD(t *testing.T) {
 	}
 	gitRun(t, a, "checkout", "--detach", sha)
 
-	up, err := hasUpstream(a)
-	if err != nil {
-		t.Fatalf("hasUpstream() error = %v, want nil for a detached HEAD", err)
-	}
-	if up {
+	if hasUpstream(a) {
 		t.Error("hasUpstream() = true, want false for a detached HEAD")
 	}
 }
 
 func TestHasUpstream_NotARepo(t *testing.T) {
-	// An unrecognized failure is surfaced rather than silently read as absence.
+	// Nothing to push to, reported as absence. AutoPush still surfaces a bogus
+	// path as an error — via pushRemote, which is where the real repo check is.
 	dir := t.TempDir()
-	if _, err := hasUpstream(dir); err == nil {
-		t.Error("expected an error outside a git repository")
+	if hasUpstream(dir) {
+		t.Error("hasUpstream() = true, want false outside a git repository")
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("fixture dir should not be a repo: %v", err)
+	}
+	if _, err := pushRemote(dir); err == nil {
+		t.Error("pushRemote() error = nil, want an error outside a git repository")
+	}
+	if _, err := AutoPush(dir, DefaultPushTimeout); err == nil {
+		t.Error("AutoPush() error = nil, want an error outside a git repository")
+	}
+}
+
+// TestAutoPush_HoldsRepoMuAcrossTheRebase pins the lock AutoPush takes.
+//
+// Deterministic by construction: the test itself holds repoMu, so an AutoPush
+// that does not take it runs to completion immediately (a push against a local
+// bare repo takes milliseconds). Deleting repoMu.Lock/Unlock from AutoPush
+// therefore fails this test instead of merely making a race more likely.
+func TestAutoPush_HoldsRepoMuAcrossTheRebase(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01LKB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01LKA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	repoMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := AutoPush(a, DefaultPushTimeout)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		repoMu.Unlock()
+		t.Fatalf("AutoPush() returned (%v) while repoMu was held: it does not take the lock, "+
+			"so a concurrent commit can land on a detached rebase HEAD", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	repoMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AutoPush() error = %v after the lock was released", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("AutoPush() never completed after repoMu was released")
+	}
+}
+
+// TestAutoPush_ConcurrentWithAutoCommitSHA is the live-fire twin of the lock
+// test: a rebasing AutoPush and a mutation's commit in flight at the same time,
+// which is exactly what the TUI produces (an autoPushCmd goroutine vs. a
+// taskSavedMsg mutation's AutoCommitSHA goroutine).
+func TestAutoPush_ConcurrentWithAutoCommitSHA(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01CCB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01CCA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// Written before the goroutines start: writeTaskJSON calls t.Fatalf, which
+	// is only valid on the test goroutine.
+	relPath := filepath.Join(".monolog", "tasks", "01CCC.json")
+	writeTaskJSON(t, filepath.Join(a, relPath), model.Task{
+		ID: "01CCC", Title: "concurrent", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	pushErr := make(chan error, 1)
+	go func() {
+		_, err := AutoPush(a, DefaultPushTimeout)
+		pushErr <- err
+	}()
+	commitErr := make(chan error, 1)
+	go func() {
+		_, err := AutoCommitSHA(a, "add: 01CCC", relPath)
+		commitErr <- err
+	}()
+
+	if err := <-pushErr; err != nil {
+		t.Errorf("AutoPush() error = %v", err)
+	}
+	// The commit may legitimately find nothing to commit: the rebase's autostash
+	// can absorb the pending write. What must never happen is an index.lock
+	// collision or a commit onto a detached rebase HEAD.
+	if err := <-commitErr; err != nil && !strings.Contains(err.Error(), "nothing to commit") {
+		t.Errorf("AutoCommitSHA() error = %v", err)
+	}
+	if rebasing, err := IsRebasing(a); err != nil || rebasing {
+		t.Errorf("IsRebasing() = %v, %v; want false, nil", rebasing, err)
+	}
+	if _, err := headSHA(a); err != nil {
+		t.Errorf("HEAD does not resolve after the concurrent run: %v", err)
+	}
+}
+
+// TestAutoPush_RebasedTrueWhenTheRebaseItselfFails pins the "Rebased is set
+// BEFORE the recovery" contract. Gating it on err == nil would leave the TUI
+// holding undo/redo SHAs that a partially-applied rebase may already have
+// invalidated.
+func TestAutoPush_RebasedTrueWhenTheRebaseItselfFails(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// Both sides edit .monolog/config.json — a NON-task file, which
+	// ResolveConflicts refuses to auto-resolve — so A's push is rejected as
+	// non-fast-forward and the rebase that follows fails.
+	cfg := filepath.Join(".monolog", "config.json")
+	if err := os.WriteFile(filepath.Join(b, cfg), []byte("{\n  \"theme\": \"dracula\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("write config in B: %v", err)
+	}
+	gitRun(t, b, "add", cfg)
+	gitRun(t, b, "commit", "-m", "B theme")
+	gitRun(t, b, "push")
+
+	if err := os.WriteFile(filepath.Join(a, cfg), []byte("{\n  \"theme\": \"solarized\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("write config in A: %v", err)
+	}
+	gitRun(t, a, "add", cfg)
+	gitRun(t, a, "commit", "-m", "A theme")
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err == nil {
+		t.Fatal("AutoPush() error = nil, want the rebase failure to surface")
+	}
+	if !res.Rebased {
+		t.Error("Rebased = false; it must be reported even when the rebase itself failed, " +
+			"or the caller keeps undo/redo SHAs a partial rebase may have invalidated")
+	}
+	if res.Pushed {
+		t.Error("Pushed = true, want false")
+	}
+	if got := bareHead(t, bare); got == "" {
+		t.Error("remote HEAD is empty; the fixture should have B's commit")
+	}
+	// The failed rebase is aborted, not left for the user to find.
+	if rebasing, err := IsRebasing(a); err != nil || rebasing {
+		t.Errorf("IsRebasing() = %v, %v; want false, nil after the abort", rebasing, err)
+	}
+}
+
+// TestAutoPush_DefersRebaseWhileATaskWriteIsUncommitted covers the guard that
+// keeps --autostash away from a half-written task file. repoMu serializes git
+// calls but cannot make a caller's store.Update -> AutoCommitSHA pair atomic,
+// and a conflicting autostash pop writes conflict markers into the JSON that
+// the pending `git add` would then commit.
+func TestAutoPush_DefersRebaseWhileATaskWriteIsUncommitted(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01DFB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	aTask := commitTask(t, a, model.Task{
+		ID: "01DFA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	beforeSHA, err := headSHA(a)
+	if err != nil {
+		t.Fatalf("headSHA: %v", err)
+	}
+
+	// Another mutation is between its store write and its commit.
+	const pending = "{\n  \"id\": \"01DFA\",\n  \"title\": \"edited, not yet committed\"\n}\n"
+	if err := os.WriteFile(filepath.Join(a, aTask), []byte(pending), 0o644); err != nil {
+		t.Fatalf("write pending task edit: %v", err)
+	}
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if !errors.Is(err, ErrRebaseDeferred) {
+		t.Fatalf("AutoPush() error = %v, want ErrRebaseDeferred", err)
+	}
+	if res.Rebased {
+		t.Error("Rebased = true, want false: the rebase must be deferred, not attempted")
+	}
+	if res.Pushed {
+		t.Error("Pushed = true, want false")
+	}
+	if after, err := headSHA(a); err != nil || after != beforeSHA {
+		t.Errorf("HEAD = %q (err %v), want unchanged %q", after, err, beforeSHA)
+	}
+	// The pending write is untouched — no stash, no conflict markers.
+	data, err := os.ReadFile(filepath.Join(a, aTask))
+	if err != nil {
+		t.Fatalf("read pending task edit: %v", err)
+	}
+	if string(data) != pending {
+		t.Errorf("pending task edit = %q, want it left exactly as written", string(data))
+	}
+}
+
+// TestAutoPush_TimeoutBoundsAHungPush pins that the push timeout actually kills
+// something. git's transport child (here a stand-in ssh that just sleeps)
+// inherits the output pipe, so without cmd.WaitDelay the call blocks in Wait
+// long after the context killed git itself.
+func TestAutoPush_TimeoutBoundsAHungPush(t *testing.T) {
+	_, a := setupRemoteFixture(t)
+	commitTask(t, a, model.Task{
+		ID: "01TO", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// A stand-in for ssh that connects and then never answers — a half-open
+	// connection with no ServerAliveInterval, the case the timeout exists for.
+	hang := filepath.Join(t.TempDir(), "hanging-ssh")
+	if err := os.WriteFile(hang, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+	gitRun(t, a, "config", "core.sshCommand", hang)
+	gitRun(t, a, "remote", "set-url", "origin", "ssh://git@monolog.invalid/tasks.git")
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := AutoPush(a, 200*time.Millisecond)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("AutoPush() error = nil, want the timed-out push to fail")
+		}
+		// waitDelay adds its own grace period on top of the deadline.
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("AutoPush() took %v for a 200ms timeout", elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("AutoPush() did not return: the push timeout bounds nothing")
+	}
+}
+
+func TestRedactCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "token in userinfo",
+			in:   "fatal: unable to access 'https://x-access-token:ghp_secret@github.com/u/t.git/'",
+			want: "fatal: unable to access 'https://***@github.com/u/t.git/'",
+		},
+		{
+			name: "bare username is still userinfo",
+			in:   "remote: https://ghp_secret@github.com/u/t.git",
+			want: "remote: https://***@github.com/u/t.git",
+		},
+		{
+			name: "ssh scp-style address is untouched",
+			in:   "fatal: unable to access 'git@github.com:maksmas/monolog-tasks.git'",
+			want: "fatal: unable to access 'git@github.com:maksmas/monolog-tasks.git'",
+		},
+		{
+			name: "credential-free url is untouched",
+			in:   "To https://github.com/maksmas/monolog-tasks.git",
+			want: "To https://github.com/maksmas/monolog-tasks.git",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactCredentials(tt.in); got != tt.want {
+				t.Errorf("redactCredentials(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAutoPush_ErrorRedactsRemoteCredentials is the end-to-end half: the error
+// the CLI prints and the TUI flashes must not carry a token.
+func TestAutoPush_ErrorRedactsRemoteCredentials(t *testing.T) {
+	_, a := setupRemoteFixture(t)
+	commitTask(t, a, model.Task{
+		ID: "01RD", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, a, "remote", "set-url", "origin", "https://x-access-token:ghp_supersecret@monolog.invalid/tasks.git")
+
+	_, err := AutoPush(a, 3*time.Second)
+	if err == nil {
+		t.Fatal("AutoPush() error = nil, want a failure against an unreachable host")
+	}
+	if strings.Contains(err.Error(), "ghp_supersecret") {
+		t.Errorf("error leaks the remote's token: %v", err)
 	}
 }

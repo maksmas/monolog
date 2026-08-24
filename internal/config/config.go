@@ -111,20 +111,13 @@ func defaultTelegramConfig() TelegramConfig {
 // telegramCfg holds the in-session telegram config populated by Load.
 var telegramCfg = defaultTelegramConfig()
 
-// defaultAutoPush is the documented default for auto-push-on-mutation: ON.
-// The bug this feature fixes is that pushing does not happen, so shipping it
-// opt-in would ship the broken behavior.
-const defaultAutoPush = true
-
-// autoPush holds the in-session auto-push setting populated by Load.
-var autoPush = defaultAutoPush
-
-// resetAutoPushToDefaults sets autoPush back to the documented default.
-// Called by Load before applying the "auto_push" key from disk so a
-// previously-loaded value is not preserved across configurations.
-func resetAutoPushToDefaults() {
-	autoPush = defaultAutoPush
-}
+// autoPush holds the in-session auto-push setting populated by Load. The
+// default is ON: the bug this feature fixes is that pushing does not happen,
+// so shipping it opt-in would ship the broken behavior. Load reassigns it
+// before reading the file so a previously-loaded value is not preserved across
+// configurations (its struct-valued siblings need a resetXToDefaults helper
+// for that; a bool does not).
+var autoPush = true
 
 // AutoPush reports whether mutations should push to the remote in the
 // background. Resolution order:
@@ -343,7 +336,7 @@ func applyTelegramBlock(b telegramBlock) {
 func Load(monologDir string) error {
 	resetEmailCfgToDefaults()
 	resetTelegramCfgToDefaults()
-	resetAutoPushToDefaults()
+	autoPush = true
 
 	data, err := os.ReadFile(configPath(monologDir))
 	if os.IsNotExist(err) {

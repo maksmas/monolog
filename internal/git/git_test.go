@@ -10,9 +10,37 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/maksmas/monolog/internal/model"
 )
+
+// TestMain isolates every git subprocess this package spawns from the machine's
+// own git configuration.
+//
+// Without it the suite reads ~/.gitconfig, so a developer or CI runner with
+// rebase.autoStash = true silently changes what these tests exercise —
+// TestPullRebaseResolving_AutostashPreservesDirtyFile asserts that a rebase
+// WITHOUT autostash fails on a dirty tracked file, which is exactly the
+// assertion that setting flips. Nulling the global/system files means the
+// identity has to come from the environment instead, since Init commits.
+func TestMain(m *testing.M) {
+	for k, v := range map[string]string{
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_SYSTEM":   os.DevNull,
+		"GIT_AUTHOR_NAME":     "monolog test",
+		"GIT_AUTHOR_EMAIL":    "test@monolog.invalid",
+		"GIT_COMMITTER_NAME":  "monolog test",
+		"GIT_COMMITTER_EMAIL": "test@monolog.invalid",
+		"GIT_TERMINAL_PROMPT": "0",
+	} {
+		if err := os.Setenv(k, v); err != nil {
+			fmt.Fprintf(os.Stderr, "setenv %s: %v\n", k, err)
+			os.Exit(1)
+		}
+	}
+	os.Exit(m.Run())
+}
 
 func TestInit_CreatesDirectoryStructure(t *testing.T) {
 	dir := t.TempDir()
@@ -921,7 +949,7 @@ func TestRunOut_Success(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	out, err := runOut(context.Background(), repoPath, "git", "rev-parse", "HEAD")
+	out, err := runOut(context.Background(), repoPath, nil, "git", "rev-parse", "HEAD")
 	if err != nil {
 		t.Fatalf("runOut() error = %v (out=%q)", err, out)
 	}
@@ -937,7 +965,7 @@ func TestRunOut_Success(t *testing.T) {
 func TestRunOut_FailureReturnsOutputAndError(t *testing.T) {
 	dir := t.TempDir()
 
-	out, err := runOut(context.Background(), dir, "git", "rev-parse", "HEAD")
+	out, err := runOut(context.Background(), dir, nil, "git", "rev-parse", "HEAD")
 	if err == nil {
 		t.Fatal("expected error running git rev-parse outside a repo")
 	}
@@ -960,7 +988,7 @@ func TestRunOut_ExpiredContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already expired before the command starts
 
-	if _, err := runOut(ctx, repoPath, "git", "rev-parse", "HEAD"); err == nil {
+	if _, err := runOut(ctx, repoPath, nil, "git", "rev-parse", "HEAD"); err == nil {
 		t.Error("expected error for an expired context")
 	}
 }
@@ -1014,7 +1042,7 @@ func TestPullRebaseResolving_CleanFastForward(t *testing.T) {
 		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
 	})
 
-	n, err := pullRebaseResolving(a, false)
+	n, err := pullRebaseResolving(context.Background(), a, false, nil)
 	if err != nil {
 		t.Fatalf("pullRebaseResolving() error = %v", err)
 	}
@@ -1045,7 +1073,7 @@ func TestPullRebaseResolving_AutoResolvesConflict(t *testing.T) {
 	gitRun(t, a, "add", taskPath)
 	gitRun(t, a, "commit", "-m", "A edit")
 
-	n, err := pullRebaseResolving(a, false)
+	n, err := pullRebaseResolving(context.Background(), a, false, nil)
 	if err != nil {
 		t.Fatalf("pullRebaseResolving() error = %v", err)
 	}
@@ -1083,12 +1111,12 @@ func TestPullRebaseResolving_AutostashPreservesDirtyFile(t *testing.T) {
 	}
 
 	// Without autostash, git refuses to rebase over unstaged changes.
-	if _, err := pullRebaseResolving(a, false); err == nil {
+	if _, err := pullRebaseResolving(context.Background(), a, false, nil); err == nil {
 		t.Fatal("expected pullRebaseResolving(autostash=false) to fail with a dirty tracked file")
 	}
 
 	// With autostash it succeeds and the modification is restored afterwards.
-	n, err := pullRebaseResolving(a, true)
+	n, err := pullRebaseResolving(context.Background(), a, true, nil)
 	if err != nil {
 		t.Fatalf("pullRebaseResolving(autostash=true) error = %v", err)
 	}
@@ -1239,11 +1267,49 @@ func TestAutoCommitSHA_ConcurrentWithSync(t *testing.T) {
 		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
 	})
 
+	// Overlap is guaranteed rather than hoped for: the test takes repoMu
+	// first, so both calls are demonstrably pending at the same time before
+	// either can start. Without the rendezvous the Sync goroutine could
+	// finish before the commit even began, and the test would assert nothing
+	// about concurrency while still passing.
+	firstPath := filepath.Join(".monolog", "tasks", "01CT0000.json")
+	writeTaskJSON(t, filepath.Join(a, firstPath), model.Task{
+		ID: "01CT0000", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	repoMu.Lock()
 	syncErr := make(chan error, 1)
 	go func() {
 		_, err := Sync(a)
 		syncErr <- err
 	}()
+	type commitResult struct {
+		sha string
+		err error
+	}
+	commitDone := make(chan commitResult, 1)
+	go func() {
+		sha, err := AutoCommitSHA(a, "add: 01CT0000", firstPath)
+		commitDone <- commitResult{sha: sha, err: err}
+	}()
+
+	select {
+	case <-syncErr:
+		repoMu.Unlock()
+		t.Fatal("Sync completed while repoMu was held")
+	case <-commitDone:
+		repoMu.Unlock()
+		t.Fatal("AutoCommitSHA completed while repoMu was held")
+	case <-time.After(200 * time.Millisecond):
+		// Both are blocked on the mutex: the overlap the test needs.
+	}
+	repoMu.Unlock()
+
+	first := <-commitDone
+	if err := <-syncErr; err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	// A concurrent Sync commits everything it finds (`git add -A`), so it may
 	// legitimately absorb the pending write and leave AutoCommitSHA with
@@ -1251,11 +1317,11 @@ func TestAutoCommitSHA_ConcurrentWithSync(t *testing.T) {
 	// entry points, not lock corruption, so retry with a fresh task until the
 	// commit lands. What repoMu must guarantee is that neither call ever fails
 	// on .git/index.lock or commits onto a detached rebase HEAD.
-	var (
-		sha     string
-		lastErr error
-	)
-	for i := 0; i < 20; i++ {
+	sha, lastErr := first.sha, first.err
+	for i := 1; lastErr != nil && i < 20; i++ {
+		if strings.Contains(lastErr.Error(), "index.lock") {
+			t.Fatalf("AutoCommitSHA raced Sync on the git index: %v", lastErr)
+		}
 		id := fmt.Sprintf("01CT%04d", i)
 		relPath := filepath.Join(".monolog", "tasks", id+".json")
 		writeTaskJSON(t, filepath.Join(a, relPath), model.Task{
@@ -1263,22 +1329,12 @@ func TestAutoCommitSHA_ConcurrentWithSync(t *testing.T) {
 			UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
 		})
 		sha, lastErr = AutoCommitSHA(a, "add: "+id, relPath)
-		if lastErr == nil {
-			break
-		}
-		if strings.Contains(lastErr.Error(), "index.lock") {
-			t.Fatalf("AutoCommitSHA raced Sync on the git index: %v", lastErr)
-		}
 	}
 	if lastErr != nil {
 		t.Fatalf("AutoCommitSHA() error = %v", lastErr)
 	}
 	if sha == "" {
 		t.Fatal("AutoCommitSHA() returned an empty SHA")
-	}
-
-	if err := <-syncErr; err != nil {
-		t.Fatalf("Sync() error = %v", err)
 	}
 
 	// The repo must be left in a sane, non-rebasing state with B's task pulled in.
