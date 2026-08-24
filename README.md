@@ -66,7 +66,7 @@ monolog                             # launch the interactive TUI
 
 **Tags & the reserved `active` tag.** Tasks carry comma-separated tags. The reserved `active` tag marks a task as part of your current working set — active tasks render in green and get their own panel in the TUI. See [Active tasks](#active-tasks).
 
-**Storage & git sync.** Each task is a single JSON file at `<repo>/.monolog/tasks/<ULID>.json`. IDs are [ULIDs](https://github.com/oklog/ulid) — time-sortable and globally unique, so you can address a task by typing just a prefix. Every mutation auto-commits to git, and because each task is its own file, two devices editing different tasks rebase without conflicts. Ordering uses fractional positions with automatic rebalancing. The default data directory is `~/.monolog` (override with `MONOLOG_DIR`).
+**Storage & git sync.** Each task is a single JSON file at `<repo>/.monolog/tasks/<ULID>.json`. IDs are [ULIDs](https://github.com/oklog/ulid) — time-sortable and globally unique, so you can address a task by typing just a prefix. Every mutation auto-commits to git and then pushes that commit to the remote in the background, so a task filed on the laptop reaches the other devices without a manual sync. Pushes are silent on success and never fail the mutation: if the network is down the commit stays local and the next push (or `s` in the TUI) catches up. A push rejected because the remote moved on falls back to `pull --rebase --autostash` with the usual conflict resolution and retries once. Because each task is its own file, two devices editing different tasks rebase without conflicts. Ordering uses fractional positions with automatic rebalancing. The default data directory is `~/.monolog` (override with `MONOLOG_DIR`).
 
 ## Commands
 
@@ -250,7 +250,7 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `v` | Toggle between schedule view and tag view |
 | `/` | Fuzzy search (type to filter, ↑/↓ or Ctrl+j/k to move, Enter to jump, Esc to cancel) |
 | `x` | Delete task (with confirmation) |
-| `s` | Sync (commit, pull --rebase, push). When [email integration](#email-integration) is enabled, also runs `email sync` in parallel via `tea.Batch`; the bottom-bar hint widens to `sync (git+email)`. |
+| `s` | Full sync (commit, pull --rebase, push). Mutations already push on their own, so this is mainly the pull half — use it to bring down changes made elsewhere. When [email integration](#email-integration) is enabled, also runs `email sync` in parallel via `tea.Batch`; the bottom-bar hint widens to `full sync (git+email)`. |
 | `u` / `Ctrl+z` | Undo the last mutation (multi-level, backed by `git revert`) |
 | `Ctrl+y` | Redo the last undone action |
 | `,` | Settings modal (date format, theme) |
@@ -271,17 +271,23 @@ Monolog reads runtime settings from environment variables and an optional `confi
 | `MONOLOG_THEME` | TUI color theme (`default`, `dracula`, or a user theme name); takes precedence over `config.json` |
 | `MONOLOG_NO_LINKS` | Set to `1` to disable OSC 8 clickable URLs in the TUI |
 | `MONOLOG_NO_WATCH` | Set to `1` to disable the external-change file watcher |
+| `MONOLOG_NO_AUTOPUSH` | Set to `1` to disable auto-push on mutation (commits stay local until you sync) |
 
 Persistent settings live in `<MONOLOG_DIR>/.monolog/config.json`:
 
 ```json
 {
   "theme": "default",
-  "date_format": "02-01-2006"
+  "date_format": "02-01-2006",
+  "auto_push": true
 }
 ```
 
 The TUI settings modal (`,`) writes `theme` and `date_format`; the optional `email` and `telegram` blocks (documented below) are hand-edited or written by their respective `auth`/`serve` flows. Unknown keys are preserved on save.
+
+`auto_push` controls whether mutations push to the remote in the background. It defaults to `true` — an absent key means enabled, so existing repos get auto-push without editing anything. Set it to `false` to keep commits local, or set `MONOLOG_NO_AUTOPUSH=1` for a one-off; the env var is a kill switch only and cannot re-enable a config file that says `false`. Repos with no remote (or a remote with no upstream branch) skip the push silently.
+
+Auto-push is quiet when it works. In the TUI a `↑` at the right of the stats bar means a push is still in flight — useful to glance at before closing the laptop. A failure flashes `push failed: <err>` on the status bar and leaves the commit exactly where it is; the CLI prints the same warning on stderr after its success line, so an exit code never changes because the network did.
 
 ## Themes
 
@@ -466,14 +472,18 @@ For systemd / long-running deployments prefer the env var: a flag value is visib
 
 ### Deployment
 
-See [`docs/deploy/README.md`](docs/deploy/README.md) for the full one-time EC2 setup checklist: bot user creation, SSH deploy key, systemd unit, env file with `MONOLOG_TELEGRAM_TOKEN` / `GIT_SSH_COMMAND` / `MONOLOG_DIR`, and the smoke-test sequence.
+The bot runs on any always-on Linux box with systemd — a personal server (old laptop, mini PC, Pi), a small VPS, or a cloud instance such as an EC2 t4g.nano. It long-polls Telegram and pushes to git outbound only, so it needs no inbound connectivity and a machine behind home NAT is a valid host.
+
+See [`docs/deploy/README.md`](docs/deploy/README.md) for the full one-time host setup checklist: choosing the host, bot user creation, SSH deploy key, systemd unit, env file with `MONOLOG_TELEGRAM_TOKEN` / `GIT_SSH_COMMAND` / `MONOLOG_DIR`, and the smoke-test sequence.
 
 Build and ship from the laptop with:
 
 ```sh
 make build-bot-linux-arm64                        # cross-compile to dist/monolog-linux-arm64
-make deploy-bot EC2_HOST=ec2-user@<elastic-ip>    # scp + restart systemd unit
+make deploy-bot DEPLOY_HOST=<user>@<host>         # scp + restart systemd unit
 ```
+
+`BOT_ARCH` selects the target arch (`arm64` for a Pi or Graviton, `amd64` for an x86 box). `EC2_HOST` is still accepted as an alias for `DEPLOY_HOST`.
 
 The bot loses long-poll position briefly during restart; Telegram queues updates by `update_id` so nothing is dropped.
 

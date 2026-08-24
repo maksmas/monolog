@@ -304,7 +304,7 @@ func TestNewClientRejectsEmptyToken(t *testing.T) {
 	t.Parallel()
 	// We can't construct a real client in CI (no token, no network), so we
 	// only exercise the fail-fast branch. The real-client construction is
-	// covered by the manual smoke test on EC2.
+	// covered by the manual smoke test on the deployed bot host.
 	if _, err := NewClient(""); err == nil {
 		t.Fatal("expected err for empty token")
 	}

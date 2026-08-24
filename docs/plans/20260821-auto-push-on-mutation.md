@@ -795,17 +795,41 @@ untouched, as they are unrelated to this plan.
 
 ### Task 12: [Final] Update documentation
 
-- [ ] add an **Auto-push on mutation** entry to CLAUDE.md's Key Design Decisions: the push-then-rebase-on-rejection algorithm, the narrow rejection classifier, `--autostash`, the single bounded retry, `repoMu`'s scope and its per-process limitation, the `ErrRebaseInProgress` guard, the `auto_push` key and `MONOLOG_NO_AUTOPUSH=1` escape hatch, the non-fatal contract, the CLI push-after-output ordering, and the undo/redo interaction (plain push preserves stacks; a rebase clears them **even when the retry push then fails**)
-- [ ] note in CLAUDE.md that `pullRebaseResolving` is the shared rebase-with-resolution path for `Sync` and `AutoPush`, and that `internal/telegram/sync.go#pullOnce` remains a deliberate third copy
-- [ ] update CLAUDE.md's Architecture line "Every mutation auto-commits to git" — it now also pushes
-- [ ] rewrite `docs/claude-skill/SKILL.md:11` ("Nothing you capture reaches the user's other devices until they sync themselves") and the consequence sentence at `:125` ("what you capture stays on this machine until they sync") — both are now false. Keep **"Never run `monolog sync`"** intact and state the distinction: the implicit push inside `add`/`note` is expected; a pull-and-rebase against the user's remote is still theirs to run
-- [ ] confirm `cmd/skill_test.go` still passes — `sync` stays in `skillProhibitedSubcommands` (:244); the prose is not pinned, but re-run the suite to be sure
-- [ ] update `README.md:69` ("Every mutation auto-commits to git"), add `MONOLOG_NO_AUTOPUSH` to the env-var table (:266-284), and add `auto_push` to the config.json key list (:275-284)
-- [ ] document the bot's pull cadence in CLAUDE.md's Telegram entry: startup pull + retained `runPullTicker` at `PullInterval`, **plus** the new freshness-gated `pullIfStale` before state-dependent commands, the `commandPullMaxAge` constant, the shared `lastPull` clock, and the deliberate capture exception
-- [ ] update `docs/deploy/README.md` if it tells the user to sync manually for the bot to see changes
-- [ ] **correct the stale EC2 wording** — the bot runs on the user's own always-on server; EC2 is one example host, not the deployment target. Generalize `README.md:469` ("full one-time EC2 setup checklist" → host-agnostic) and `:475` (`EC2_HOST=ec2-user@<elastic-ip>` → `DEPLOY_HOST=<user>@<host>`), `Makefile:16,71` comments, `CLAUDE.md:76` Deployment topology ("an EC2 t4g.nano" → "an always-on host (personal server, VPS, or Pi)" and "EC2 bootstrap" → "host bootstrap"; keep the `EC2_HOST` alias note, it is still true), `cmd/telegram.go:49` help text, `docs/deploy/README.md:43` (keep the EC2 row as one example among hosts) and `:210`, `docs/deploy/env.example:15` ("EC2-local SSH deploy key" → "host-local"), and the `internal/telegram/bot_test.go:307` comment
-- [ ] leave `DEPLOY_HOST`/`EC2_HOST`/`BOT_ARCH` behavior untouched — the tooling is already host-neutral, so this task is wording only, no code or Makefile logic changes
-- [ ] move this plan to `docs/plans/completed/`
+- [x] add an **Auto-push on mutation** entry to CLAUDE.md's Key Design Decisions: the push-then-rebase-on-rejection algorithm, the narrow rejection classifier, `--autostash`, the single bounded retry, `repoMu`'s scope and its per-process limitation, the `ErrRebaseInProgress` guard, the `auto_push` key and `MONOLOG_NO_AUTOPUSH=1` escape hatch, the non-fatal contract, the CLI push-after-output ordering, and the undo/redo interaction (plain push preserves stacks; a rebase clears them **even when the retry push then fails**)
+- [x] note in CLAUDE.md that `pullRebaseResolving` is the shared rebase-with-resolution path for `Sync` and `AutoPush`, and that `internal/telegram/sync.go#pullOnce` remains a deliberate third copy
+- [x] update CLAUDE.md's Architecture line "Every mutation auto-commits to git" — it now also pushes
+- [x] rewrite `docs/claude-skill/SKILL.md:11` ("Nothing you capture reaches the user's other devices until they sync themselves") and the consequence sentence at `:125` ("what you capture stays on this machine until they sync") — both are now false. Keep **"Never run `monolog sync`"** intact and state the distinction: the implicit push inside `add`/`note` is expected; a pull-and-rebase against the user's remote is still theirs to run
+- [x] confirm `cmd/skill_test.go` still passes — `sync` stays in `skillProhibitedSubcommands` (:244); the prose is not pinned, but re-run the suite to be sure
+- [x] update `README.md:69` ("Every mutation auto-commits to git"), add `MONOLOG_NO_AUTOPUSH` to the env-var table (:266-284), and add `auto_push` to the config.json key list (:275-284)
+- [x] document the bot's pull cadence in CLAUDE.md's Telegram entry: startup pull + retained `runPullTicker` at `PullInterval`, **plus** the new freshness-gated `pullIfStale` before state-dependent commands, the `commandPullMaxAge` constant, the shared `lastPull` clock, and the deliberate capture exception
+- [x] update `docs/deploy/README.md` if it tells the user to sync manually for the bot to see changes
+- [x] **correct the stale EC2 wording** — the bot runs on the user's own always-on server; EC2 is one example host, not the deployment target. Generalize `README.md:469` ("full one-time EC2 setup checklist" → host-agnostic) and `:475` (`EC2_HOST=ec2-user@<elastic-ip>` → `DEPLOY_HOST=<user>@<host>`), `Makefile:16,71` comments, `CLAUDE.md:76` Deployment topology ("an EC2 t4g.nano" → "an always-on host (personal server, VPS, or Pi)" and "EC2 bootstrap" → "host bootstrap"; keep the `EC2_HOST` alias note, it is still true), `cmd/telegram.go:49` help text, `docs/deploy/README.md:43` (keep the EC2 row as one example among hosts) and `:210`, `docs/deploy/env.example:15` ("EC2-local SSH deploy key" → "host-local"), and the `internal/telegram/bot_test.go:307` comment
+- [x] leave `DEPLOY_HOST`/`EC2_HOST`/`BOT_ARCH` behavior untouched — the tooling is already host-neutral, so this task is wording only, no code or Makefile logic changes
+- [x] deferred to orchestrator (review phases still reference this path) — move this plan to `docs/plans/completed/`
+
+[decision] `docs/deploy/README.md` did **not** tell the user to sync manually for the bot to see
+changes, so that checkbox became an addition rather than a correction: a header paragraph stating
+the round trip is now hands-free, a `pull_interval_seconds` note clarifying the ticker is the
+background safety net (not what determines freshness — the per-command gate is), and a smoke-test
+item that exercises laptop auto-push → remote → before-command pull in one step.
+
+[decision] Two CLAUDE.md bullets rather than one. The `pullRebaseResolving` checkbox covers a
+different unit than auto-push (it is `Sync`'s refactor as much as `AutoPush`'s dependency, and it
+carries the `runOut` and telegram-third-copy notes), so it is its own **Shared
+rebase-with-resolution** bullet directly under **Auto-push on mutation**.
+
+[decision] `docs/deploy/README.md:43` needed a light touch after all: the row read
+`**EC2 t4g.nano**` as if it were a product tier alongside two generic categories. Now
+`**Cloud VM** (e.g. EC2 t4g.nano)`, which is the "one example host" framing the plan asked for.
+
+➕ Beyond the checklist, three doc claims went stale during Tasks 7-9 and were corrected in the
+same pass: `README.md`'s `s` keybinding row still said the hint reads `sync (git+email)` (Task 9
+relabeled it `full sync (git+email)`), the same row did not say the pull half is now the point of
+the key, and nothing in the README mentioned the `↑` stats-bar indicator or the `push failed:`
+flash. `internal/telegram/bot_test.go`'s EC2 comment and `cmd/telegram.go`'s help string are Go
+sources; `go test ./...` and `go vet ./...` both pass, and `cmd/skill_test.go` (which resolves
+every `monolog <sub>` and flag documented in `SKILL.md` and the root `README.md` against the live
+cobra tree, and pins `sync` in `skillProhibitedSubcommands`) passes unchanged.
 
 ## Post-Completion
 

@@ -3,8 +3,13 @@
 Setup for running `monolog telegram serve` on an always-on host. The bot is
 just another monolog client: it owns a clone of the tasks git repo and uses
 the same `store` + `git` paths the CLI uses. Once running, the laptop side
-gets no new wiring — `s` sync and the fsnotify watcher already handle the
-read side.
+gets no new wiring — every laptop mutation already auto-pushes to the
+remote, and `s` sync plus the fsnotify watcher handle the read side.
+
+**You never have to sync by hand for the bot to see a change.** A task you
+add on the laptop is pushed in the background, and the bot pulls before it
+serves any command that reads or acts on existing state — so `/today` on
+your phone reflects the laptop within seconds, not on the next tick.
 
 **The bot needs no inbound connectivity.** It long-polls Telegram outbound
 and pushes to GitHub outbound — no webhook, no public IP, no port forward.
@@ -40,7 +45,7 @@ Any always-on Linux box with systemd. Ranked by how little work they are:
 |---|---|
 | **Old laptop / mini PC / Pi you own** | Free. A laptop has a built-in UPS (its battery). `BOT_ARCH=amd64` for x86, `arm64` for a Pi. |
 | **Small VPS** (Hetzner CAX11, DO, Vultr) | ~€4/mo. Pick the arch to match `BOT_ARCH`. |
-| **EC2 t4g.nano** | ARM64, `BOT_ARCH=arm64`. Security group: inbound SSH from your IP only; outbound HTTPS open. |
+| **Cloud VM** (e.g. EC2 t4g.nano) | ARM64 on Graviton, `BOT_ARCH=arm64`. Lock the firewall down: inbound SSH from your IP only; outbound HTTPS open. |
 
 Whatever you pick:
 
@@ -153,6 +158,13 @@ on its next pull, or edit it on the host directly.
 }
 ```
 
+`pull_interval_seconds` is the **background** pull ticker — the safety net
+that keeps the clone fresh and clears a read-only state while nobody is
+sending commands. It is not what determines how quickly the bot sees a
+laptop change: commands that read or act on existing state pull first
+(rate-limited to one fetch per 5 seconds, shared with the ticker's clock),
+so lowering this value buys little. 30s is a fine default.
+
 - [ ] `enabled: true` and your own numeric Telegram user ID in
       `allowed_user_ids` — without both, the bot starts and silently ignores
       every message. DM [@userinfobot](https://t.me/userinfobot) for your ID.
@@ -207,7 +219,8 @@ BOT_ARCH    = amd64
 ```
 
 `DEPLOY_HOST` must be a **login user with sudo** — not `monolog-bot`, which
-is `nologin`. `EC2_HOST` is still accepted as an alias.
+is `nologin`. `EC2_HOST` is still accepted as an alias, so an older
+`.env.deploy` keeps working unchanged.
 
 The deploy target needs a place to land, and passwordless sudo for exactly
 the two commands it runs. On the host:
@@ -264,6 +277,10 @@ sudo journalctl -u monolog-bot -f
 - [ ] Tapping Done on the returned card flips it to strike-through
 - [ ] `/today` returns the expected list
 - [ ] Replying to a card with text lands a note on that task
+- [ ] Add a task on the laptop (`monolog add "smoke test"`), then send
+      `/today` from the phone — it appears without you syncing anything by
+      hand. This exercises laptop auto-push → remote → the bot's
+      before-command pull, i.e. the whole round trip in one step.
 
 ## Updating
 

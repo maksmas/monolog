@@ -8,7 +8,7 @@ allowed-tools: Bash(monolog add *) Bash(monolog note *) Bash(monolog search *) B
 
 `monolog` is the user's personal backlog — one JSON file per task in a git repo, driven entirely from the CLI. Use it to file work that will outlive the current session, and to look up what is already filed.
 
-Every write auto-commits locally. Nothing you capture reaches the user's other devices until they sync themselves.
+Every write auto-commits and then pushes that commit to the user's remote in the background, so what you file reaches their other devices — including their phone — without them doing anything. The push is silent on success and non-fatal on failure: if it cannot reach the remote the commit simply stays local until the next one gets through. Nothing about that needs handling from you; it happens inside `add` and `note`.
 
 ## The bar for filing
 
@@ -122,7 +122,7 @@ Identifiers resolve two ways. Anywhere a command takes `<id>` you can pass a ULI
 ## Never do these
 
 - **Only `add` and `note` are ever unprompted.** `monolog done`, `monolog edit`, `monolog rm` and `monolog mv` need an explicit instruction in the current conversation. Fixing something does **not** license marking the matching task done — the user decides what is finished.
-- **Never run `monolog sync`.** Pushing and rebasing against the user's remote is their call. The consequence is worth stating out loud if it matters: what you capture stays on this machine until they sync, so it will not show up on their phone right away.
+- **Never run `monolog sync`.** Note the distinction: the push that `add` and `note` do for you is expected and already covers getting your capture off this machine. `monolog sync` is a different operation — a pull-and-rebase against the user's remote, which rewrites their local history and drags down whatever else is waiting there. That is theirs to run, so there is never a reason for you to reach for it.
 - **Never launch the TUI.** Bare `monolog` opens an interactive terminal UI — useless here, and it fails outright without a TTY. Same for `monolog init`, `monolog email` and `monolog telegram`: repo setup and background integrations the user owns.
 - **If `monolog` is not on PATH, stop and say so.** Do not install it, do not guess at a binary path.
 - **If a write fails with `not a git repository`, the backlog is not set up. Stop.** Tell the user to run `monolog init` and do not run it yourself, do not retry, do not try another directory. Reads will not warn you about this: against an uninitialized directory `monolog search` and `monolog ls` just report nothing found — and the read itself creates an empty `.monolog/tasks/` as a side effect. So an empty backlog and a missing backlog look identical until the first write fails. Mention that the failed `add` still left an uncommitted task file behind — `monolog init` picks it up.

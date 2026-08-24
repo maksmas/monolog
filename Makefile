@@ -13,6 +13,9 @@
 #   BIN_DIR      install path on the host (default: /opt/monolog-bot)
 #   SVC_NAME     systemd unit name on the host (default: monolog-bot)
 #
+# The host is anything always-on with systemd -- a personal server, a VPS, a
+# Pi, or a cloud instance. Nothing here is provider-specific.
+#
 # EC2_HOST / EC2_USER remain accepted as aliases so existing .env.deploy
 # files keep working; DEPLOY_* wins when both are set.
 #
@@ -68,7 +71,7 @@ build-bot-linux-arm64:
 build-bot-linux-amd64:
 	$(MAKE) build-bot-linux BOT_ARCH=amd64
 
-# Push the freshly built bot binary to the EC2 host and restart the systemd
+# Push the freshly built bot binary to the deploy host and restart the systemd
 # unit. Depends on build-bot-linux-arm64 so the artifact is always current.
 #
 # Requires DEPLOY_HOST to be set (via env or .env.deploy). The remote restart

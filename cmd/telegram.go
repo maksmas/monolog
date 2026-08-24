@@ -46,7 +46,7 @@ func newTelegramCmd() *cobra.Command {
 		Use:   "telegram",
 		Short: "Telegram bot integration: long-poll for capture and browse from mobile",
 		Long: "Run a long-running Telegram bot that lets the configured Telegram users capture, browse, and complete tasks from their phone. " +
-			"The bot is intended to run on an always-on host (e.g. an EC2 t4g.nano) holding its own clone of the tasks git repo. " +
+			"The bot is intended to run on an always-on host you control (a personal server, a VPS, or a Pi) holding its own clone of the tasks git repo. " +
 			"Configure via the 'telegram' block in <MONOLOG_DIR>/.monolog/config.json (see docs/plans/completed/20260518-telegram-bot.md).",
 	}
 
