@@ -988,17 +988,19 @@ func TestStatsBar_SpinnerIndicator(t *testing.T) {
 }
 
 // TestHelpLine_SyncCopyReflectsEmailEnabled pins that the bottom-bar help
-// line reads "sync (git+email)" when email is enabled and just "sync"
-// otherwise. Uses the rendered helpLine() string for a substring check.
+// line reads "full sync (git+email)" when email is enabled and just
+// "full sync" otherwise. Uses the rendered helpLine() string for a substring
+// check. The "full" qualifier is load-bearing since auto-push landed: ordinary
+// changes push without a keypress, so "s" is only needed for the round trip.
 func TestHelpLine_SyncCopyReflectsEmailEnabled(t *testing.T) {
-	// Disabled: should mention "sync" but not "(git+email)".
+	// Disabled: should mention "full sync" but not "(git+email)".
 	disabled := newTestModel(t)
 	if disabled.emailEnabled {
 		t.Fatal("precondition: disabled model should have email off")
 	}
 	dh := disabled.helpLine()
-	if !contains(dh, "sync") {
-		t.Errorf("disabled helpLine missing 'sync': %q", dh)
+	if !contains(dh, "full sync") {
+		t.Errorf("disabled helpLine missing 'full sync': %q", dh)
 	}
 	if contains(dh, "git+email") {
 		t.Errorf("disabled helpLine should not mention 'git+email': %q", dh)
@@ -1010,8 +1012,8 @@ func TestHelpLine_SyncCopyReflectsEmailEnabled(t *testing.T) {
 		t.Fatal("precondition: enabled model should have email on")
 	}
 	eh := enabled.helpLine()
-	if !contains(eh, "git+email") {
-		t.Errorf("enabled helpLine missing 'git+email': %q", eh)
+	if !contains(eh, "full sync (git+email)") {
+		t.Errorf("enabled helpLine missing 'full sync (git+email)': %q", eh)
 	}
 }
 
@@ -1025,8 +1027,8 @@ func TestHelpLine_SyncCopyEnabled_TagView(t *testing.T) {
 	// just need the helpLine to render the tag branch, which it does
 	// based on m.viewMode.
 	h := m.helpLine()
-	if !contains(h, "git+email") {
-		t.Errorf("tag-view helpLine missing 'git+email': %q", h)
+	if !contains(h, "full sync (git+email)") {
+		t.Errorf("tag-view helpLine missing 'full sync (git+email)': %q", h)
 	}
 }
 

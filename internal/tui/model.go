@@ -2972,12 +2972,23 @@ func (m *Model) statsBarView() string {
 	tabParts = append(tabParts, fmt.Sprintf("%d in tab", tabCount))
 
 	line := strings.Join(overall, "  ") + "  |  " + strings.Join(tabParts, "  ")
-	// Email sync indicator: single character right of the stats line. Render
-	// "↻" while a sync is in flight, blank otherwise. Padding inside the
-	// helpTextStyle keeps the indicator visually attached to the stats line
-	// without throwing off the bar's overall vertical alignment.
+	// Sync indicators: single characters right of the stats line, blank when
+	// idle. Padding inside the helpTextStyle keeps them visually attached to
+	// the stats line without throwing off the bar's overall vertical
+	// alignment.
+	//
+	// "↻" — an email sync is in flight.
+	// "↑" — an auto-push is in flight. Auto-push is deliberately silent on
+	// success (a flash would overwrite the mutation's own "Added: <title>"),
+	// so this is the *only* feedback that pushing happens at all, and the
+	// signal for "is it safe to close the laptop". It needs no separate
+	// autoPushEnabled check: autoPushCmd returns nil when auto-push is off, so
+	// pushInFlight is never armed in that case.
 	if m.emailSyncing {
 		line += "  ↻"
+	}
+	if m.pushInFlight {
+		line += "  ↑"
 	}
 	return m.styles.helpTextStyle.Padding(0, 1).Render(line)
 }
@@ -3292,12 +3303,14 @@ func (m *Model) helpLine() string {
 				[2]string{"[/]", "scroll"},
 			)
 		}
-		// "s" hint copy reflects whether the binding triggers email-sync
-		// alongside git-sync. The label widens when email is enabled to make
-		// the broader behavior obvious; when disabled it stays compact.
-		syncLabel := "sync"
+		// "s" hint copy. Ordinary changes now push automatically, so the key's
+		// remaining job is the *full* round trip (pull + push) — "full sync"
+		// says that without implying pushing needs a keypress. The label still
+		// widens when email is enabled to make the broader behavior obvious;
+		// when disabled it stays compact.
+		syncLabel := "full sync"
 		if m.emailEnabled {
-			syncLabel = "sync (git+email)"
+			syncLabel = "full sync (git+email)"
 		}
 		if m.viewMode == viewTag {
 			return m.renderHelpBar(
@@ -3559,7 +3572,7 @@ func (m *Model) helpModalContent() string {
 		"  " + k("/") + "    search\n" +
 		"  " + k("v") + "    toggle view\n" +
 		"  " + k("↵") + "    notes panel\n" +
-		"  " + k("s") + "    sync\n" +
+		"  " + k("s") + "    full sync (pull + push)\n" +
 		"  " + k("u") + "    undo last action (also ctrl+z)\n" +
 		"  " + k("ctrl+y") + " redo last undone action\n" +
 		"  " + k(",") + "    settings (date format, theme)\n" +
@@ -3573,6 +3586,10 @@ func (m *Model) helpModalContent() string {
 		"  " + k("pgdn/pgup") + "      page selection\n" +
 		"  " + k("enter") + "          jump to task\n" +
 		"  " + k("esc") + "            cancel\n\n" +
+		"Auto-push:\n\n" +
+		"  Changes push to the remote automatically. " + k("s") + "\n" +
+		"  adds the pull half (full sync). A " + k("↑") + " next to the\n" +
+		"  stats line means a push is still in flight.\n\n" +
 		"Themes:\n\n" +
 		"  Drop JSON files in " + k("<MONOLOG_DIR>/.monolog/themes/") + "\n" +
 		"  to add custom color themes. Filename (sans .json) becomes\n" +

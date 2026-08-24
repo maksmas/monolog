@@ -11153,3 +11153,111 @@ func TestAddTask_EndToEndDispatchesPush(t *testing.T) {
 		t.Errorf("runAutoPush calls = %d, want 1", rec.count())
 	}
 }
+
+// TestStatsBar_PushIndicator pins the ↑ auto-push indicator through the real
+// dispatch path: absent while idle, present for as long as the push is in
+// flight, and gone once its autoPushResult lands. Auto-push is silent on
+// success by design, so this indicator is the only feedback that pushing
+// happens at all — the answer to "is it safe to close the laptop".
+func TestStatsBar_PushIndicator(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	if strings.Contains(m.statsBarView(), "↑") {
+		t.Errorf("statsBarView while idle contains ↑; want absent: %q", m.statsBarView())
+	}
+
+	// A committed mutation dispatches the push; the indicator goes up.
+	next, cmd := m.Update(taskSavedMsg{sha: "abc123", status: "Added: alpha"})
+	m = next.(*Model)
+	if !m.pushInFlight {
+		t.Fatal("pushInFlight = false after a committed mutation; expected a dispatched push")
+	}
+	if !strings.Contains(m.statsBarView(), "↑") {
+		t.Errorf("statsBarView with pushInFlight=true missing ↑: %q", m.statsBarView())
+	}
+
+	// The push completes; the indicator comes back down.
+	m = runCmd(t, m, cmd)
+	if m.pushInFlight {
+		t.Error("pushInFlight = true after autoPushResult; the gate must clear")
+	}
+	if strings.Contains(m.statsBarView(), "↑") {
+		t.Errorf("statsBarView after the push finished contains ↑; want absent: %q", m.statsBarView())
+	}
+	if rec.count() != 1 {
+		t.Errorf("runAutoPush calls = %d, want 1", rec.count())
+	}
+}
+
+// TestStatsBar_PushAndEmailIndicatorsCoexist pins that the two indicators are
+// independent: an email sync and a push overlapping (the email ticker fires on
+// its own schedule) must show both, not one masking the other.
+func TestStatsBar_PushAndEmailIndicatorsCoexist(t *testing.T) {
+	m := newTestModel(t)
+	m.emailSyncing = true
+	m.pushInFlight = true
+
+	bar := m.statsBarView()
+	if !strings.Contains(bar, "↻") {
+		t.Errorf("statsBarView missing ↻ with emailSyncing=true: %q", bar)
+	}
+	if !strings.Contains(bar, "↑") {
+		t.Errorf("statsBarView missing ↑ with pushInFlight=true: %q", bar)
+	}
+}
+
+// TestStatsBar_NoPushIndicatorWhenAutoPushDisabled pins that the indicator
+// never appears with auto-push off — autoPushCmd returns nil before arming
+// pushInFlight, so the status bar has nothing to advertise.
+func TestStatsBar_NoPushIndicatorWhenAutoPushDisabled(t *testing.T) {
+	m := newTestModelNoAutoPush(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	next, cmd := m.Update(taskSavedMsg{sha: "abc123", status: "Added: alpha"})
+	m = next.(*Model)
+
+	if m.pushInFlight {
+		t.Error("pushInFlight = true with auto-push disabled")
+	}
+	if strings.Contains(m.statsBarView(), "↑") {
+		t.Errorf("statsBarView contains ↑ with auto-push disabled: %q", m.statsBarView())
+	}
+	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
+		t.Errorf("got %d autoPushResult msgs with auto-push disabled, want 0", len(got))
+	}
+	if rec.count() != 0 {
+		t.Errorf("runAutoPush calls = %d with auto-push disabled, want 0", rec.count())
+	}
+}
+
+// TestHelpModalContent_MentionsAutoPush pins the help overlay copy: pushing is
+// automatic, `s` is the full round trip, and the ↑ indicator is explained.
+// Without this the feature is invisible — there is no flash on success.
+func TestHelpModalContent_MentionsAutoPush(t *testing.T) {
+	m := newTestModelWithOpts(t, Options{})
+	help := m.helpModalContent()
+
+	for _, want := range []string{
+		"Auto-push",
+		"push to the remote automatically",
+		"full sync (pull + push)",
+		"in flight",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help modal missing %q:\n%s", want, help)
+		}
+	}
+	// The bare "sync" label the `s` line used to carry is now misleading:
+	// ordinary changes push without a keypress, so no line may advertise a
+	// plain "sync" for the key.
+	if strings.Contains(help, "    sync\n") {
+		t.Errorf("help modal still carries the pre-auto-push bare `s  sync` line:\n%s", help)
+	}
+}

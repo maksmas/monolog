@@ -644,13 +644,34 @@ mutation-checked: deleting the TUI dispatch fails the two TUI dispatch tests, an
 **Files:**
 - Modify: `internal/tui/model.go`
 - Modify: `internal/tui/model_test.go`
+- Modify: `internal/tui/email_test.go` (holds the existing stats-bar and `s`-hint assertions)
 
-- [ ] render a `↑` indicator in the status bar while `pushInFlight`, alongside the existing `↻` email-sync indicator (`model.go:2859-2860`) — the only feedback that a silent-on-success push exists, and the signal for "is it safe to close the laptop"
-- [ ] update the `s` bottom-bar hint and the help overlay text to say the key is a full sync (pull + push) and that changes push automatically
-- [ ] write a test asserting the indicator appears while `pushInFlight` and disappears afterwards
-- [ ] write a test asserting the indicator is absent when auto-push is disabled
-- [ ] update any existing status-bar/help snapshot assertions affected by the copy change
-- [ ] run tests - must pass before task 10
+- [x] render a `↑` indicator in the status bar while `pushInFlight`, alongside the existing `↻` email-sync indicator (`model.go:2859-2860`) — the only feedback that a silent-on-success push exists, and the signal for "is it safe to close the laptop"
+- [x] update the `s` bottom-bar hint and the help overlay text to say the key is a full sync (pull + push) and that changes push automatically
+- [x] write a test asserting the indicator appears while `pushInFlight` and disappears afterwards
+- [x] write a test asserting the indicator is absent when auto-push is disabled
+- [x] update any existing status-bar/help snapshot assertions affected by the copy change
+- [x] run tests - must pass before task 10
+
+[decision] The bottom-bar label is `"full sync"` / `"full sync (git+email)"` — the email-enabled
+conditional (`syncLabel`) is kept rather than flattened. `renderHelpBar` drops trailing hints
+that no longer fit, so the 5 extra characters cost width on narrow terminals; that is the
+cheapest honest wording, and the help overlay carries the full explanation.
+
+[decision] The `↑` indicator needs no `autoPushEnabled` check of its own: `autoPushCmd` returns
+nil before arming `pushInFlight` when auto-push is off, so the flag is the single source of
+truth. `TestStatsBar_NoPushIndicatorWhenAutoPushDisabled` drives that through a real
+`taskSavedMsg` rather than setting the flag by hand, so the invariant is pinned end to end.
+
+[decision] The help overlay gained a short `Auto-push:` section (3 content lines, each under the
+54-column modal inner width) instead of only relabeling the `s` keybinding line — a silent-on-
+success feature is otherwise undiscoverable, and the section is where the `↑` glyph is explained.
+
+➕ Added beyond the checklist: `TestStatsBar_PushAndEmailIndicatorsCoexist` (the email ticker
+fires on its own schedule, so an overlapping sync and push is routine — neither glyph may mask
+the other) and `TestHelpModalContent_MentionsAutoPush` (pins the overlay copy, including that
+the pre-auto-push bare `s    sync` line is gone). The indicator was mutation-checked: gating the
+`line += "  ↑"` off makes both stats-bar tests fail.
 
 ### Task 10: Pull before serving a Telegram command (freshness-gated, ticker retained)
 
