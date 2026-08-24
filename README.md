@@ -287,11 +287,13 @@ The TUI settings modal (`,`) writes `theme` and `date_format`; the optional `ema
 
 `auto_push` controls whether mutations push to the remote. It defaults to `true` — an absent key means enabled, so existing repos get auto-push without editing anything. Set it to `false` to keep commits local, or set `MONOLOG_NO_AUTOPUSH=1` for a one-off; the env var is a kill switch only and cannot re-enable a config file that says `false`.
 
-Repos with no remote skip the push silently, as do a detached HEAD and a repo with several remotes and no `origin`. A repo whose remote you added by hand after `monolog init` has no upstream branch yet; the first push sets one with `git push --set-upstream`, so it starts syncing without further setup.
+Repos with no remote skip the push silently, as do a detached HEAD and a repo with several remotes and no `origin`. A repo whose remote you added by hand after `monolog init` has no upstream branch yet; the first push sets one with `git push --set-upstream`, and if that push is rejected because the remote already has commits, it rebases onto that remote branch and retries — so a repo pointed at a GitHub repo created with a README still converges without further setup.
 
 If the repo is left mid-rebase, auto-push refuses to run and every mutation warns `push failed: repository is mid-rebase; resolve manually` until you finish or abort the rebase yourself.
 
-Auto-push is quiet when it works. In the TUI a `↑` at the right of the stats bar means a push is still in flight — useful to glance at before closing the laptop. A failure flashes `push failed: <err>` on the status bar and leaves the commit exactly where it is; the CLI prints the same warning on stderr after its success line, so an exit code never changes because the network did.
+Auto-push is quiet when it works. In the TUI a `↑` at the right of the stats bar means a push is still in flight — useful to glance at before closing the laptop; quitting with an outstanding push waits for it rather than dropping it. A failure flashes `push failed: <err>` on the status bar and leaves the commit exactly where it is; the CLI prints the same warning on stderr after its success line, so an exit code never changes because the network did.
+
+One case is loud on purpose. The rebase fallback stashes uncommitted changes to files outside `.monolog/tasks/` — in practice `config.json`, which the settings modal writes without committing — and if reapplying that stash conflicts (the same setting changed on two devices), the push reports `autostash: local changes to … conflicted with the rebase and were left in the stash`. The working tree is restored to the rebased version and your own copy stays retrievable with `git stash pop`.
 
 ## Themes
 
