@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11520,5 +11521,149 @@ func TestAutoPushResult_RebasedWithPendingFollowUpPush(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("task IDs in lists = %v, want 01REMOTE present — the rebase must reload", taskIDsInLists(m))
+	}
+}
+
+// tasksStatus returns `git status --porcelain` restricted to the tasks
+// directory — the exact question git.AutoPush's deferral guard asks before it
+// is willing to rebase.
+func tasksStatus(t *testing.T, repoPath string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repoPath, "status", "--porcelain", "--", ".monolog/tasks/").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestGrab_RebalanceCommitsEverySiblingItWrote pins that a grab-move which
+// trips a rebalance leaves NOTHING uncommitted.
+//
+// The move used to commit only the moved task while writing every rebalanced
+// sibling to disk. That was written off as an undo gap, but it also leaves
+// .monolog/tasks/ permanently dirty — and AutoPush declines to rebase while a
+// task write is uncommitted, so from the first rebalancing move onward every
+// push rejected by a diverged remote would answer ErrRebaseDeferred and nothing
+// would ever reach the remote again, from the TUI or the CLI, until the user
+// ran `monolog sync` by hand. cmd/mv.go's rebalanceAndCommit has always
+// collected the siblings; this is the same fix on the TUI path.
+func TestGrab_RebalanceCommitsEverySiblingItWrote(t *testing.T) {
+	// Positions closer together than ordering.RebalanceThreshold, so dropping
+	// the grabbed task between them forces a rebalance of the whole bucket.
+	m := newTestModel(t,
+		model.Task{ID: "01R1", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01R2", Title: "second", Status: "open", Schedule: "today",
+			Position: 1000.4, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01R3", Title: "third", Status: "open", Schedule: "today",
+			Position: 1000.8, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if dirty := tasksStatus(t, m.repoPath); dirty != "" {
+		t.Fatalf("fixture should start clean, got:\n%s", dirty)
+	}
+
+	m.lists[0].Select(0)
+	m, _ = key(t, m, "m")
+	m, _ = key(t, m, "down")
+	next, cmd := key(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("enter should dispatch the move cmd")
+	}
+	m = drive(t, next, cmd)
+	if m.err != nil {
+		t.Fatalf("move error: %v", m.err)
+	}
+
+	// The rebalance must actually have happened, or the test proves nothing.
+	all, err := m.store.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	rebalanced := false
+	for _, task := range all {
+		if task.Position >= 2000 {
+			rebalanced = true
+		}
+	}
+	if !rebalanced {
+		t.Fatal("fixture did not trigger a rebalance; positions were not tightened enough")
+	}
+
+	if dirty := tasksStatus(t, m.repoPath); dirty != "" {
+		t.Errorf("rebalanced siblings left uncommitted, which permanently defers auto-push's rebase:\n%s", dirty)
+	}
+}
+
+// TestQuit_FlushesAPendingPush covers the tail of a burst. Coalescing parks the
+// last mutation in pushPending, dispatched only when the in-flight push's
+// result lands; quitting inside that window (`d`,`d`,`q` — about one push
+// round-trip) used to drop it silently, leaving those commits local with no
+// retry short of another mutation or a manual `s`.
+func TestQuit_FlushesAPendingPush(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01Q1", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+	m.pushInFlight = true
+	m.pushPending = true
+
+	_, cmd := key(t, m, "q")
+	if cmd == nil {
+		t.Fatal("q should return a cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("quit cmd produced %T, want tea.QuitMsg — the TUI must still exit", msg)
+	}
+	if rec.count() != 1 {
+		t.Fatalf("auto-push calls on quit = %d, want 1: the coalesced push must be flushed", rec.count())
+	}
+	if got := rec.timeouts[0]; got != git.CLIPushTimeout {
+		t.Errorf("flush timeout = %v, want CLIPushTimeout %v (a human is waiting on the process to exit)",
+			got, git.CLIPushTimeout)
+	}
+}
+
+func TestQuit_DoesNotPushWhenNothingIsOutstanding(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01Q2", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+
+	_, cmd := key(t, m, "q")
+	if cmd == nil {
+		t.Fatal("q should return a cmd")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("quit cmd produced no message")
+	} else if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("quit cmd produced %T, want tea.QuitMsg", msg)
+	}
+	if rec.count() != 0 {
+		t.Errorf("auto-push calls on a quiet quit = %d, want 0", rec.count())
+	}
+}
+
+// TestQuit_DoesNotPushWhenAutoPushIsDisabled keeps the kill switch honest: a
+// user who turned auto-push off must not have a push run on their way out.
+func TestQuit_DoesNotPushWhenAutoPushIsDisabled(t *testing.T) {
+	m := newTestModelNoAutoPush(t,
+		model.Task{ID: "01Q3", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
+	m.pushPending = true
+
+	_, cmd := key(t, m, "q")
+	if cmd == nil {
+		t.Fatal("q should return a cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("quit cmd should produce tea.QuitMsg")
+	}
+	if rec.count() != 0 {
+		t.Errorf("auto-push calls with auto-push disabled = %d, want 0", rec.count())
 	}
 }

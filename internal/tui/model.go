@@ -1248,7 +1248,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "q", "ctrl+c":
-		return m, tea.Quit
+		return m, m.quitCmd()
 	case "left", "shift+tab":
 		m.activeTab = (m.activeTab - 1 + len(m.tabs)) % len(m.tabs)
 		m.recomputeLayout()
@@ -2515,6 +2515,14 @@ func (m *Model) commitGrab() tea.Cmd {
 		if err := storeRef.Update(t); err != nil {
 			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
 		}
+		// Every file this command writes must end up in the commit below.
+		// Leaving the rebalanced siblings uncommitted (as this did until the
+		// auto-push work) is no longer just an undo gap: `.monolog/tasks/`
+		// then stays dirty forever, and AutoPush declines to rebase while a
+		// task write is uncommitted — so a single rebalancing move would stop
+		// every later push from ever recovering from a diverged remote.
+		// cmd/mv.go's rebalanceAndCommit does the same thing for the CLI.
+		commitFiles := []string{taskRelPath(t.ID)}
 		// Rebalance the destination bucket if adjacent gaps got too tight.
 		if t.Status == "open" {
 			siblings, err := bucketSiblings(storeRef, t.Schedule, nowT)
@@ -2526,14 +2534,14 @@ func (m *Model) commitGrab() tea.Cmd {
 					if err := storeRef.Update(rt); err != nil {
 						return taskSavedMsg{err: fmt.Errorf("rebalance: %w", err)}
 					}
+					if rt.ID != t.ID {
+						commitFiles = append(commitFiles, taskRelPath(rt.ID))
+					}
 				}
 			}
 		}
 		flat := flattenTitle(t.Title)
-		// Note: rebalanced sibling files are written to disk but not included in
-		// this commit, so undoing this commit only restores the grabbed task's
-		// position — sibling rebalanced positions are not reverted by undo.
-		sha, err := git.AutoCommitSHA(repoPath, fmt.Sprintf("move: %s", flat), taskRelPath(t.ID))
+		sha, err := git.AutoCommitSHA(repoPath, fmt.Sprintf("move: %s", flat), commitFiles...)
 		if err != nil {
 			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
 		}
@@ -2706,10 +2714,15 @@ func (m *Model) focusTaskByID(id string) {
 
 // syncCmd runs a full sync (commit + pull + auto-resolve + push) in the
 // background and surfaces the result in the status bar.
+//
+// SyncUnattended, not Sync: Bubble Tea owns the tty in raw mode on the
+// alt-screen, so git's credential prompt would be invisible and unanswerable —
+// and it would hang holding the git package's repo mutex, silently stopping
+// every later mutation from committing.
 func (m *Model) syncCmd() tea.Cmd {
 	repoPath := m.repoPath
 	return func() tea.Msg {
-		res, err := git.Sync(repoPath)
+		res, err := git.SyncUnattended(repoPath)
 		if err != nil {
 			// If we attempted a remote sync the SHAs may have changed;
 			// clear both stacks even on error to avoid stale references.
@@ -2762,6 +2775,32 @@ func (m *Model) autoPushCmd() tea.Cmd {
 	return func() tea.Msg {
 		res, err := runAutoPush(repoPath, git.DefaultPushTimeout)
 		return autoPushResult{rebased: res.Rebased, resolved: res.Resolved, err: err}
+	}
+}
+
+// quitCmd flushes an outstanding auto-push before quitting.
+//
+// Coalescing means the tail of a burst of mutations lives only in pushPending,
+// dispatched when the in-flight push's autoPushResult lands. Quitting inside
+// that window (`d`,`d`,`d`,`q` — one push round-trip, about a second) used to
+// drop it: those commits would sit local until some later mutation or a manual
+// `s`, with nothing to tell the user. An in-flight push is flushed too, since
+// process exit takes its goroutine down mid-push.
+//
+// The flush is synchronous — Bubble Tea is about to tear down, so a background
+// goroutine would die with it — and uses CLIPushTimeout, the budget meant for
+// "a human is waiting on this process to exit". Its error is swallowed: the
+// screen is gone, the commits are durable locally, and the next run's first
+// push sends them.
+func (m *Model) quitCmd() tea.Cmd {
+	if !m.autoPushEnabled || (!m.pushInFlight && !m.pushPending) {
+		return tea.Quit
+	}
+	m.pushPending = false
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		_, _ = runAutoPush(repoPath, git.CLIPushTimeout)
+		return tea.Quit()
 	}
 }
 
