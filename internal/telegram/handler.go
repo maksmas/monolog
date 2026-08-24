@@ -63,6 +63,15 @@ type Handler struct {
 
 	mu       sync.Mutex  // serializes write paths
 	readOnly atomic.Bool // set when a git.Sync conflict needs manual resolution
+
+	// lastPull is the unix-nano stamp of the most recent completed pull
+	// attempt (0 = never pulled). It is the SHARED freshness clock for
+	// the background pull-ticker, the startup pull, and the on-demand
+	// pullIfStale gate — every completed pull stamps it, so the two
+	// mechanisms cannot double-fetch. Stored atomically rather than
+	// under mu because pullIfStale reads it from outside the lock (see
+	// pullBeforeCommand's self-deadlock note in sync.go).
+	lastPull atomic.Int64
 }
 
 // TelegramConfig is the value-type view of internal/config.TelegramConfig
@@ -265,6 +274,9 @@ func (h *Handler) listLocked(opts store.ListOptions) ([]model.Task, error) {
 // task matches, a single FormatEmptyBucket message is sent so the user
 // always sees a reply. When readOnly is set, a banner message is prepended.
 func (h *Handler) handleBrowse(ctx context.Context, m *Message, bucket string) error {
+	// Freshness gate: browse reads state the laptop may have changed since
+	// the last tick. Runs before listLocked (and therefore outside h.mu).
+	h.pullBeforeCommand()
 	all, err := h.listLocked(store.ListOptions{Status: "open"})
 	if err != nil {
 		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
@@ -285,6 +297,7 @@ func (h *Handler) handleBrowse(ctx context.Context, m *Message, bucket string) e
 // directly (store.ListOptions.Tag) since tag filtering is already a
 // first-class store concept.
 func (h *Handler) handleActive(ctx context.Context, m *Message) error {
+	h.pullBeforeCommand()
 	tasks, err := h.listLocked(store.ListOptions{Status: "open", Tag: model.ActiveTag})
 	if err != nil {
 		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
@@ -305,6 +318,7 @@ func (h *Handler) handleActive(ctx context.Context, m *Message) error {
 // helper to behave sanely if a test or future caller passes a bogus
 // value directly into the Handler.
 func (h *Handler) handleAll(ctx context.Context, m *Message) error {
+	h.pullBeforeCommand()
 	tasks, err := h.listLocked(store.ListOptions{Status: "open"})
 	if err != nil {
 		_, sendErr := h.bot.SendMessage(ctx, m.ChatID, "internal error: list failed", nil)
@@ -369,6 +383,16 @@ func (h *Handler) sendBrowseResults(ctx context.Context, m *Message, tasks []mod
 //     auto-tag rule from the title prefix against the existing known tags.
 //  5. Create + commit + sync. On any write-side error reply with a short
 //     status and return the error so the Serve loop can log it.
+//
+// NOTE: capture is the one command that deliberately does NOT call
+// pullBeforeCommand. Three reasons: the new task gets a fresh ULID, so it
+// cannot conflict with anything the remote holds; commitAndSync already pulls
+// (via syncFunc) immediately AFTER the write, which is where the merge
+// actually matters; and message-send is the most latency-sensitive path in the
+// bot — the user is standing there watching for the summary card, so a network
+// fetch in front of the store write is pure added delay for no correctness
+// gain. Every OTHER path (browse, the four callbacks, note-replies) reads or
+// mutates pre-existing state and does pre-pull.
 func (h *Handler) handleCapture(ctx context.Context, m *Message) error {
 	if h.readOnly.Load() {
 		_, err := h.bot.SendMessage(ctx, m.ChatID, readOnlyMessage, nil)
@@ -505,6 +529,14 @@ func (h *Handler) handleCallback(ctx context.Context, cq *CallbackQuery) error {
 	if parseErr != nil {
 		return h.bot.AnswerCallback(ctx, cq.ID, "invalid")
 	}
+
+	// Freshness gate for all four verbs. Every one of them acts on a task
+	// the laptop may have completed, edited, or deleted since the last
+	// tick, and the message the button hangs off may be minutes old. Gating
+	// here rather than in each branch means a burst of taps costs one fetch
+	// (commandPullMaxAge) instead of one per tap. Placed before the Resolve
+	// lock below — pullOnce takes h.mu and would self-deadlock inside it.
+	h.pullBeforeCommand()
 
 	// Resolve the task once up-front; every branch needs it. A missing
 	// ULID is converted to a friendly toast — the message itself is left
@@ -896,6 +928,14 @@ func (h *Handler) handleNoteReply(ctx context.Context, m *Message) error {
 		_, err := h.bot.SendMessage(ctx, m.ChatID, noteReplyMissingPrefix, nil)
 		return err
 	}
+
+	// Freshness gate: the note lands on an EXISTING task, resolved from a
+	// quoted row that may be minutes old. Pulling first means we append to
+	// the laptop's current body rather than resolving against a stale
+	// directory. Runs outside the locked closure below (pullOnce takes
+	// h.mu) and after the readOnly guard, so a conflicted bot still refuses
+	// the write without a network round-trip.
+	h.pullBeforeCommand()
 
 	// noteOutcome carries the data needed for the post-lock bot reply.
 	// `html` is the single message body to send; `err` is returned to

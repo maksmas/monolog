@@ -681,20 +681,54 @@ the pre-auto-push bare `s    sync` line is gone). The indicator was mutation-che
 - Modify: `internal/telegram/sync_test.go`
 - Modify: `internal/telegram/handler_test.go`
 
-- [ ] add a `lastPull` timestamp to `Handler` (guarded by the existing `h.mu`, or an `atomic.Int64` of unix nanos) and a `commandPullMaxAge` constant (5s)
-- [ ] add `Handler.pullIfStale(now time.Time) error` — calls the existing `pullOnce()` when `now.Sub(lastPull) > commandPullMaxAge`, else returns nil without touching the network
-- [ ] update `lastPull` on **every** completed pull, including `runPullTicker`'s and the startup pull, so the ticker and on-demand paths share one clock and cannot double-fetch
-- [ ] **leave `runPullTicker` and `cfg.PullInterval` untouched** — the ticker is retained as the background safety net that heals `readOnly` and retries stuck-rebase recovery while the bot is idle; `PullInterval` keeps its current meaning, so no config migration
-- [ ] call `pullIfStale` before serving the browse commands (`/today`, `/week`, `/active`, `/all`) and before the callbacks and note-replies that act on existing tasks (`done:`, `active:`, `view:`, `collapse:`, reply=note) — every path that reads or mutates state that the laptop may have changed
-- [ ] deliberately **skip** the pre-pull for plain capture (fresh ULID cannot conflict, `commitAndSync` already pulls after the write, and it is the most latency-sensitive path) — leave a comment saying so
-- [ ] confirm no self-deadlock: `pullOnce` acquires `h.mu` itself, so `pullIfStale` must be called *outside* any handler section that already holds it, and the pull must complete before the reply is built (never hold `h.mu` across `SendMessage`)
-- [ ] make a failed pull **non-fatal**: log to `opts.Writer` and serve from local state, matching the ticker's retry-on-next-tick behavior
-- [ ] write a test that a command with a stale `lastPull` triggers exactly one `pullFunc` call, and that a second command within `commandPullMaxAge` triggers none
-- [ ] write a test that a ticker pull refreshes `lastPull` such that an immediately following command skips its pull (shared-clock assertion)
-- [ ] write a test that a `pullFunc` error still produces a normal reply and does not set `readOnly`
-- [ ] write a test that plain capture does **not** pre-pull, while a `done:` callback does
-- [ ] write a test that a task appearing in the remote between two commands shows up on the second once the gate expires
-- [ ] run tests with `-race` - must pass before task 11
+- [x] add a `lastPull` timestamp to `Handler` (guarded by the existing `h.mu`, or an `atomic.Int64` of unix nanos) and a `commandPullMaxAge` constant (5s) — `atomic.Int64` of unix nanos, with `recordPull`/`lastPullAt` accessors
+- [x] add `Handler.pullIfStale(now time.Time) error` — calls the existing `pullOnce()` when `now.Sub(lastPull) > commandPullMaxAge`, else returns nil without touching the network
+- [x] update `lastPull` on **every** completed pull, including `runPullTicker`'s and the startup pull, so the ticker and on-demand paths share one clock and cannot double-fetch
+- [x] **leave `runPullTicker` and `cfg.PullInterval` untouched** — the ticker is retained as the background safety net that heals `readOnly` and retries stuck-rebase recovery while the bot is idle; `PullInterval` keeps its current meaning, so no config migration
+- [x] call `pullIfStale` before serving the browse commands (`/today`, `/week`, `/active`, `/all`) and before the callbacks and note-replies that act on existing tasks (`done:`, `active:`, `view:`, `collapse:`, reply=note) — every path that reads or mutates state that the laptop may have changed
+- [x] deliberately **skip** the pre-pull for plain capture (fresh ULID cannot conflict, `commitAndSync` already pulls after the write, and it is the most latency-sensitive path) — leave a comment saying so
+- [x] confirm no self-deadlock: `pullOnce` acquires `h.mu` itself, so `pullIfStale` must be called *outside* any handler section that already holds it, and the pull must complete before the reply is built (never hold `h.mu` across `SendMessage`)
+- [x] make a failed pull **non-fatal**: log to `opts.Writer` and serve from local state, matching the ticker's retry-on-next-tick behavior
+- [x] write a test that a command with a stale `lastPull` triggers exactly one `pullFunc` call, and that a second command within `commandPullMaxAge` triggers none
+- [x] write a test that a ticker pull refreshes `lastPull` such that an immediately following command skips its pull (shared-clock assertion)
+- [x] write a test that a `pullFunc` error still produces a normal reply and does not set `readOnly`
+- [x] write a test that plain capture does **not** pre-pull, while a `done:` callback does
+- [x] write a test that a task appearing in the remote between two commands shows up on the second once the gate expires
+- [x] run tests with `-race` - must pass before task 11
+
+[decision] `lastPull` is stamped by a `defer` in `pullOnce` that fires on **every** exit path,
+including the error ones — it is a rate limit on the gate, not a success ledger. Only stamping
+on success would make an offline bot re-pay the full `git pull` timeout on every single command;
+the retained ticker retries on its own schedule regardless. `TestPullIfStalePropagatesPullError\
+AndStillStampsClock` pins it. The gate itself is `> commandPullMaxAge`, so an instant exactly at
+the boundary still counts as fresh (also pinned).
+
+[decision] The callback pre-pull sits once in `handleCallback`, before the `store.Resolve` lock,
+rather than four times in the individual verb handlers. All four verbs act on a task the laptop
+may have changed, the placement is the only one that is both outside `h.mu` and ahead of the
+resolve, and a burst of taps then costs one fetch. Consequence: a `done:`/`active:` tap on a
+`readOnly` bot now pre-pulls (and a clean pull heals the flag) because the pre-pull runs before
+those handlers' `readOnly` guards. Capture and note-replies keep their guard **ahead** of the
+pull, so the plan's stated reason for retaining the ticker — a write-only conversation against a
+`readOnly` bot never reaches a pull — still holds.
+
+[decision] The `internal/telegram` test package gained a `TestMain` defaulting `pullFunc` to a
+stub returning `errTestPullDisabled`. Without it, every browse / callback / note-reply test in
+the package would shell out to a real `git pull` against a remote-less fixture now that
+`pullBeforeCommand` runs ahead of them. The default returns an **error** rather than nil on
+purpose: `pullOnce` clears `readOnly` on a successful pull, so a silently-succeeding default
+would heal the flag underneath the six existing tests that call `SetReadOnly(true)` and then
+assert on read-only behavior (`TestHandleSlashReadOnlyPrependsBanner`,
+`TestHandleCallbackReadOnlyBlocksDoneAndActiveAllowsView`, …).
+
+➕ Added beyond the checklist: `TestPullIfStaleGatesOnCommandPullMaxAge` (unit-level clock
+arithmetic including the boundary instant), `TestNoteReplyPrePulls`,
+`TestServeStartupPullStampsSharedClock` (drives the real `Serve` startup path, which bypasses
+`pullOnce` and therefore had to stamp the clock itself — a count of 2 there is exactly the
+double-fetch this task exists to prevent), and a `mutableClock` + `countingPull` test-helper
+pair. Four behaviors were mutation-checked: dropping `recordPull` from `Serve`, dropping the
+`recordPull` defer from `pullOnce`, dropping `pullBeforeCommand` from `handleCallback`, and
+*adding* one to `handleCapture` each fail the corresponding test.
 
 ### Task 11: Verify acceptance criteria
 

@@ -117,6 +117,13 @@ var (
 func (h *Handler) pullOnce() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// Stamp the shared freshness clock on the way out — whether the pull
+	// succeeded, failed, or recovered from a conflict. lastPull is a
+	// rate-limit for pullIfStale, not a success ledger: an errored pull
+	// still consumed a network round-trip, and re-paying that timeout on
+	// the very next command would make an offline bot feel hung. The
+	// ticker retries on its own schedule either way.
+	defer func() { h.recordPull(h.now()) }()
 	if err := pullFunc(h.repoPath); err != nil {
 		rebasing, rbErr := isRebasingFunc(h.repoPath)
 		if rbErr != nil || !rebasing {
@@ -138,6 +145,67 @@ func (h *Handler) pullOnce() error {
 	}
 	h.readOnly.Store(false)
 	return nil
+}
+
+// commandPullMaxAge is how stale the local clone is allowed to be when the
+// bot serves a command that reads or acts on EXISTING task state. Past this
+// age the command pulls first; inside it the command serves what is already
+// on disk.
+//
+// The background ticker alone leaves up to cfg.PullInterval (default 30s) of
+// staleness, so a /today issued seconds after a laptop-side `monolog add`
+// could miss the task entirely. Pulling unconditionally on every update would
+// instead put a network fetch behind every button tap. A 5s window resolves
+// both: a deliberate command (typed, then read) is always fresh, while a burst
+// — tapping ✅ on three tasks in a row — costs one fetch rather than three.
+const commandPullMaxAge = 5 * time.Second
+
+// recordPull stamps the shared freshness clock. EVERY completed pull calls it
+// — the ticker's (via pullOnce), the on-demand one (also via pullOnce), and
+// Serve's startup pull, which bypasses pullOnce and therefore stamps the clock
+// itself. Skipping any of them would let the ticker and the on-demand gate
+// double-fetch the same commits.
+func (h *Handler) recordPull(t time.Time) { h.lastPull.Store(t.UnixNano()) }
+
+// lastPullAt reports the time of the last completed pull attempt, or the zero
+// time when nothing has pulled yet (which pullIfStale treats as "stale").
+func (h *Handler) lastPullAt() time.Time {
+	ns := h.lastPull.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// pullIfStale runs pullOnce when the shared clock says the local clone may
+// have fallen behind the remote, and does nothing (no network, no lock) when
+// it is still fresh.
+//
+// Mutex: pullOnce acquires h.mu itself and sync.Mutex is NOT reentrant, so
+// pullIfStale must only ever be called from a point that does not already
+// hold h.mu — see pullBeforeCommand.
+func (h *Handler) pullIfStale(now time.Time) error {
+	if last := h.lastPullAt(); !last.IsZero() && now.Sub(last) <= commandPullMaxAge {
+		return nil
+	}
+	return h.pullOnce()
+}
+
+// pullBeforeCommand is the handler-side entry point for the freshness gate.
+// It is deliberately error-free at the call site: a failed pull is NON-FATAL,
+// logged to the Serve writer and followed by serving whatever is on disk. A
+// command must never fail because the network blipped — the readOnly banner
+// already communicates a pending conflict, and the ticker retries.
+//
+// Call it from OUTSIDE h.mu and BEFORE the reply is built. Both constraints
+// are load-bearing: pullOnce takes h.mu (so calling this under the lock
+// self-deadlocks), and a pull that lands after the store read is worthless.
+// h.mu is never held across a bot SendMessage, so the pull always completes
+// before any HTTP call.
+func (h *Handler) pullBeforeCommand() {
+	if err := h.pullIfStale(h.now()); err != nil {
+		fmt.Fprintf(h.writer, "telegram: command pull: %v\n", err)
+	}
 }
 
 // defaultLongPollTimeout is the timeout passed to bot.GetUpdates on each
@@ -228,6 +296,11 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	if err := pullFunc(opts.RepoPath); err != nil {
 		fmt.Fprintf(writer, "telegram: startup pull: %v\n", err)
 	}
+	// Stamp the shared freshness clock. Because this path bypasses
+	// pullOnce it has to do so explicitly — otherwise the very first
+	// command after startup would immediately re-fetch what we just
+	// pulled.
+	handler.recordPull(handler.now())
 
 	// Spawn the pull ticker. It uses a sub-context derived from ctx so a
 	// ctx cancellation cleanly stops the ticker goroutine alongside the
@@ -268,6 +341,15 @@ func validateServeOptions(opts ServeOptions) error {
 // previously-broken write recovers automatically once the remote heals).
 // On error it logs to writer but never exits — the goroutine only stops
 // when ctx is cancelled.
+//
+// The ticker is RETAINED alongside the per-command pullIfStale gate rather
+// than replaced by it: it is the only mechanism that heals readOnly and
+// retries pullOnce's stuck-rebase recovery while the bot sits idle. Without
+// it, a readOnly bot that only ever receives writes would reject them forever,
+// since the write paths bail on the flag before they reach a pull. Its
+// pullOnce call stamps the same lastPull clock pullIfStale reads, so a tick
+// and a command arriving back to back cost one fetch, not two. interval is
+// cfg.PullInterval with its original meaning — nothing here changed.
 //
 // The function closes done when it exits so Serve can wait for shutdown.
 func runPullTicker(ctx context.Context, h *Handler, interval time.Duration, writer io.Writer, done chan<- struct{}) {

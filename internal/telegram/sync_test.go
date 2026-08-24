@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +14,64 @@ import (
 
 	"github.com/maksmas/monolog/internal/git"
 )
+
+// errTestPullDisabled is what the package-wide default pullFunc returns
+// while the test binary runs. See TestMain.
+var errTestPullDisabled = errors.New("pull disabled in tests")
+
+// TestMain defaults the pullFunc seam to a failing stub so no test ever
+// shells out to a real `git pull`. This became load-bearing once
+// pullBeforeCommand started running ahead of every state-dependent command:
+// without it, every browse / callback / note-reply test in the package would
+// spawn a git subprocess against a remote-less fixture repo.
+//
+// The stub returns an ERROR rather than nil on purpose. A remote-less fixture
+// is exactly what a real `git pull --rebase` fails on, so the error is honest
+// — and, more importantly, pullOnce clears readOnly on a *successful* pull.
+// A silently-succeeding default would heal the flag underneath the tests that
+// call SetReadOnly(true) and then assert on read-only behavior. Tests that
+// want a pull to happen install their own stub via withPullFunc.
+func TestMain(m *testing.M) {
+	pullFunc = func(string) error { return errTestPullDisabled }
+	os.Exit(m.Run())
+}
+
+// mutableClock is a race-safe settable clock for the freshness-gate tests.
+// The gate compares wall-clock instants, so driving it needs a `now` the test
+// can move forward by hand rather than the fixed handlerTestNow value.
+type mutableClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newMutableClock(start time.Time) *mutableClock { return &mutableClock{t: start} }
+
+func (c *mutableClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *mutableClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// countingPull returns a pullFunc stub that increments a counter, plus a
+// snapshot accessor. Used by every gate test to assert on the exact number of
+// fetches — the whole point of the gate is that the count is 1, not 3.
+func countingPull(extra func()) (func(string) error, func() int) {
+	var n int32
+	fn := func(string) error {
+		atomic.AddInt32(&n, 1)
+		if extra != nil {
+			extra()
+		}
+		return nil
+	}
+	return fn, func() int { return int(atomic.LoadInt32(&n)) }
+}
 
 // withPullFunc swaps the package-level pullFunc seam for the duration of a
 // test and restores the production value on cleanup. Mirrors the pattern
@@ -888,5 +948,171 @@ func TestCtxSleepNonPositiveDurationReturnsImmediately(t *testing.T) {
 	cancel()
 	if ctxSleep(ctx, 0) {
 		t.Fatal("zero duration on a cancelled ctx should return false")
+	}
+}
+
+// --- Freshness gate ----------------------------------------------------
+//
+// The gate closes the staleness window between a laptop-side push and the bot
+// serving a command. The invariants pinned here: pull when the shared clock
+// says we may be behind, do NOT pull when it says we are fresh, and share that
+// one clock with the retained background ticker and the startup pull so the
+// two mechanisms never double-fetch.
+
+func TestPullIfStaleGatesOnCommandPullMaxAge(t *testing.T) {
+	fn, count := countingPull(nil)
+	withPullFunc(t, fn)
+	clk := newMutableClock(handlerTestNow)
+	h, _, _, _ := newTestHandlerWithClock(t, []int64{100}, clk.now)
+
+	// Never pulled: the zero clock counts as stale.
+	if err := h.pullIfStale(clk.now()); err != nil {
+		t.Fatalf("pullIfStale: %v", err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("first call pulls=%d want 1", got)
+	}
+
+	// Same instant: inside the window, no network at all.
+	if err := h.pullIfStale(clk.now()); err != nil {
+		t.Fatalf("pullIfStale (fresh): %v", err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("call inside the window pulled again: pulls=%d want 1", got)
+	}
+
+	// Exactly at the boundary is still fresh — the gate is `> maxAge`.
+	clk.advance(commandPullMaxAge)
+	if err := h.pullIfStale(clk.now()); err != nil {
+		t.Fatalf("pullIfStale (boundary): %v", err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("call exactly at commandPullMaxAge pulled: pulls=%d want 1", got)
+	}
+
+	// One tick past the boundary: stale again.
+	clk.advance(time.Nanosecond)
+	if err := h.pullIfStale(clk.now()); err != nil {
+		t.Fatalf("pullIfStale (expired): %v", err)
+	}
+	if got := count(); got != 2 {
+		t.Fatalf("call past commandPullMaxAge pulls=%d want 2", got)
+	}
+}
+
+func TestPullIfStalePropagatesPullErrorAndStillStampsClock(t *testing.T) {
+	wantErr := errors.New("remote unreachable")
+	withPullFunc(t, func(string) error { return wantErr })
+	h, _, _, _ := newTestHandler(t, []int64{100})
+
+	if err := h.pullIfStale(handlerTestNow); !errors.Is(err, wantErr) {
+		t.Fatalf("pullIfStale err=%v want %v", err, wantErr)
+	}
+	// A failed attempt still stamps the clock: it consumed a round-trip, and
+	// re-paying that timeout on the very next command would make an offline
+	// bot feel hung. The ticker retries on its own schedule.
+	if h.lastPullAt().IsZero() {
+		t.Fatal("a failed pull must still stamp the shared clock")
+	}
+}
+
+func TestPullTickerRefreshesSharedClockSoNextCommandSkipsItsPull(t *testing.T) {
+	fn, count := countingPull(nil)
+	withPullFunc(t, fn)
+	withSyncFunc(t, noopSync)
+
+	clk := newMutableClock(handlerTestNow)
+	h, bot, s, _ := newTestHandlerWithClock(t, []int64{100}, clk.now)
+	seedBrowseTasks(t, s)
+
+	// Run the retained background ticker until it has pulled at least once,
+	// then shut it down so no further tick can race the assertion below.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go runPullTicker(ctx, h, time.Millisecond, io.Discard, done)
+	deadline := time.Now().Add(2 * time.Second)
+	for count() == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("pull ticker never ran within 2s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+	afterTicker := count()
+
+	// The command arrives at the same instant on the shared clock. If the
+	// ticker's pull had not stamped lastPull, the gate would consider the
+	// clone stale and fetch again — a double-fetch on every tick+command pair.
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := count(); got != afterTicker {
+		t.Fatalf("command after a ticker pull re-fetched: pulls=%d want %d (shared clock broken)", got, afterTicker)
+	}
+	if len(bot.sent) == 0 {
+		t.Fatal("expected the browse reply to be served from local state")
+	}
+}
+
+func TestServeStartupPullStampsSharedClock(t *testing.T) {
+	repoPath, s := initTelegramTestRepo(t)
+	fn, count := countingPull(nil)
+	withPullFunc(t, fn)
+	withSyncFunc(t, noopSync)
+
+	bot := newBlockingBot()
+	cfg := TelegramConfig{
+		AllowedUserIDs: []int64{100},
+		PullInterval:   time.Hour, // long enough that the ticker never fires
+		BrowseLimit:    20,
+	}
+	bot.queue([]Update{{
+		UpdateID: 3,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+	}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	served := make(chan error, 1)
+	go func() {
+		served <- Serve(ctx, ServeOptions{
+			RepoPath:   repoPath,
+			Bot:        bot,
+			Store:      s,
+			Cfg:        cfg,
+			DateFormat: "02-01-2006",
+			Now:        func() time.Time { return handlerTestNow },
+			Writer:     &bytes.Buffer{},
+		})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(bot.sentSnapshot()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("handler never replied within 2s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return within 2s of cancel")
+	}
+
+	// Startup pull only. A count of 2 would mean the startup pull bypassed
+	// recordPull and the first command immediately re-fetched what Serve had
+	// just pulled.
+	if got := count(); got != 1 {
+		t.Fatalf("pulls=%d want 1 (startup pull must stamp the shared clock)", got)
 	}
 }

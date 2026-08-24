@@ -1,7 +1,9 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -44,13 +46,20 @@ func initTelegramTestRepo(t *testing.T) (string, *store.Store) {
 // path is opt-in per test.
 func newTestHandler(t *testing.T, allowed []int64) (*Handler, *fakeBot, *store.Store, string) {
 	t.Helper()
+	return newTestHandlerWithClock(t, allowed, func() time.Time { return handlerTestNow })
+}
+
+// newTestHandlerWithClock is newTestHandler with an injectable clock, for the
+// freshness-gate tests that need to move `now` past commandPullMaxAge.
+func newTestHandlerWithClock(t *testing.T, allowed []int64, now func() time.Time) (*Handler, *fakeBot, *store.Store, string) {
+	t.Helper()
 	repoPath, s := initTelegramTestRepo(t)
 	bot := &fakeBot{}
 	h := NewHandler(bot, s, repoPath, TelegramConfig{
 		AllowedUserIDs: allowed,
 		PullInterval:   30 * time.Second,
 		BrowseLimit:    20,
-	}, "02-01-2006", func() time.Time { return handlerTestNow })
+	}, "02-01-2006", now)
 	return h, bot, s, repoPath
 }
 
@@ -1881,6 +1890,199 @@ func TestTaskPrefixFromRow(t *testing.T) {
 		if got != c.want {
 			t.Errorf("taskPrefixFromRow(%q) = %q want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// --- Freshness gate: per-command wiring --------------------------------
+//
+// sync_test.go pins the gate's clock arithmetic; these pin which commands are
+// wired to it. The split matters: the gate is only useful if the paths that
+// read pre-existing state actually call it, and only cheap if capture does
+// not.
+
+func TestCommandPullsOnceWhenStaleThenSkipsInsideTheWindow(t *testing.T) {
+	fn, count := countingPull(nil)
+	withPullFunc(t, fn)
+	clk := newMutableClock(handlerTestNow)
+	h, bot, s, _ := newTestHandlerWithClock(t, []int64{100}, clk.now)
+	seedBrowseTasks(t, s)
+
+	browse := func(cmd string) {
+		t.Helper()
+		if err := h.Handle(context.Background(), Update{
+			UpdateID: 1,
+			Message:  &Message{ChatID: 5, UserID: 100, Text: cmd},
+		}); err != nil {
+			t.Fatalf("Handle %s: %v", cmd, err)
+		}
+	}
+
+	browse("/today")
+	if got := count(); got != 1 {
+		t.Fatalf("first command pulls=%d want 1", got)
+	}
+
+	// A burst of follow-up commands inside the window must cost nothing.
+	browse("/week")
+	browse("/active")
+	browse("/all")
+	if got := count(); got != 1 {
+		t.Fatalf("burst inside the window pulls=%d want 1", got)
+	}
+	if len(bot.sent) == 0 {
+		t.Fatal("expected the browse commands to reply")
+	}
+
+	// Past the window, the next command re-fetches.
+	clk.advance(commandPullMaxAge + time.Second)
+	browse("/today")
+	if got := count(); got != 2 {
+		t.Fatalf("command after the window expired pulls=%d want 2", got)
+	}
+}
+
+func TestCaptureDoesNotPrePullButDoneCallbackDoes(t *testing.T) {
+	fn, count := countingPull(nil)
+	withPullFunc(t, fn)
+	withSyncFunc(t, noopSync)
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+
+	// Capture: a fresh ULID cannot conflict and commitAndSync pulls after
+	// the write, so the most latency-sensitive path skips the pre-pull.
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "buy milk"},
+	}); err != nil {
+		t.Fatalf("capture Handle: %v", err)
+	}
+	if got := count(); got != 0 {
+		t.Fatalf("capture pre-pulled: pulls=%d want 0", got)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("expected the capture summary card, got %d messages", len(bot.sent))
+	}
+
+	tasks, err := s.List(store.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("store count=%d want 1", len(tasks))
+	}
+
+	// A done: callback acts on EXISTING state the laptop may have changed,
+	// so it does pre-pull. Capture left the clock unstamped, so this is the
+	// gate's first fetch.
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 2,
+		Callback: &CallbackQuery{ID: "cb1", UserID: 100, ChatID: 5, MessageID: 9, Data: "done:" + tasks[0].ID},
+	}); err != nil {
+		t.Fatalf("done Handle: %v", err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("done callback pulls=%d want 1", got)
+	}
+	if got, _ := s.Get(tasks[0].ID); got.Status != "done" {
+		t.Fatalf("expected the done callback to still complete the task, status=%q", got.Status)
+	}
+}
+
+func TestNoteReplyPrePulls(t *testing.T) {
+	fn, count := countingPull(nil)
+	withPullFunc(t, fn)
+	withSyncFunc(t, noopSync)
+	h, _, s, _ := newTestHandler(t, []int64{100})
+	const id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	seedSingleTask(t, s, model.Task{ID: id, Title: "frozen"})
+
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 1,
+		Message: &Message{
+			ChatID:  5,
+			UserID:  100,
+			Text:    "a note",
+			ReplyTo: &Message{ChatID: 5, UserID: 100, MessageID: 7, Text: "01ARZ  frozen"},
+		},
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("note reply pulls=%d want 1", got)
+	}
+	got, _ := s.Get(id)
+	if got.NoteCount != 1 {
+		t.Fatalf("expected the note to still land, NoteCount=%d", got.NoteCount)
+	}
+}
+
+func TestPrePullFailureStillRepliesAndDoesNotSetReadOnly(t *testing.T) {
+	withPullFunc(t, func(string) error { return errors.New("dial tcp: network is unreachable") })
+	h, bot, s, _ := newTestHandler(t, []int64{100})
+	var log bytes.Buffer
+	h.SetWriter(&log)
+	seedBrowseTasks(t, s)
+
+	if err := h.Handle(context.Background(), Update{
+		UpdateID: 1,
+		Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+	}); err != nil {
+		t.Fatalf("a failed pre-pull must not fail the command: %v", err)
+	}
+	// Served from local state: the two today-bucket rows, no read-only
+	// banner in front of them.
+	if len(bot.sent) != 2 {
+		t.Fatalf("expected 2 today rows served from local state, got %d: %+v", len(bot.sent), bot.sent)
+	}
+	if strings.Contains(bot.sent[0].HTML, "read-only") {
+		t.Fatalf("a failed pre-pull must not set readOnly; got banner %q", bot.sent[0].HTML)
+	}
+	if h.IsReadOnly() {
+		t.Fatal("a failed pre-pull must leave readOnly clear — only a stuck rebase sets it")
+	}
+	if !strings.Contains(log.String(), "command pull") || !strings.Contains(log.String(), "network is unreachable") {
+		t.Fatalf("expected the failure logged to the Serve writer, got %q", log.String())
+	}
+}
+
+func TestRemoteTaskAppearsOnTheCommandAfterTheGateExpires(t *testing.T) {
+	clk := newMutableClock(handlerTestNow)
+	h, bot, s, _ := newTestHandlerWithClock(t, []int64{100}, clk.now)
+
+	// The second fetch is the one that lands the laptop's commit — the
+	// first runs against a remote that does not have it yet.
+	const remoteID = "01ARZ3NDEKTSV4RRFFQ69G5FA9"
+	var pulls int
+	withPullFunc(t, func(string) error {
+		pulls++
+		if pulls == 2 {
+			seedSingleTask(t, s, model.Task{ID: remoteID, Title: "pushed from the laptop"})
+		}
+		return nil
+	})
+
+	browse := func() {
+		t.Helper()
+		if err := h.Handle(context.Background(), Update{
+			UpdateID: 1,
+			Message:  &Message{ChatID: 5, UserID: 100, Text: "/today"},
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+	}
+
+	browse()
+	if len(bot.sent) != 1 || !strings.Contains(bot.sent[0].HTML, "nothing") {
+		t.Fatalf("expected an empty-bucket reply before the remote task lands, got %+v", bot.sent)
+	}
+
+	clk.advance(commandPullMaxAge + time.Second)
+	bot.sent = nil
+	browse()
+	if pulls != 2 {
+		t.Fatalf("expected the expired gate to fetch, pulls=%d want 2", pulls)
+	}
+	if len(bot.sent) != 1 || !strings.Contains(bot.sent[0].HTML, "pushed from the laptop") {
+		t.Fatalf("expected the newly pulled task in the reply, got %+v", bot.sent)
 	}
 }
 
