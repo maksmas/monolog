@@ -2,6 +2,7 @@ package git
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1301,5 +1302,188 @@ func TestAutoPush_AutostashConflictStillPushes(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "solarized") {
 		t.Errorf("config.json = %s, want the user's uncommitted setting kept", data)
+	}
+}
+
+// TestWriteSettleWindowOutlastsAPush pins the sizing invariant: AutoPush holds
+// repoMu across a push and, on the rejection path, a fetch, and every one of
+// those seconds is time a concurrent AutoCommitSHA spends blocked on that same
+// mutex without touching its file. A window shorter than that sum would let
+// AutoPush classify a write it is itself delaying as an orphan.
+func TestWriteSettleWindowOutlastsAPush(t *testing.T) {
+	if writeSettleWindow <= DefaultPushTimeout+DefaultFetchTimeout {
+		t.Errorf("writeSettleWindow = %v, want > DefaultPushTimeout+DefaultFetchTimeout (%v)",
+			writeSettleWindow, DefaultPushTimeout+DefaultFetchTimeout)
+	}
+}
+
+// TestWritesInFlight_WindowIsTwoSided covers a mtime in the future of the
+// reference time. That is the normal shape once AutoPush measures from its own
+// entry (a write that lands mid-push is newer than the start), and it is also
+// what a skewed clock produces — a multi-device tool invites both. A one-sided
+// `now.Sub(mtime) < window` reads the resulting negative age as "in flight",
+// which deferred every rebase until the wall clock caught up.
+func TestWritesInFlight_WindowIsTwoSided(t *testing.T) {
+	dir := t.TempDir()
+	rel := filepath.Join(".monolog", "tasks", "01SKEW.json")
+	writeTaskJSON(t, filepath.Join(dir, rel), model.Task{
+		ID: "01SKEW", Title: "skewed", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-12T00:00:00Z",
+	})
+
+	tests := []struct {
+		name  string
+		mtime time.Time
+		want  bool
+	}{
+		{"just written", time.Now(), true},
+		{"written after the reference time", time.Now().Add(writeSettleWindow / 2), true},
+		{"settled", time.Now().Add(-writeSettleWindow - time.Minute), false},
+		// A badly skewed clock (an rsync/Dropbox restore, a second device
+		// running fast) must NOT read as in flight forever: past the window on
+		// either side the file is an orphan and gets committed, which is the
+		// whole point of bounding the deferral.
+		{"far future, beyond the window", time.Now().Add(2*writeSettleWindow + time.Minute), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.Chtimes(filepath.Join(dir, rel), tt.mtime, tt.mtime); err != nil {
+				t.Fatalf("chtimes: %v", err)
+			}
+			if got := writesInFlight(dir, []string{rel}, time.Now()); got != tt.want {
+				t.Errorf("writesInFlight() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// slowReceivePack makes pushes to the fixture's remote take at least d by
+// wrapping the remote end's git-receive-pack in a sleep. It is the only way to
+// exercise the window AutoPush itself opens between a caller's store write and
+// that caller's blocked AutoCommitSHA.
+func slowReceivePack(t *testing.T, repoPath string, d time.Duration) {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "slow-receive-pack")
+	body := fmt.Sprintf("#!/bin/sh\nsleep %.1f\nexec git-receive-pack \"$@\"\n", d.Seconds())
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write receive-pack wrapper: %v", err)
+	}
+	gitRun(t, repoPath, "config", "remote.origin.receivepack", script)
+}
+
+// setSettleWindow shrinks writeSettleWindow for the duration of a test so a
+// slow push can be simulated in seconds rather than in the half-minute the
+// production value budgets for.
+func setSettleWindow(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := writeSettleWindow
+	writeSettleWindow = d
+	t.Cleanup(func() { writeSettleWindow = prev })
+}
+
+// TestAutoPush_DoesNotAgeAWriteItIsItselfBlocking is the regression test for
+// the settle window being measured at the wrong moment.
+//
+// A caller writes its task file and then blocks on repoMu inside
+// AutoCommitSHA, which AutoPush holds across the whole push. Measuring the
+// file's age when the rejection comes back — rather than when AutoPush started
+// — ages that file by the entire push, so the write AutoPush is itself
+// delaying is the first one to look "settled". AutoPush then sweeps it into a
+// `recover:` commit, the caller's own commit fails with "nothing to commit",
+// and a mutation that succeeded and reached the remote is reported to the user
+// as a failure (and, in the TUI, silently desyncs the undo stack).
+func TestAutoPush_DoesNotAgeAWriteItIsItselfBlocking(t *testing.T) {
+	setSettleWindow(t, 300*time.Millisecond)
+
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01SLOWB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01SLOWA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// The concurrent write: on disk, its commit still queued behind repoMu.
+	pendingRel := filepath.Join(".monolog", "tasks", "01SLOWP.json")
+	writeTaskJSON(t, filepath.Join(a, pendingRel), model.Task{
+		ID: "01SLOWP", Title: "still committing", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-12T00:00:00Z",
+	})
+
+	// The push burns far more than the settle window before it is rejected.
+	slowReceivePack(t, a, 2*time.Second)
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if !errors.Is(err, ErrRebaseDeferred) {
+		t.Fatalf("AutoPush() error = %v, want ErrRebaseDeferred: a write from just before "+
+			"AutoPush started is in flight no matter how long AutoPush blocked it", err)
+	}
+	if res.Rebased || res.Pushed {
+		t.Errorf("res = %+v, want a pure deferral", res)
+	}
+	if status := gitOut(t, a, "status", "--porcelain", "--", pendingRel); status != "?? "+pendingRel {
+		t.Errorf("status = %q, want %q: the in-flight write must not be swept into a "+
+			"recover: commit under the caller that is about to commit it",
+			status, "?? "+pendingRel)
+	}
+}
+
+// TestAutoPush_DoesNotPushAnUnreadableTaskFile covers the orphan sweep meeting a
+// file that is not a task. store.List fails on the FIRST unreadable file rather
+// than skipping it, so committing one would break `monolog ls`, the TUI and the
+// bot on every device instead of only on the one that produced it — the likely
+// source being a crash mid-store.writeTask, which is a plain os.WriteFile.
+func TestAutoPush_DoesNotPushAnUnreadableTaskFile(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01BADB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01BADA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// A truncated write, settled long ago: the orphan branch will pick it up.
+	badRel := filepath.Join(".monolog", "tasks", "01TRUNC.json")
+	bad := filepath.Join(a, badRel)
+	if err := os.WriteFile(bad, []byte(`{"id":"01TRUNC","title":"trunc`), 0o644); err != nil {
+		t.Fatalf("write truncated task: %v", err)
+	}
+	// A good orphan alongside it, to pin that one bad file does not block the
+	// recovery of the others.
+	goodRel := filepath.Join(".monolog", "tasks", "01GOODO.json")
+	writeTaskJSON(t, filepath.Join(a, goodRel), model.Task{
+		ID: "01GOODO", Title: "recoverable", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-12T00:00:00Z",
+	})
+	old := time.Now().Add(-writeSettleWindow - time.Minute)
+	for _, p := range []string{bad, filepath.Join(a, goodRel)} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatalf("backdate %s: %v", p, err)
+		}
+	}
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if !res.Pushed {
+		t.Fatalf("res = %+v, err = %v; the push must still go through", res, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), badRel) {
+		t.Errorf("AutoPush() error = %v, want it to name the unreadable file %s", err, badRel)
+	}
+	if status := gitOut(t, a, "status", "--porcelain", "--", badRel); status != "?? "+badRel {
+		t.Errorf("status = %q, want %q: the unreadable file must stay uncommitted", status, "?? "+badRel)
+	}
+	if body := gitOut(t, a, "show", "HEAD:"+goodRel); !strings.Contains(body, "recoverable") {
+		t.Errorf("HEAD:%s = %q, want the readable orphan committed anyway", goodRel, body)
+	}
+	fresh := cloneOf(t, bare, "clone-c")
+	if _, sErr := os.Stat(filepath.Join(fresh, badRel)); !os.IsNotExist(sErr) {
+		t.Errorf("the unreadable file reached the remote (stat err = %v); every device's "+
+			"store.List would fail on it", sErr)
 	}
 }

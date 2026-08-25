@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/maksmas/monolog/internal/model"
 )
 
 // PushResult summarizes what AutoPush did. Rebased/Resolved are meaningful even
@@ -65,16 +68,30 @@ var ErrRebaseDeferred = errors.New("push rejected; rebase deferred while a task 
 
 // writeSettleWindow is how long an uncommitted task file is treated as a write
 // still in flight — the gap between a caller's store.Create/Update and its
-// AutoCommitSHA, which is milliseconds even across processes.
+// AutoCommitSHA.
 //
-// Past it, the file is an orphan: a real task whose commit failed (every TUI
-// mutation site returns `taskSavedMsg{err: "commit: …"}` after the store write
-// has already landed) or a hand-dropped file. Deferring on those forever meant
-// auto-push silently stopped working for good the first time one appeared —
-// the exact bug this feature exists to fix, reinstated with no way for the user
-// to discover it. Committing an orphan is the safe direction: it is a task the
-// user created, and losing it is not acceptable.
-const writeSettleWindow = 5 * time.Second
+// That gap is milliseconds of work, but it is NOT bounded by milliseconds:
+// AutoCommitSHA blocks on repoMu, which AutoPush holds across its own network
+// I/O, so a genuinely in-flight write can sit unclaimed for the whole of
+// DefaultPushTimeout + DefaultFetchTimeout. The window is sized above that sum
+// (and measured from AutoPush's entry, not from the check — see writesInFlight)
+// so AutoPush can never mistake a writer it is itself blocking for an orphan.
+// Getting that wrong sweeps the write into a `recover:` commit, and the
+// writer's own commit then fails with "nothing to commit": a mutation that
+// succeeded and reached the remote is reported to the user as a failure, and
+// the TUI loses the SHA it needed for undo.
+//
+// Past the window, the file is an orphan: a real task whose commit failed
+// (every TUI mutation site returns `taskSavedMsg{err: "commit: …"}` after the
+// store write has already landed) or a hand-dropped file. Deferring on those
+// forever meant auto-push silently stopped working for good the first time one
+// appeared — the exact bug this feature exists to fix, reinstated with no way
+// for the user to discover it. Committing an orphan is the safe direction: it
+// is a task the user created, and losing it is not acceptable.
+//
+// A var, not a const, only so tests can shrink it; nothing outside tests
+// assigns to it.
+var writeSettleWindow = 30 * time.Second
 
 // AutoPush pushes the current branch to its upstream, treating every failure as
 // non-fatal information for the caller: the mutation that produced the commit
@@ -95,6 +112,14 @@ const writeSettleWindow = 5 * time.Second
 // rebase fallback's fetch) is also the ceiling on how long a concurrent
 // mutation's commit can be made to wait — see repoMu.
 func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
+	// Taken BEFORE the lock and before the first push, and used as "now" for the
+	// in-flight check further down. Measuring at the check instead would age
+	// every pending write by however long this call spent holding repoMu and
+	// talking to the remote — which is exactly the time a concurrent
+	// AutoCommitSHA spends blocked on that same mutex, so the writes AutoPush
+	// itself delayed would be the first to look settled. See writeSettleWindow.
+	start := time.Now()
+
 	// Held for the whole call. A plain commit racing this call's push (or, once
 	// the rejection path rebases, racing that rebase) either contends on
 	// .git/index.lock or commits onto a detached rebase HEAD — see repoMu.
@@ -164,18 +189,33 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 	if err != nil {
 		return res, fmt.Errorf("check pending task writes: %w", err)
 	}
+	// warn carries everything that must reach the user but must not stop the
+	// push: a task file too broken to commit, and (below) an autostash conflict.
+	var warn error
 	if len(pending) > 0 {
-		if writesInFlight(repoPath, pending, time.Now()) {
+		if writesInFlight(repoPath, pending, start) {
 			return res, fmt.Errorf("%w (%s); the next push commits it, or run 'monolog sync' now",
 				ErrRebaseDeferred, strings.Join(pending, ", "))
 		}
 		// Settled, so nobody is mid-write: this is an orphan, and deferring
 		// again would defer forever. Commit it — it is a task the user created
 		// — and carry it to the remote with everything else.
-		msg := fmt.Sprintf("recover: %d uncommitted task write(s)", len(pending))
-		if err := autoCommit(repoPath, msg, pending...); err != nil {
-			return res, fmt.Errorf("commit orphaned task write (%s): %w",
-				strings.Join(pending, ", "), err)
+		orphans, broken := partitionParsableTasks(repoPath, pending)
+		if len(broken) > 0 {
+			// A file that does not parse must NOT be pushed: store.List fails on
+			// the first unreadable task file rather than skipping it, so one
+			// truncated write (store.writeTask is a plain os.WriteFile, not
+			// atomic) would break `monolog ls`, the TUI and the bot on every
+			// device instead of just this one.
+			warn = fmt.Errorf("not pushing unreadable task file(s) (%s): fix or delete them, then run 'monolog sync'",
+				strings.Join(broken, ", "))
+		}
+		if len(orphans) > 0 {
+			msg := fmt.Sprintf("recover: %d uncommitted task write(s)", len(orphans))
+			if err := autoCommit(repoPath, msg, orphans...); err != nil {
+				return res, errors.Join(warn, fmt.Errorf("commit orphaned task write (%s): %w",
+					strings.Join(orphans, ", "), err))
+			}
 		}
 	}
 
@@ -202,14 +242,13 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 	// this feature removes — over a conflict in a file (config.json in
 	// practice) that has nothing to do with it. So it is carried as a warning
 	// and returned alongside the push result.
-	var warn error
 	switch {
 	case errors.Is(err, ErrAutostashConflict):
-		warn = err
+		warn = errors.Join(warn, err)
 	case err != nil:
 		// The recovery decision is the caller's: the commit is durable locally
 		// and the next push or `monolog sync` retries.
-		return res, err
+		return res, errors.Join(warn, err)
 	}
 
 	// Exactly one retry, no loop. Another client can always race in again, and a
@@ -285,6 +324,14 @@ func porcelainPath(field string) string {
 // written within writeSettleWindow of now, i.e. whether some caller is
 // plausibly still between its store write and its commit.
 //
+// now is AutoPush's entry time, not the wall clock at the call, so a file
+// written after AutoPush began has a mtime in now's future. The window is
+// therefore two-sided, which also covers the mundane skewed-clock sources this
+// repo invites — a second device with a fast clock, an rsync/Dropbox restore,
+// a filesystem that stamps ahead. A one-sided check read those as "written
+// -3h ago, still in flight", i.e. it deferred every rebase until the wall
+// clock caught up: the permanent-deferral bug, reintroduced.
+//
 // A path that no longer exists is a pending deletion. It counts as settled: a
 // deletion carries no content that an autostash pop could fill with conflict
 // markers, which is the whole hazard the deferral guards against.
@@ -294,11 +341,33 @@ func writesInFlight(repoPath string, paths []string, now time.Time) bool {
 		if err != nil {
 			continue
 		}
-		if now.Sub(fi.ModTime()) < writeSettleWindow {
+		if age := now.Sub(fi.ModTime()); age < writeSettleWindow && age > -writeSettleWindow {
 			return true
 		}
 	}
 	return false
+}
+
+// partitionParsableTasks splits settled uncommitted task paths into the ones
+// safe to commit and the ones whose content is not readable as a task.
+//
+// A path that no longer exists is a pending deletion: there is nothing to
+// validate and committing it removes a file, so it is always safe.
+func partitionParsableTasks(repoPath string, paths []string) (ok, broken []string) {
+	for _, p := range paths {
+		data, err := os.ReadFile(filepath.Join(repoPath, p))
+		if err != nil {
+			ok = append(ok, p)
+			continue
+		}
+		var t model.Task
+		if json.Unmarshal(data, &t) != nil {
+			broken = append(broken, p)
+			continue
+		}
+		ok = append(ok, p)
+	}
+	return ok, broken
 }
 
 // isNonFastForward reports whether combined git-push output indicates the push
