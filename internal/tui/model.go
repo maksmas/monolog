@@ -1109,6 +1109,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// rebase, where history was rewritten and remote tasks may have
 		// arrived (same rule as the fsnotify watcher).
 		switch {
+		case msg.err != nil && msg.pushed:
+			// The commit DID reach the remote and something alongside it needs
+			// saying (an autostash conflict over config.json). Calling that
+			// "push failed" would send the user chasing a task that is already
+			// synced.
+			m.statusMsg = fmt.Sprintf("Synced; %v", msg.err)
 		case msg.err != nil:
 			// Non-fatal: the commit is durable locally and the next push or
 			// `s` catches up, so no m.err and no rollback.
@@ -2752,7 +2758,13 @@ var runAutoPush = git.AutoPush
 type autoPushResult struct {
 	rebased  bool
 	resolved int
-	err      error
+	// pushed is true when the commit reached the remote. It can be true
+	// ALONGSIDE a non-nil err: an autostash conflict (git.ErrAutostashConflict)
+	// is a warning about an unrelated file — config.json — that the push runs
+	// through, so reporting it as "push failed" would tell the user their task
+	// is stuck when it is already on the remote.
+	pushed bool
+	err    error
 }
 
 // autoPushCmd pushes the just-committed state to the remote in the background.
@@ -2774,7 +2786,7 @@ func (m *Model) autoPushCmd() tea.Cmd {
 	repoPath := m.repoPath
 	return func() tea.Msg {
 		res, err := runAutoPush(repoPath, git.DefaultPushTimeout)
-		return autoPushResult{rebased: res.Rebased, resolved: res.Resolved, err: err}
+		return autoPushResult{rebased: res.Rebased, resolved: res.Resolved, pushed: res.Pushed, err: err}
 	}
 }
 

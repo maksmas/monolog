@@ -11667,3 +11667,30 @@ func TestQuit_DoesNotPushWhenAutoPushIsDisabled(t *testing.T) {
 		t.Errorf("auto-push calls with auto-push disabled = %d, want 0", rec.count())
 	}
 }
+
+// TestAutoPushResult_WarningAlongsideASuccessfulPushIsNotAFailure covers the
+// autostash-conflict shape: the rebase completed, the retry push landed, and
+// the only thing wrong is an unrelated file (config.json). Flashing
+// "push failed" there tells the user their task is stuck when it is on the
+// remote already.
+func TestAutoPushResult_WarningAlongsideASuccessfulPushIsNotAFailure(t *testing.T) {
+	m := newTestModel(t)
+	m.pushInFlight = true
+
+	next, _ := m.Update(autoPushResult{
+		rebased: true,
+		pushed:  true,
+		err:     errors.New("autostash conflict: kept your uncommitted .monolog/config.json"),
+	})
+	m = next.(*Model)
+
+	if contains(m.statusMsg, "push failed") {
+		t.Errorf("statusMsg = %q, want no 'push failed' label: the push succeeded", m.statusMsg)
+	}
+	if !contains(m.statusMsg, "config.json") {
+		t.Errorf("statusMsg = %q, want the warning itself still surfaced", m.statusMsg)
+	}
+	if m.err != nil {
+		t.Errorf("m.err = %v, want nil — the warning is non-fatal", m.err)
+	}
+}

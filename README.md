@@ -293,7 +293,9 @@ If the repo is left mid-rebase, auto-push refuses to run and every mutation warn
 
 Auto-push is quiet when it works. In the TUI a `↑` at the right of the stats bar means a push is still in flight — useful to glance at before closing the laptop; quitting with an outstanding push waits for it rather than dropping it. A failure flashes `push failed: <err>` on the status bar and leaves the commit exactly where it is; the CLI prints the same warning on stderr after its success line, so an exit code never changes because the network did.
 
-One case is loud on purpose. The rebase fallback stashes uncommitted changes to files outside `.monolog/tasks/` — in practice `config.json`, which the settings modal writes without committing — and if reapplying that stash conflicts (the same setting changed on two devices), the push reports `autostash: local changes to … conflicted with the rebase and were left in the stash`. The working tree is restored to the rebased version and your own copy stays retrievable with `git stash pop`.
+One case is loud on purpose. The rebase fallback stashes uncommitted changes to files outside `.monolog/tasks/` — in practice `config.json`, which the settings modal writes without committing — and if reapplying that stash conflicts (the same setting changed on two devices), the push reports `autostash conflict: kept your uncommitted .monolog/config.json; the incoming version is in HEAD`. Your own version is what stays on disk, so a setting you just changed is never silently reverted under you; the version that came in from the remote is committed and one `git checkout HEAD -- .monolog/config.json` away. The push itself still goes through — the conflict is in a file that has nothing to do with your tasks.
+
+A task file that is written but never committed (a mutation whose commit failed) holds the rebase fallback back for a few seconds, in case some other process is mid-write: the push reports `rebase deferred while a task write is in flight`, naming the file. It is not a dead end — the next push commits that file and carries it to the remote, and `monolog sync` does the same immediately.
 
 ## Themes
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -441,4 +442,25 @@ func TestCLIMutations_NoCommitNoPush(t *testing.T) {
 			t.Errorf("no-op mv should not push, got %d calls", len(*calls))
 		}
 	})
+}
+
+func TestPushAfter_WarningAlongsideASuccessfulPushIsNotAFailure(t *testing.T) {
+	// An autostash conflict comes back as a non-nil error with Pushed: true —
+	// the commit reached the remote and only an unrelated file (config.json)
+	// needs mentioning. Labelling that "push failed" sends the user chasing a
+	// task that is already synced.
+	enableAutoPushConfig(t)
+	stubAutoPushFn(t, git.PushResult{Pushed: true, Rebased: true},
+		fmt.Errorf("%w: kept your uncommitted .monolog/config.json", git.ErrAutostashConflict))
+
+	w := new(bytes.Buffer)
+	pushAfter(w, "/some/repo")
+
+	got := w.String()
+	if strings.Contains(got, "push failed") {
+		t.Errorf("output = %q, want no 'push failed' label: the push succeeded", got)
+	}
+	if !strings.Contains(got, "config.json") {
+		t.Errorf("output = %q, want the warning itself still reported", got)
+	}
 }

@@ -72,7 +72,13 @@ func pushAfter(w io.Writer, repoPath string) {
 	if res.Resolved > 0 {
 		fmt.Fprintf(w, "Synced (auto-resolved %d conflicts)\n", res.Resolved)
 	}
-	if err != nil {
+	switch {
+	case err != nil && res.Pushed:
+		// The commit reached the remote and something alongside it needs saying
+		// (an autostash conflict over config.json). "push failed" would send the
+		// user chasing a task that is already synced.
+		fmt.Fprintf(w, "%v\n", err)
+	case err != nil:
 		fmt.Fprintf(w, "push failed: %v\n", err)
 	}
 }
