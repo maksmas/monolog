@@ -1077,7 +1077,7 @@ func TestAutoPush_FetchFailureIsNotReportedAsARebase(t *testing.T) {
 	}
 }
 
-func TestTasksDirty(t *testing.T) {
+func TestPendingTaskWrites(t *testing.T) {
 	tests := []struct {
 		name  string
 		file  string // path relative to .monolog/tasks/
@@ -1122,12 +1122,19 @@ func TestTasksDirty(t *testing.T) {
 					}
 				}
 			}
-			got, err := tasksDirty(repoPath)
+			got, err := pendingTaskWrites(repoPath)
 			if err != nil {
-				t.Fatalf("tasksDirty: %v", err)
+				t.Fatalf("pendingTaskWrites: %v", err)
 			}
-			if got != tt.want {
-				t.Errorf("tasksDirty() = %v, want %v", got, tt.want)
+			if (len(got) > 0) != tt.want {
+				t.Errorf("pendingTaskWrites() = %v, want pending = %v", got, tt.want)
+			}
+			if tt.want {
+				want := tasksPrefix + tt.file
+				if len(got) != 1 || got[0] != want {
+					t.Errorf("pendingTaskWrites() = %v, want [%s]; the paths are handed "+
+						"straight to `git add`, so they must be usable pathspecs", got, want)
+				}
 			}
 		})
 	}
@@ -1168,5 +1175,131 @@ func TestAutoPush_StrayFileDoesNotDeferTheRebaseForever(t *testing.T) {
 	}
 	if _, err := os.Stat(stray); err != nil {
 		t.Errorf("the stray file should be left alone: %v", err)
+	}
+}
+
+// TestAutoPush_DeferralIsBoundedAndCommitsTheOrphan is the bound on
+// ErrRebaseDeferred. A task file that is uncommitted but NOT being written
+// right now is an orphan — a real task whose commit failed — and deferring on
+// it made auto-push stop working permanently: every later rejection answered
+// with ErrRebaseDeferred, nothing ever reaching the remote again, with nothing
+// telling the user that `monolog sync` clears it.
+func TestAutoPush_DeferralIsBoundedAndCommitsTheOrphan(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+	pushTask(t, b, model.Task{
+		ID: "01ORB", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	commitTask(t, a, model.Task{
+		ID: "01ORA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// A task written by store.Create whose AutoCommit then failed.
+	orphanRel := filepath.Join(".monolog", "tasks", "01ORPHAN.json")
+	orphan := filepath.Join(a, orphanRel)
+	writeTaskJSON(t, orphan, model.Task{
+		ID: "01ORPHAN", Title: "orphaned write", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-12T00:00:00Z",
+	})
+
+	// Freshly written, so it is indistinguishable from a store write whose
+	// commit is still in flight: defer, but say which file and how to recover.
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if !errors.Is(err, ErrRebaseDeferred) {
+		t.Fatalf("AutoPush() error = %v, want ErrRebaseDeferred", err)
+	}
+	if !strings.Contains(err.Error(), orphanRel) {
+		t.Errorf("error = %v, want it to name the offending path %s", err, orphanRel)
+	}
+	if !strings.Contains(err.Error(), "monolog sync") {
+		t.Errorf("error = %v, want it to name the remedy; the user has no other way to "+
+			"discover that a manual sync clears this", err)
+	}
+	if res.Rebased || res.Pushed {
+		t.Errorf("res = %+v, want a pure deferral", res)
+	}
+
+	// Past the settle window nobody is mid-write, so the next push must commit
+	// the orphan rather than defer again — losing a task the user created is
+	// not an option, and deferring forever loses it just as thoroughly.
+	old := time.Now().Add(-writeSettleWindow - time.Minute)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatalf("backdate orphan: %v", err)
+	}
+
+	res, err = AutoPush(a, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v, want the settled orphan committed and pushed", err)
+	}
+	if !res.Rebased || !res.Pushed {
+		t.Errorf("res = %+v, want a rebase followed by a successful push", res)
+	}
+	if status := gitOut(t, a, "status", "--porcelain"); status != "" {
+		t.Errorf("status = %q, want a clean tree: the orphan must be committed", status)
+	}
+	if body := gitOut(t, a, "show", "HEAD:"+orphanRel); !strings.Contains(body, "orphaned write") {
+		t.Errorf("HEAD:%s = %q, want the orphan's content committed", orphanRel, body)
+	}
+	if got, want := bareHead(t, bare), gitOut(t, a, "rev-parse", "HEAD"); got != want {
+		t.Errorf("remote HEAD = %q, want the pushed local HEAD %q", got, want)
+	}
+}
+
+// TestAutoPush_AutostashConflictStillPushes covers the case where the rebase
+// itself succeeded and only reapplying the autostash conflicted. The worktree
+// is clean and the commit is sitting on HEAD at that point, so bailing out
+// before the retry push left the mutation unpushed — the exact staleness this
+// feature exists to remove — over a conflict in a file that has nothing to do
+// with it (config.json, which the settings modal writes without committing).
+func TestAutoPush_AutostashConflictStillPushes(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// B changes the shared config and pushes, putting the remote ahead.
+	cfgRel := dirtyConfig(t, b, "{\n  \"theme\": \"dracula\"\n}\n")
+	gitRun(t, b, "add", cfgRel)
+	gitRun(t, b, "commit", "-m", "settings: dracula")
+	gitRun(t, b, "push")
+
+	// A commits a task (this is what must reach the remote) and has its own
+	// uncommitted settings change, so the autostash pop will conflict.
+	taskRel := commitTask(t, a, model.Task{
+		ID: "01ASC", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	dirtyConfig(t, a, "{\n  \"theme\": \"solarized\"\n}\n")
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err == nil {
+		t.Fatal("AutoPush() error = nil; the autostash conflict must still be reported")
+	}
+	if !errors.Is(err, ErrAutostashConflict) {
+		t.Fatalf("AutoPush() error = %v, want it to wrap ErrAutostashConflict", err)
+	}
+	if !res.Pushed {
+		t.Error("Pushed = false; the rebase completed and the tree was clean, so the retry " +
+			"push must still run — otherwise the task sits local until some later mutation")
+	}
+	if !res.Rebased {
+		t.Error("Rebased = false, want true")
+	}
+	// The task really is on the remote.
+	if got, want := bareHead(t, bare), gitOut(t, a, "rev-parse", "HEAD"); got != want {
+		t.Errorf("remote HEAD = %q, want the pushed local HEAD %q", got, want)
+	}
+	remoteTask := cloneOf(t, bare, "clone-c")
+	if _, sErr := os.Stat(filepath.Join(remoteTask, taskRel)); sErr != nil {
+		t.Errorf("task missing from a fresh clone of the remote: %v", sErr)
+	}
+	// And the user's settings change is still on disk, not silently reverted
+	// under a TUI that already flashed "Settings saved".
+	data, rErr := os.ReadFile(filepath.Join(a, cfgRel))
+	if rErr != nil {
+		t.Fatalf("read config.json: %v", rErr)
+	}
+	if !strings.Contains(string(data), "solarized") {
+		t.Errorf("config.json = %s, want the user's uncommitted setting kept", data)
 	}
 }

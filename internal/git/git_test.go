@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1404,8 +1405,12 @@ func TestPullRebaseResolving_AutostashConflictIsNotSilentSuccess(t *testing.T) {
 	if err == nil {
 		t.Fatal("pullRebaseResolving() error = nil; a conflicting autostash pop must not report success")
 	}
-	if !strings.Contains(err.Error(), "stash") {
-		t.Errorf("error should tell the user where their changes went; got %v", err)
+	if !errors.Is(err, ErrAutostashConflict) {
+		t.Errorf("error = %v, want it to wrap ErrAutostashConflict so AutoPush can tell it "+
+			"apart from a failed rebase and still retry its push", err)
+	}
+	if !strings.Contains(err.Error(), cfgRel) {
+		t.Errorf("error should name the affected file; got %v", err)
 	}
 	if !res.Started {
 		t.Error("Started = false, want true: the rebase itself ran")
@@ -1427,7 +1432,24 @@ func TestPullRebaseResolving_AutostashConflictIsNotSilentSuccess(t *testing.T) {
 		t.Errorf("config.json still holds conflict markers:\n%s", data)
 	}
 
-	// The user's own version is recoverable — git kept it as a stash entry.
+	// The user's own uncommitted version is what stays on disk. Restoring HEAD
+	// over it silently reverted a setting the running TUI still showed as saved
+	// and had already confirmed; the incoming version is not lost by keeping
+	// the local one, it is committed in HEAD.
+	if !strings.Contains(string(data), "nord") {
+		t.Errorf("config.json = %s, want the user's uncommitted \"nord\" kept", data)
+	}
+	if head := gitOut(t, a, "show", "HEAD:"+cfgRel); !strings.Contains(head, "dracula") {
+		t.Errorf("HEAD config.json = %s, want the incoming \"dracula\" version still recoverable", head)
+	}
+	// The file is left as an ordinary unstaged modification — exactly the state
+	// it was in before the rebase, so the next commit is unaffected by it.
+	if status := gitOut(t, a, "status", "--porcelain", "--", cfgRel); status != "M "+cfgRel &&
+		status != " M "+cfgRel {
+		t.Errorf("status = %q, want an unstaged modification of %s", status, cfgRel)
+	}
+
+	// The stash entry git created is left in place as a backup.
 	if stash := gitOut(t, a, "stash", "list"); stash == "" {
 		t.Error("git stash list is empty; the stashed local change was lost")
 	}
@@ -1492,5 +1514,59 @@ func TestSyncUnattended_PullsAndPushesLikeSync(t *testing.T) {
 	}
 	if !strings.Contains(gitOut(t, bare, "log", "--oneline"), "sync") {
 		t.Error("A's sync commit never reached the remote")
+	}
+}
+
+// TestAutoCommit_UnstagesAfterAFailedCommit covers the cross-process window
+// that repoMu cannot close. While one monolog process sits on a conflicted
+// rebase, another's `git add` still succeeds but its `git commit` fails with
+// "Committing is not possible because you have unmerged files" — and the first
+// process's `git rebase --abort` then resets the index and worktree, deleting
+// the staged-but-uncommitted task file outright, with no warning anywhere.
+//
+// Unstaging on the failed commit leaves the write as an untracked file, which
+// an abort does not touch; the next auto-push commits it (pendingTaskWrites).
+func TestAutoCommit_UnstagesAfterAFailedCommit(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// Both clones add the same task file with different content, so A's pull
+	// stops mid-rebase on an add/add conflict.
+	taskPath := pushTask(t, b, model.Task{
+		ID: "01CONF", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	writeTaskJSON(t, filepath.Join(a, taskPath), model.Task{
+		ID: "01CONF", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, a, "add", taskPath)
+	gitRun(t, a, "commit", "-m", "A edit")
+	// Expected to fail: it leaves the repo mid-rebase, which is the fixture.
+	_ = exec.Command("git", "-C", a, "pull", "--rebase").Run()
+	if rebasing, err := IsRebasing(a); err != nil || !rebasing {
+		t.Fatalf("IsRebasing() = %v, %v; fixture should have left the repo mid-rebase", rebasing, err)
+	}
+
+	// A concurrent capture writes a brand-new task and commits it.
+	newRel := filepath.Join(".monolog", "tasks", "01DURING.json")
+	writeTaskJSON(t, filepath.Join(a, newRel), model.Task{
+		ID: "01DURING", Title: "concurrent capture", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-12T00:00:00Z",
+	})
+	if err := AutoCommit(a, "add: concurrent capture", newRel); err == nil {
+		t.Fatal("AutoCommit() error = nil; a commit cannot succeed with unmerged index entries")
+	}
+	if status := gitOut(t, a, "status", "--porcelain", "--", newRel); status != "?? "+newRel {
+		t.Errorf("status = %q, want %q: a failed commit must leave nothing staged, or the "+
+			"other process's rebase --abort discards the write", status, "?? "+newRel)
+	}
+
+	// The other process gives up on its rebase.
+	if err := RebaseAbort(a); err != nil {
+		t.Fatalf("RebaseAbort: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(a, newRel)); err != nil {
+		t.Errorf("the concurrent write was destroyed by rebase --abort: %v", err)
 	}
 }

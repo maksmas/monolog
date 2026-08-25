@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,8 +55,26 @@ var nonFastForwardMarkers = []string{
 }
 
 // ErrRebaseDeferred is returned when a push was rejected as non-fast-forward
-// but a task file is uncommitted, so the rebase is postponed to the next push.
-var ErrRebaseDeferred = errors.New("push rejected; rebase deferred while a task write is uncommitted")
+// while a task write is still in flight, so the rebase is postponed to the next
+// push. The wrapping error names the paths and the remedy.
+//
+// The deferral is bounded by writeSettleWindow and can never become permanent:
+// a task file still uncommitted after that window is an orphan, not an in-flight
+// write, and AutoPush commits it instead of deferring again.
+var ErrRebaseDeferred = errors.New("push rejected; rebase deferred while a task write is in flight")
+
+// writeSettleWindow is how long an uncommitted task file is treated as a write
+// still in flight — the gap between a caller's store.Create/Update and its
+// AutoCommitSHA, which is milliseconds even across processes.
+//
+// Past it, the file is an orphan: a real task whose commit failed (every TUI
+// mutation site returns `taskSavedMsg{err: "commit: …"}` after the store write
+// has already landed) or a hand-dropped file. Deferring on those forever meant
+// auto-push silently stopped working for good the first time one appeared —
+// the exact bug this feature exists to fix, reinstated with no way for the user
+// to discover it. Committing an orphan is the safe direction: it is a task the
+// user created, and losing it is not acceptable.
+const writeSettleWindow = 5 * time.Second
 
 // AutoPush pushes the current branch to its upstream, treating every failure as
 // non-fatal information for the caller: the mutation that produced the commit
@@ -139,12 +160,23 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 	// conflicting pop writes conflict markers into the JSON, which the pending
 	// `git add` then commits. A rebase deferred to the next push costs a cycle
 	// of staleness; a task file full of conflict markers costs user data.
-	dirty, err := tasksDirty(repoPath)
+	pending, err := pendingTaskWrites(repoPath)
 	if err != nil {
 		return res, fmt.Errorf("check pending task writes: %w", err)
 	}
-	if dirty {
-		return res, ErrRebaseDeferred
+	if len(pending) > 0 {
+		if writesInFlight(repoPath, pending, time.Now()) {
+			return res, fmt.Errorf("%w (%s); the next push commits it, or run 'monolog sync' now",
+				ErrRebaseDeferred, strings.Join(pending, ", "))
+		}
+		// Settled, so nobody is mid-write: this is an orphan, and deferring
+		// again would defer forever. Commit it — it is a task the user created
+		// — and carry it to the remote with everything else.
+		msg := fmt.Sprintf("recover: %d uncommitted task write(s)", len(pending))
+		if err := autoCommit(repoPath, msg, pending...); err != nil {
+			return res, fmt.Errorf("commit orphaned task write (%s): %w",
+				strings.Join(pending, ", "), err)
+		}
 	}
 
 	// Autostash: AutoPush deliberately does not commit unrelated files, and the
@@ -163,7 +195,18 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 	// history on every single mutation.
 	res.Rebased = reb.Started
 	res.Resolved = reb.Resolved
-	if err != nil {
+	// An autostash conflict is NOT a failed rebase: the rebase completed, the
+	// worktree is clean and the commit this call exists to ship is sitting on
+	// HEAD, ready to push. Returning there instead would leave the mutation
+	// unpushed until some later mutation happened to retry — the very staleness
+	// this feature removes — over a conflict in a file (config.json in
+	// practice) that has nothing to do with it. So it is carried as a warning
+	// and returned alongside the push result.
+	var warn error
+	switch {
+	case errors.Is(err, ErrAutostashConflict):
+		warn = err
+	case err != nil:
 		// The recovery decision is the caller's: the commit is durable locally
 		// and the next push or `monolog sync` retries.
 		return res, err
@@ -173,10 +216,10 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 	// push triggered by every mutation must not turn into an unbounded contest
 	// with the remote; the next mutation's push picks up where this one stopped.
 	if _, err := pushWithTimeout(repoPath, timeout, pushArgs...); err != nil {
-		return res, fmt.Errorf("push after rebase: %w", err)
+		return res, errors.Join(warn, fmt.Errorf("push after rebase: %w", err))
 	}
 	res.Pushed = true
-	return res, nil
+	return res, warn
 }
 
 // pushWithTimeout runs a single `git push`, bounded by timeout and with
@@ -188,42 +231,74 @@ func pushWithTimeout(repoPath string, timeout time.Duration, args ...string) (st
 	return runOut(ctx, repoPath, noPromptEnv, "git", args...)
 }
 
-// tasksDirty reports whether any task JSON file has uncommitted changes.
+// pendingTaskWrites returns the repo-relative paths of task JSON files with
+// uncommitted changes.
 //
 // Untracked entries that are not *.json are ignored on purpose. `git status
 // --porcelain` lists them (nothing in monolog's .gitignore excludes them), so a
 // single `.DS_Store` dropped in .monolog/tasks/ by a Finder visit — or an
-// editor swap file — would otherwise make this true forever, and AutoPush would
-// answer every non-fast-forward rejection with ErrRebaseDeferred for good: the
-// user's tasks would stop reaching the remote until they noticed and ran
-// `monolog sync` by hand. An untracked *.json IS still dirty, because a
+// editor swap file — would otherwise make this non-empty forever, and AutoPush
+// would answer every non-fast-forward rejection with ErrRebaseDeferred for
+// good: the user's tasks would stop reaching the remote until they noticed and
+// ran `monolog sync` by hand. An untracked *.json IS pending, because a
 // concurrent store.Create between its write and its commit looks exactly like
-// that, and that is the write this guard exists to protect.
-func tasksDirty(repoPath string) (bool, error) {
+// that, and that is the write the deferral exists to protect.
+func pendingTaskWrites(repoPath string) ([]string, error) {
 	out, err := runOut(context.Background(), repoPath, nil,
 		"git", "status", "--porcelain", "--", tasksPrefix)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	var paths []string
 	for _, line := range strings.Split(out, "\n") {
 		// Porcelain v1 format: two status characters, a space, then the path.
 		if len(line) < 4 {
 			continue
 		}
-		if line[:2] == "??" && !isTaskFile(line[3:]) {
+		path := porcelainPath(line[3:])
+		if line[:2] == "??" && !strings.HasSuffix(path, ".json") {
 			continue
 		}
-		return true, nil
+		paths = append(paths, path)
 	}
-	return false, nil
+	return paths, nil
 }
 
-// isTaskFile reports whether a porcelain path names a task JSON file. git
-// C-quotes paths containing unusual bytes, so the surrounding quotes are
-// trimmed before the suffix test — a ULID filename never needs quoting, but
-// mistaking a quoted `"…/x.json"` for a stray file would skip the guard.
-func isTaskFile(path string) bool {
-	return strings.HasSuffix(strings.TrimSuffix(strings.TrimSpace(path), `"`), ".json")
+// porcelainPath extracts the usable path from the path field of a
+// `git status --porcelain` line: the destination half of a rename, unquoted if
+// git C-quoted it. A ULID filename never needs quoting, but a stray file that
+// did would otherwise be passed to `git add` with its quotes still attached.
+func porcelainPath(field string) string {
+	field = strings.TrimSpace(field)
+	if i := strings.Index(field, " -> "); i >= 0 {
+		field = field[i+len(" -> "):]
+	}
+	if strings.HasPrefix(field, `"`) {
+		if unquoted, err := strconv.Unquote(field); err == nil {
+			return unquoted
+		}
+	}
+	return field
+}
+
+// writesInFlight reports whether any of the given uncommitted task files was
+// written within writeSettleWindow of now, i.e. whether some caller is
+// plausibly still between its store write and its commit.
+//
+// A path that no longer exists is a pending deletion. It counts as settled: a
+// deletion carries no content that an autostash pop could fill with conflict
+// markers, which is the whole hazard the deferral guards against.
+func writesInFlight(repoPath string, paths []string, now time.Time) bool {
+	for _, p := range paths {
+		fi, err := os.Stat(filepath.Join(repoPath, p))
+		if err != nil {
+			continue
+		}
+		if now.Sub(fi.ModTime()) < writeSettleWindow {
+			return true
+		}
+	}
+	return false
 }
 
 // isNonFastForward reports whether combined git-push output indicates the push

@@ -51,13 +51,20 @@ const tasksPrefix = ".monolog/tasks/"
 // Every in-process caller that shares this mutex with a background push (the
 // TUI, the Telegram bot) uses SyncUnattended, which is bounded.
 //
-// The lock is per-process only. A second monolog process (a Raycast capture, a
+// The lock is per-process only, and the cross-process failure mode is DATA
+// LOSS, not just a warning. A second monolog process (a Raycast capture, a
 // `monolog add` in another terminal, the Claude skill) can now run
 // `pull --rebase --autostash` of its own, which moves HEAD and rewrites the
 // worktree while this process is mid-commit — .git/index.lock guards the index,
-// not the rebase sequence, so a concurrent commit can land on a rewritten HEAD
-// or have its autostash restored under it. Cross-process serialization is out
-// of scope; callers surface whatever git reports as a warning.
+// not the rebase sequence. Concretely: while one process sits on a conflicted
+// rebase, another's `git add` still succeeds but its `git commit` fails with
+// "Committing is not possible because you have unmerged files", and the first
+// process's `git rebase --abort` then resets the index and worktree, deleting
+// that staged file with no warning anywhere. autoCommit unstages on a failed
+// commit for exactly this reason, which saves a NEW task file (it survives the
+// abort as untracked) but not an uncommitted modification to a tracked one —
+// abort hard-resets tracked paths. Cross-process serialization is out of scope
+// for this design; that residual window is the known cost.
 //
 // Exported entry points that take this lock must never call another locking
 // exported function — Go's sync.Mutex is not reentrant. Shared work therefore
@@ -163,6 +170,21 @@ func autoCommit(repoPath string, message string, files ...string) error {
 		}
 	}
 	if err := run(repoPath, "git", "commit", "-m", message); err != nil {
+		// Unstage what this call staged. A commit fails outright while another
+		// monolog process holds the repo mid-rebase ("Committing is not
+		// possible because you have unmerged files"), and that process then
+		// runs `git rebase --abort`, which resets the index and the worktree:
+		// a staged-but-uncommitted new task file is deleted outright, silently.
+		// Unstaged, the same file survives the abort as an untracked write that
+		// the next auto-push commits (see pendingTaskWrites). Best-effort — a
+		// failure here leaves exactly the state that existed before.
+		//
+		// This only saves NEW files. An uncommitted modification to a tracked
+		// task file is still in the worktree, and `rebase --abort` hard-resets
+		// tracked paths; nothing short of cross-process locking covers that.
+		for _, f := range files {
+			_ = run(repoPath, "git", "reset", "-q", "--", f)
+		}
 		return fmt.Errorf("git commit: %w", err)
 	}
 	return nil
@@ -745,6 +767,12 @@ func pullRebaseResolving(ctx context.Context, repoPath string, autostash bool, e
 	return res, nil
 }
 
+// ErrAutostashConflict reports that the rebase itself completed but reapplying
+// the autostash conflicted. It is a warning about files OUTSIDE the task set —
+// the worktree is clean and usable afterwards — so callers must keep going
+// rather than treating it as a failed rebase (AutoPush still retries its push).
+var ErrAutostashConflict = errors.New("autostash conflict")
+
 // recoverAutostash cleans up after a conflicting autostash pop.
 //
 // `git rebase --autostash` exits ZERO when the rebase itself succeeded but
@@ -757,12 +785,24 @@ func pullRebaseResolving(ctx context.Context, repoPath string, autostash bool, e
 // conflict-marker text and pushes it to every device.
 //
 // So the unmerged paths are checked directly rather than trusting the exit
-// status. Recovery restores each one to HEAD, which is the version the rebase
-// just produced — the local modification is not lost, git kept it as a real
-// stash entry, which the returned error names so the user can `git stash pop`
-// it deliberately. Task files cannot reach here (AutoPush declines to rebase at
-// all while one is uncommitted, see tasksDirty); in practice this is
-// .monolog/config.json, changed on two devices.
+// status. Recovery puts each path back exactly where it stood before the
+// rebase: stage 3 (the stashed copy — the user's own uncommitted change) is
+// written to the worktree and `git reset -- <path>` returns the index entry to
+// HEAD, leaving an ordinary unstaged modification.
+//
+// It deliberately does NOT restore HEAD over the worktree. In practice the only
+// file that reaches here is .monolog/config.json — the settings modal writes it
+// without committing (see applySettings) — and discarding it silently reverted
+// a setting the running TUI still believed was in effect and had already
+// confirmed as saved. The incoming version is not lost by keeping the local
+// one: it is the committed HEAD version, one `git checkout HEAD -- <path>`
+// away, which the returned error names. Task files cannot reach here at all
+// (AutoPush commits or defers a pending task write before rebasing, see
+// pendingTaskWrites).
+//
+// The autostash stash entry git left behind is deliberately not dropped: it is
+// now redundant (its content is back in the worktree) but it is also the only
+// backup if any of this went wrong, and a stale stash entry costs nothing.
 func recoverAutostash(repoPath string) error {
 	paths, err := unmergedPaths(repoPath)
 	if err != nil {
@@ -772,13 +812,29 @@ func recoverAutostash(repoPath string) error {
 		return nil
 	}
 	for _, p := range paths {
-		// `checkout HEAD -- <path>` resets index AND worktree for that path,
-		// which is what clears the unmerged entry; `checkout --ours` would
-		// leave the index unmerged and the repo just as wedged.
-		if cErr := run(repoPath, "git", "checkout", "HEAD", "--", p); cErr != nil {
-			return fmt.Errorf("autostash: reapplying stashed changes to %s conflicted and could not be undone: %w", p, cErr)
+		// Read the stashed side before touching the index: `git reset` drops
+		// the conflict stages, and with them the only copy of it in this repo
+		// outside the stash.
+		local, showErr := gitShow(repoPath, ":3:"+p)
+		if showErr != nil {
+			// No stashed side (the stash deleted the file, or an exotic
+			// conflict shape): fall back to the rebased version, which at least
+			// leaves the repo committable.
+			if cErr := run(repoPath, "git", "checkout", "HEAD", "--", p); cErr != nil {
+				return fmt.Errorf("autostash: reapplying stashed changes to %s conflicted and could not be undone: %w", p, cErr)
+			}
+			continue
+		}
+		// `reset -- <path>` rewrites the index entry from HEAD, which is what
+		// clears the unmerged stages; it leaves the worktree alone, so the
+		// conflict markers are overwritten separately.
+		if rErr := run(repoPath, "git", "reset", "-q", "--", p); rErr != nil {
+			return fmt.Errorf("autostash: reapplying stashed changes to %s conflicted and could not be undone: %w", p, rErr)
+		}
+		if wErr := os.WriteFile(filepath.Join(repoPath, p), local, 0o644); wErr != nil {
+			return fmt.Errorf("autostash: restoring your version of %s failed: %w", p, wErr)
 		}
 	}
-	return fmt.Errorf("autostash: local changes to %s conflicted with the rebase and were left in the stash; recover them with `git stash pop`",
-		strings.Join(paths, ", "))
+	return fmt.Errorf("%w: kept your uncommitted %s; the incoming version is in HEAD (git checkout HEAD -- %s to take it)",
+		ErrAutostashConflict, strings.Join(paths, ", "), paths[0])
 }
