@@ -825,9 +825,12 @@ var ErrAutostashConflict = errors.New("autostash conflict")
 // (AutoPush commits or defers a pending task write before rebasing, see
 // pendingTaskWrites).
 //
-// The autostash stash entry git left behind is deliberately not dropped: it is
-// now redundant (its content is back in the worktree) but it is also the only
-// backup if any of this went wrong, and a stale stash entry costs nothing.
+// The autostash stash entry git left behind is deliberately not dropped. For a
+// path restored from stage 3 it is merely a backup of what is already back in
+// the worktree; for a path with no stage 3 (a delete/modify conflict, where the
+// only way to leave the repo committable is to take HEAD and lose the local
+// change) it is the ONLY remaining copy. The returned error names it either
+// way, and a stale stash entry costs nothing.
 func recoverAutostash(repoPath string) error {
 	paths, err := unmergedPaths(repoPath)
 	if err != nil {
@@ -836,18 +839,27 @@ func recoverAutostash(repoPath string) error {
 	if len(paths) == 0 {
 		return nil
 	}
+	// Split by what actually happened to each path, because the two outcomes
+	// need opposite advice: a kept path is on disk and the INCOMING version is
+	// the one to fetch back, a dropped path is the reverse and its only
+	// remaining copy is the stash entry.
+	var kept, dropped []string
 	for _, p := range paths {
 		// Read the stashed side before touching the index: `git reset` drops
 		// the conflict stages, and with them the only copy of it in this repo
 		// outside the stash.
 		local, showErr := gitShow(repoPath, ":3:"+p)
 		if showErr != nil {
-			// No stashed side (the stash deleted the file, or an exotic
-			// conflict shape): fall back to the rebased version, which at least
-			// leaves the repo committable.
+			// No stage 3 at all. A delete/modify conflict is the realistic
+			// shape: the stash deleted the file, so there is no stashed content
+			// to put back and `checkout HEAD` is the only way to leave the repo
+			// committable. That DISCARDS the local change, which the message
+			// below has to say out loud — the stash git left behind is then the
+			// only copy of it.
 			if cErr := run(repoPath, "git", "checkout", "HEAD", "--", p); cErr != nil {
 				return fmt.Errorf("autostash: reapplying stashed changes to %s conflicted and could not be undone: %w", p, cErr)
 			}
+			dropped = append(dropped, p)
 			continue
 		}
 		// `reset -- <path>` rewrites the index entry from HEAD, which is what
@@ -859,7 +871,19 @@ func recoverAutostash(repoPath string) error {
 		if wErr := os.WriteFile(filepath.Join(repoPath, p), local, 0o644); wErr != nil {
 			return fmt.Errorf("autostash: restoring your version of %s failed: %w", p, wErr)
 		}
+		kept = append(kept, p)
 	}
-	return fmt.Errorf("%w: kept your uncommitted %s; the incoming version is in HEAD (git checkout HEAD -- %s to take it)",
-		ErrAutostashConflict, strings.Join(paths, ", "), paths[0])
+	var parts []string
+	if len(kept) > 0 {
+		parts = append(parts, fmt.Sprintf("kept your uncommitted %s; the incoming version is in HEAD (git checkout HEAD -- %s to take it)",
+			strings.Join(kept, ", "), kept[0]))
+	}
+	if len(dropped) > 0 {
+		parts = append(parts, fmt.Sprintf("could NOT keep your local change to %s; the file is back at the incoming version",
+			strings.Join(dropped, ", ")))
+	}
+	// The stash pointer goes on every path: it is the pre-rebase copy of
+	// everything above, and for a dropped path it is the only one left.
+	parts = append(parts, "your pre-rebase copy is in the autostash (git stash list, git stash show -p stash@{0})")
+	return fmt.Errorf("%w: %s", ErrAutostashConflict, strings.Join(parts, "; "))
 }

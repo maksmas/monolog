@@ -1614,6 +1614,61 @@ func TestAutoCommit_UnstagesAfterAFailedCommit(t *testing.T) {
 	}
 }
 
+// TestRecoverAutostash_DeleteModifyReportsTheDiscardAndTheStash covers the
+// autostash conflict shape that has no stage 3: the stash deleted the file
+// (the user removed config.json locally without committing) while the incoming
+// commit modified it. There is nothing stashed to write back, so recovery has
+// to take HEAD — which throws the local change away. Reporting that as "kept
+// your uncommitted <file>" sent the user looking for a change that is no longer
+// on disk, and the message did not mention the stash that still holds it.
+func TestRecoverAutostash_DeleteModifyReportsTheDiscardAndTheStash(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// B modifies the shared config file and pushes it.
+	cfgRel := dirtyConfig(t, b, "{\n  \"theme\": \"dracula\"\n}\n")
+	gitRun(t, b, "add", cfgRel)
+	gitRun(t, b, "commit", "-m", "B theme")
+	gitRun(t, b, "push")
+
+	// A deleted the same file locally without committing, so the autostash pop
+	// is a delete/modify conflict.
+	if err := os.Remove(filepath.Join(a, cfgRel)); err != nil {
+		t.Fatalf("remove config: %v", err)
+	}
+
+	_, err := pullRebaseResolving(context.Background(), a, true, nil, upstreamRef{})
+	if err == nil {
+		t.Fatal("pullRebaseResolving() error = nil; a conflicting autostash pop must not report success")
+	}
+	if !errors.Is(err, ErrAutostashConflict) {
+		t.Fatalf("error = %v, want it to wrap ErrAutostashConflict", err)
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "kept your uncommitted") {
+		t.Errorf("error = %v; the local change was NOT kept on this path, so the message must not claim it was", err)
+	}
+	if !strings.Contains(msg, "stash") {
+		t.Errorf("error = %v; the stash is the only remaining copy of the discarded change "+
+			"and must be named", err)
+	}
+	if !strings.Contains(msg, cfgRel) {
+		t.Errorf("error = %v, want it to name %s", err, cfgRel)
+	}
+
+	// The repo must be left usable, and the stash must still hold the change.
+	paths, uErr := unmergedPaths(a)
+	if uErr != nil {
+		t.Fatalf("unmergedPaths: %v", uErr)
+	}
+	if len(paths) != 0 {
+		t.Errorf("unmerged paths = %v, want none", paths)
+	}
+	if list := gitOut(t, a, "stash", "list"); !strings.Contains(list, "autostash") {
+		t.Errorf("stash list = %q, want the autostash entry kept as the last copy of the change", list)
+	}
+}
+
 // TestPullRebaseResolving_ResolvesConflictsAcrossTwoCommits reproduces the
 // ordinary two-device conflict where each device made TWO commits touching the
 // same two tasks. The rebase stops once per local commit, so a single
