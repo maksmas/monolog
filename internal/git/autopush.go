@@ -193,7 +193,7 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 	// push: a task file too broken to commit, and (below) an autostash conflict.
 	var warn error
 	if len(pending) > 0 {
-		if writesInFlight(repoPath, pending, start) {
+		if writesInFlight(repoPath, pending, start, time.Now()) {
 			return res, fmt.Errorf("%w (%s); the next push commits it, or run 'monolog sync' now",
 				ErrRebaseDeferred, strings.Join(pending, ", "))
 		}
@@ -320,28 +320,38 @@ func porcelainPath(field string) string {
 	return field
 }
 
-// writesInFlight reports whether any of the given uncommitted task files was
-// written within writeSettleWindow of now, i.e. whether some caller is
-// plausibly still between its store write and its commit.
+// writesInFlight reports whether any of the given uncommitted task files may
+// still belong to a caller sitting between its store write and its commit.
 //
-// now is AutoPush's entry time, not the wall clock at the call, so a file
-// written after AutoPush began has a mtime in now's future. The window is
-// therefore two-sided, which also covers the mundane skewed-clock sources this
-// repo invites — a second device with a fast clock, an rsync/Dropbox restore,
-// a filesystem that stamps ahead. A one-sided check read those as "written
-// -3h ago, still in flight", i.e. it deferred every rebase until the wall
-// clock caught up: the permanent-deferral bug, reintroduced.
+// The window is closed at both ends, and the two ends are anchored at
+// different moments on purpose:
+//
+//   - since is AutoPush's ENTRY time, so a file written less than
+//     writeSettleWindow before AutoPush even started counts as in flight.
+//     Anchoring this end at the check instead ages every pending write by the
+//     push AutoPush just ran while holding repoMu — which is exactly the time
+//     the writer spent blocked in AutoCommitSHA on that same mutex, so the
+//     writes AutoPush itself delayed would be the first to look settled.
+//   - until is the wall clock AT the check, so everything written while
+//     AutoPush held the lock counts as in flight however long the lock was
+//     held, and the extra window past it only absorbs clock skew — a second
+//     device running fast, an rsync/Dropbox restore, a filesystem that stamps
+//     ahead. Leaving this end open instead would let one future-stamped file
+//     defer every rebase until the wall clock caught up, which is the
+//     permanent-deferral bug this whole feature exists to remove.
 //
 // A path that no longer exists is a pending deletion. It counts as settled: a
 // deletion carries no content that an autostash pop could fill with conflict
 // markers, which is the whole hazard the deferral guards against.
-func writesInFlight(repoPath string, paths []string, now time.Time) bool {
+func writesInFlight(repoPath string, paths []string, since, until time.Time) bool {
+	earliest := since.Add(-writeSettleWindow)
+	latest := until.Add(writeSettleWindow)
 	for _, p := range paths {
 		fi, err := os.Stat(filepath.Join(repoPath, p))
 		if err != nil {
 			continue
 		}
-		if age := now.Sub(fi.ModTime()); age < writeSettleWindow && age > -writeSettleWindow {
+		if m := fi.ModTime(); m.After(earliest) && m.Before(latest) {
 			return true
 		}
 	}

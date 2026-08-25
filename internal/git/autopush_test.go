@@ -1323,40 +1323,60 @@ func TestWriteSettleWindowOutlastsAPush(t *testing.T) {
 	}
 }
 
-// TestWritesInFlight_WindowIsTwoSided covers a mtime in the future of the
-// reference time. That is the normal shape once AutoPush measures from its own
-// entry (a write that lands mid-push is newer than the start), and it is also
-// what a skewed clock produces — a multi-device tool invites both. A one-sided
-// `now.Sub(mtime) < window` reads the resulting negative age as "in flight",
-// which deferred every rebase until the wall clock caught up.
-func TestWritesInFlight_WindowIsTwoSided(t *testing.T) {
+// TestWritesInFlight_WindowIsClosedAtBothEnds pins the two anchors of the
+// in-flight window: the start of AutoPush at the early end (so a write AutoPush
+// is itself blocking is never aged by AutoPush's own network I/O) and the
+// moment of the check at the late end (so a write that landed during the lock
+// hold counts, while a badly skewed mtime still expires instead of deferring
+// the rebase forever).
+func TestWritesInFlight_WindowIsClosedAtBothEnds(t *testing.T) {
 	dir := t.TempDir()
 	rel := filepath.Join(".monolog", "tasks", "01SKEW.json")
 	writeTaskJSON(t, filepath.Join(dir, rel), model.Task{
 		ID: "01SKEW", Title: "skewed", Status: "open", Schedule: "today",
 		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-12T00:00:00Z",
 	})
+	now := time.Now()
 
 	tests := []struct {
-		name  string
-		mtime time.Time
-		want  bool
+		name         string
+		mtime        time.Time
+		since, until time.Time
+		want         bool
 	}{
-		{"just written", time.Now(), true},
-		{"written after the reference time", time.Now().Add(writeSettleWindow / 2), true},
-		{"settled", time.Now().Add(-writeSettleWindow - time.Minute), false},
-		// A badly skewed clock (an rsync/Dropbox restore, a second device
-		// running fast) must NOT read as in flight forever: past the window on
-		// either side the file is an orphan and gets committed, which is the
-		// whole point of bounding the deferral.
-		{"far future, beyond the window", time.Now().Add(2*writeSettleWindow + time.Minute), false},
+		{"just written", now, now, now, true},
+		{
+			// A write that landed while AutoPush was already running: newer
+			// than `since`, so its age against that anchor is negative.
+			name:  "written after AutoPush started",
+			mtime: now.Add(writeSettleWindow / 2), since: now, until: now.Add(writeSettleWindow / 2),
+			want: true,
+		},
+		{
+			// The lock was held far longer than the window (a slow push, or a
+			// sync ahead of it in the queue). Everything written up to the
+			// check is still someone's in-flight write.
+			name:  "written during a lock hold longer than the window",
+			mtime: now.Add(-time.Second), since: now.Add(-5 * writeSettleWindow), until: now,
+			want: true,
+		},
+		{"settled", now.Add(-writeSettleWindow - time.Minute), now, now, false},
+		{
+			// A badly skewed clock (an rsync/Dropbox restore, a device running
+			// fast) must NOT read as in flight forever: past the window the
+			// file is an orphan and gets committed, which is the whole point of
+			// bounding the deferral.
+			name:  "far future, beyond the window",
+			mtime: now.Add(2*writeSettleWindow + time.Minute), since: now, until: now,
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := os.Chtimes(filepath.Join(dir, rel), tt.mtime, tt.mtime); err != nil {
 				t.Fatalf("chtimes: %v", err)
 			}
-			if got := writesInFlight(dir, []string{rel}, time.Now()); got != tt.want {
+			if got := writesInFlight(dir, []string{rel}, tt.since, tt.until); got != tt.want {
 				t.Errorf("writesInFlight() = %v, want %v", got, tt.want)
 			}
 		})
