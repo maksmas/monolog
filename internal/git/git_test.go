@@ -1094,6 +1094,49 @@ func TestPullRebaseResolving_AutoResolvesConflict(t *testing.T) {
 	}
 }
 
+// TestPullRebaseResolving_RemoteSideWinsConflict covers the mirror image of
+// TestPullRebaseResolving_AutoResolvesConflict: the INCOMING version has the
+// later UpdatedAt, so ResolveConflicts keeps it and the local commit being
+// replayed becomes empty. `git rebase --continue` refuses an empty commit
+// ("No changes - did you forget to use 'git add'?"), so the replay has to be
+// skipped instead of continued.
+func TestPullRebaseResolving_RemoteSideWinsConflict(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	b := cloneOf(t, bare, "clone-b")
+
+	// B pushes the task with a LATER UpdatedAt, so B wins the auto-resolution.
+	taskPath := pushTask(t, b, model.Task{
+		ID: "01RW", Title: "from B", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	absA := filepath.Join(a, taskPath)
+	writeTaskJSON(t, absA, model.Task{
+		ID: "01RW", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-11T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	gitRun(t, a, "add", taskPath)
+	gitRun(t, a, "commit", "-m", "A edit")
+
+	res, err := pullRebaseResolving(context.Background(), a, false, nil, upstreamRef{})
+	if err != nil {
+		t.Fatalf("pullRebaseResolving() error = %v", err)
+	}
+	if res.Resolved != 1 {
+		t.Errorf("resolved = %d, want 1", res.Resolved)
+	}
+	rebasing, err := IsRebasing(a)
+	if err != nil {
+		t.Fatalf("IsRebasing: %v", err)
+	}
+	if rebasing {
+		t.Error("repo is still mid-rebase after a resolved conflict")
+	}
+	if got := readTaskJSON(t, absA); got.Title != "from B" {
+		t.Errorf("later UpdatedAt should win; got Title = %q", got.Title)
+	}
+}
+
 func TestPullRebaseResolving_AutostashPreservesDirtyFile(t *testing.T) {
 	bare, a := setupRemoteFixture(t)
 	b := cloneOf(t, bare, "clone-b")
@@ -1568,5 +1611,66 @@ func TestAutoCommit_UnstagesAfterAFailedCommit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(a, newRel)); err != nil {
 		t.Errorf("the concurrent write was destroyed by rebase --abort: %v", err)
+	}
+}
+
+// TestPullRebaseResolving_ResolvesConflictsAcrossTwoCommits reproduces the
+// ordinary two-device conflict where each device made TWO commits touching the
+// same two tasks. The rebase stops once per local commit, so a single
+// resolve/--continue pair leaves the second stop unhandled and the whole rebase
+// is aborted — which made every subsequent auto-push AND `monolog sync` fail
+// forever with the identical error.
+func TestPullRebaseResolving_ResolvesConflictsAcrossTwoCommits(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+
+	// Both tasks exist on the remote first, so each side MODIFIES them.
+	one := pushTask(t, a, model.Task{
+		ID: "01TWO1", Title: "base one", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-10T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	two := pushTask(t, a, model.Task{
+		ID: "01TWO2", Title: "base two", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-10T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	edit := func(repo, path, id, title, updated string) {
+		t.Helper()
+		writeTaskJSON(t, filepath.Join(repo, path), model.Task{
+			ID: id, Title: title, Status: "open", Schedule: "today",
+			UpdatedAt: updated, CreatedAt: "2026-04-10T00:00:00Z",
+		})
+		gitRun(t, repo, "add", path)
+		gitRun(t, repo, "commit", "-m", "edit "+id)
+	}
+
+	// B edits both tasks in two separate commits and pushes them.
+	b := cloneOf(t, bare, "clone-b")
+	edit(b, one, "01TWO1", "one from B", "2026-04-11T00:00:00Z")
+	edit(b, two, "01TWO2", "two from B", "2026-04-11T00:00:00Z")
+	gitRun(t, b, "push")
+
+	// A edits the same two tasks in two commits of its own, with a LATER
+	// UpdatedAt so A wins both auto-resolutions.
+	edit(a, one, "01TWO1", "one from A", "2026-04-12T00:00:00Z")
+	edit(a, two, "01TWO2", "two from A", "2026-04-12T00:00:00Z")
+
+	res, err := pullRebaseResolving(context.Background(), a, false, nil, upstreamRef{})
+	if err != nil {
+		t.Fatalf("pullRebaseResolving() error = %v", err)
+	}
+	if res.Resolved != 2 {
+		t.Errorf("resolved = %d, want 2 (one per conflicting commit)", res.Resolved)
+	}
+	rebasing, err := IsRebasing(a)
+	if err != nil {
+		t.Fatalf("IsRebasing: %v", err)
+	}
+	if rebasing {
+		t.Error("repo is still mid-rebase after a resolvable two-commit conflict")
+	}
+	for _, e := range []struct{ path, want string }{{one, "one from A"}, {two, "two from A"}} {
+		if got := readTaskJSON(t, filepath.Join(a, e.path)); got.Title != e.want {
+			t.Errorf("%s: Title = %q, want %q (later UpdatedAt wins)", e.path, got.Title, e.want)
+		}
 	}
 }

@@ -703,6 +703,12 @@ func (u upstreamRef) rebaseTarget() string {
 	return "@{upstream}"
 }
 
+// maxRebaseRounds bounds pullRebaseResolving's resolve/--continue loop. One
+// round per conflicting local commit is the normal shape, so the ceiling is not
+// a budget anyone is expected to spend: it exists so a pathological rebase still
+// terminates into RebaseAbort rather than spinning while holding repoMu.
+const maxRebaseRounds = 50
+
 // rebaseOutcome reports what pullRebaseResolving did, alongside its error.
 type rebaseOutcome struct {
 	// Resolved is the number of task-file conflicts auto-resolved.
@@ -748,16 +754,35 @@ func pullRebaseResolving(ctx context.Context, repoPath string, autostash bool, e
 		if rbErr != nil || !rebasing {
 			return res, fmt.Errorf("pull: %w", err)
 		}
-		n, resErr := ResolveConflicts(repoPath)
-		if resErr != nil {
-			_ = RebaseAbort(repoPath)
-			return res, fmt.Errorf("resolve conflicts: %w", resErr)
+		// A rebase stops once per conflicting local commit, so resolving has to
+		// loop. Two devices that each made two commits touching the same tasks
+		// is the ordinary case this whole feature targets, and handling only the
+		// first stop aborted the rebase and returned an error that every later
+		// auto-push — and `monolog sync`, the documented escape hatch — then
+		// reproduced identically, forever.
+		for round := 0; ; round++ {
+			n, resErr := ResolveConflicts(repoPath)
+			if resErr != nil {
+				_ = RebaseAbort(repoPath)
+				return res, fmt.Errorf("resolve conflicts: %w", resErr)
+			}
+			res.Resolved += n
+			contErr := RebaseContinue(repoPath)
+			if contErr == nil {
+				break
+			}
+			// --continue exits non-zero both when it stopped at the NEXT
+			// conflicting commit (retryable) and when the rebase cannot be
+			// advanced at all (not). Retry only while all three hold: the repo
+			// is still mid-rebase, this round actually resolved something (n==0
+			// means the next round would do the same nothing and fail
+			// identically), and the round ceiling is not reached.
+			rebasing, rbErr := IsRebasing(repoPath)
+			if rbErr != nil || !rebasing || n == 0 || round+1 >= maxRebaseRounds {
+				_ = RebaseAbort(repoPath)
+				return res, fmt.Errorf("rebase continue: %w", contErr)
+			}
 		}
-		if err := RebaseContinue(repoPath); err != nil {
-			_ = RebaseAbort(repoPath)
-			return res, fmt.Errorf("rebase continue: %w", err)
-		}
-		res.Resolved = n
 	}
 	if autostash {
 		if err := recoverAutostash(repoPath); err != nil {
