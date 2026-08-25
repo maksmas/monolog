@@ -169,6 +169,23 @@ func autoCommit(repoPath string, message string, files ...string) error {
 			return fmt.Errorf("git add %s: %w", f, err)
 		}
 	}
+	// Deliberately pathspec-LESS. `git commit -m msg -- <files>` would narrow
+	// the commit to what this call staged, which is otherwise attractive: with
+	// two monolog processes running, the first to reach the commit currently
+	// sweeps the other's staged file into its own, and the loser then reports
+	// "nothing added to commit" for a task that is on disk, in the commit and on
+	// the remote.
+	//
+	// It cannot be used, because a pathspec makes it a PARTIAL commit, and a
+	// partial commit does not refuse the way a whole-index commit does. While
+	// another process sits on a conflicted rebase, `git commit -m msg` fails
+	// with "Committing is not possible because you have unmerged files" — the
+	// refusal the unstaging below depends on — whereas the pathspec form
+	// succeeds and lands the write on the detached rebase HEAD, which that
+	// process's `git rebase --abort` then throws away, file and all. Verified:
+	// the task file is gone from the worktree after the abort. Trading a wrong
+	// error message for a silently destroyed task is not a trade worth making;
+	// cross-process serialization is the real fix and is out of scope here.
 	if err := run(repoPath, "git", "commit", "-m", message); err != nil {
 		// Unstage what this call staged. A commit fails outright while another
 		// monolog process holds the repo mid-rebase ("Committing is not
@@ -797,15 +814,24 @@ func pullRebaseResolving(ctx context.Context, repoPath string, autostash bool, e
 		// first stop aborted the rebase and returned an error that every later
 		// auto-push — and `monolog sync`, the documented escape hatch — then
 		// reproduced identically, forever.
+		//
+		// The running count stays local and is published to res only once the
+		// rebase completes: every bail below aborts, which rolls the
+		// resolutions back. Reporting them anyway told the user "auto-resolved
+		// N conflicts" — which callers render as "N edits were discarded to
+		// keep the newer one" — on the one path where nothing was merged and
+		// nothing was discarded.
+		resolved := 0
 		for round := 0; ; round++ {
 			n, resErr := ResolveConflicts(repoPath)
 			if resErr != nil {
 				_ = RebaseAbort(repoPath)
 				return res, fmt.Errorf("resolve conflicts: %w", resErr)
 			}
-			res.Resolved += n
+			resolved += n
 			contErr := RebaseContinue(repoPath)
 			if contErr == nil {
+				res.Resolved = resolved
 				break
 			}
 			// --continue exits non-zero both when it stopped at the NEXT

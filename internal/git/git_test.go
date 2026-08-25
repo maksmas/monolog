@@ -1768,3 +1768,72 @@ func TestPullRebaseResolving_ResolvesConflictsAcrossTwoCommits(t *testing.T) {
 		}
 	}
 }
+
+// TestPullRebaseResolving_AbortedRebaseReportsNoResolutions pins that a rebase
+// which ends in an abort reports Resolved == 0, however many rounds it got
+// through first.
+//
+// The abort rolls every resolution back, so the count is not merely stale, it
+// describes work that was undone. Callers render it as "Synced (auto-resolved N
+// conflicts)" — the one line that tells the user an edit was DISCARDED to keep
+// the newer one — so publishing it after an abort fires that warning on the
+// single path where nothing was merged and nothing was lost.
+func TestPullRebaseResolving_AbortedRebaseReportsNoResolutions(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+
+	task := pushTask(t, a, model.Task{
+		ID: "01ABRT", Title: "base", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-10T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+	cfg := filepath.Join(".monolog", "config.json")
+
+	editTask := func(repo, title, updated string) {
+		t.Helper()
+		writeTaskJSON(t, filepath.Join(repo, task), model.Task{
+			ID: "01ABRT", Title: title, Status: "open", Schedule: "today",
+			UpdatedAt: updated, CreatedAt: "2026-04-10T00:00:00Z",
+		})
+		gitRun(t, repo, "add", task)
+		gitRun(t, repo, "commit", "-m", "edit task in "+repo)
+	}
+	editCfg := func(repo, theme string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, cfg), []byte("{\n  \"theme\": \""+theme+"\"\n}\n"), 0o644); err != nil {
+			t.Fatalf("write config in %s: %v", repo, err)
+		}
+		gitRun(t, repo, "add", cfg)
+		gitRun(t, repo, "commit", "-m", "theme in "+repo)
+	}
+
+	// B pushes a conflicting edit to BOTH the task and config.json.
+	b := cloneOf(t, bare, "clone-b")
+	editTask(b, "from B", "2026-04-11T00:00:00Z")
+	editCfg(b, "dracula")
+	gitRun(t, b, "push")
+
+	// A makes the same two edits locally, task first. Replaying them stops
+	// twice: the first stop is a task conflict the resolver settles, the second
+	// is config.json, which it refuses to touch — so the rebase is aborted after
+	// a productive round.
+	editTask(a, "from A", "2026-04-12T00:00:00Z")
+	editCfg(a, "solarized")
+
+	res, err := pullRebaseResolving(context.Background(), a, false, nil, upstreamRef{})
+	if err == nil {
+		t.Fatal("pullRebaseResolving() error = nil, want the unresolvable config.json conflict")
+	}
+	if res.Resolved != 0 {
+		t.Errorf("Resolved = %d after an aborted rebase, want 0: the abort rolled that "+
+			"resolution back, so reporting it tells the user an edit was discarded when none was",
+			res.Resolved)
+	}
+	if !res.Started {
+		t.Error("Started = false, want true: the rebase did run and may have rewritten SHAs")
+	}
+	if rebasing, rbErr := IsRebasing(a); rbErr != nil || rebasing {
+		t.Errorf("IsRebasing() = %v, %v; want false, nil after the abort", rebasing, rbErr)
+	}
+	if got := readTaskJSON(t, filepath.Join(a, task)); got.Title != "from A" {
+		t.Errorf("%s: Title = %q, want %q: the abort restores A's own state", task, got.Title, "from A")
+	}
+}

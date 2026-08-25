@@ -71,11 +71,17 @@ var ErrRebaseDeferred = errors.New("push rejected; rebase deferred while a task 
 // AutoCommitSHA.
 //
 // That gap is milliseconds of work, but it is NOT bounded by milliseconds:
-// AutoCommitSHA blocks on repoMu, which AutoPush holds across its own network
-// I/O, so a genuinely in-flight write can sit unclaimed for the whole of
-// DefaultPushTimeout + DefaultFetchTimeout. The window is sized above that sum
-// (and measured from AutoPush's entry, not from the check — see writesInFlight)
-// so AutoPush can never mistake a writer it is itself blocking for an orphan.
+// AutoCommitSHA blocks on repoMu, which AutoPush holds across its whole call,
+// so a genuinely in-flight write can sit unclaimed for as long as that hold
+// lasts. The hold is BOTH pushes (the speculative one at entry and the retry
+// after a rebase, each bounded by timeout), the rebase fallback's fetch
+// (DefaultFetchTimeout), and the rebase itself — which pullRebaseResolving
+// deliberately runs unbounded, since killing git mid-rebase strands the repo,
+// and which may issue up to maxRebaseRounds `rebase --continue` subprocesses.
+// So the window is sized off the bounded part and given headroom for the rest
+// (and measured from AutoPush's entry, not from the check — see
+// writesInFlight): it cannot cover an arbitrarily long rebase, but it must
+// never be the near miss that a routine push-fetch-push already outlasts.
 // Getting that wrong sweeps the write into a `recover:` commit, and the
 // writer's own commit then fails with "nothing to commit": a mutation that
 // succeeded and reached the remote is reported to the user as a failure, and
@@ -91,7 +97,7 @@ var ErrRebaseDeferred = errors.New("push rejected; rebase deferred while a task 
 //
 // A var, not a const, only so tests can shrink it; nothing outside tests
 // assigns to it.
-var writeSettleWindow = 30 * time.Second
+var writeSettleWindow = 2*DefaultPushTimeout + DefaultFetchTimeout + 15*time.Second
 
 // AutoPush pushes the current branch to its upstream, treating every failure as
 // non-fatal information for the caller: the mutation that produced the commit
@@ -165,15 +171,31 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 		pushArgs = append(pushArgs, "--set-upstream", remote, branch)
 	}
 
+	// Sweep orphans BEFORE the first push, so the ordinary fast-forward path
+	// carries them too. Doing it only after a rejection meant that on a
+	// single-device setup — where a push is never rejected — a task whose
+	// commit failed stayed local forever, which is the exact file this recovery
+	// exists for. An in-flight write is not a reason to hold the push back: a
+	// push ships committed history and a half-written file is not in it. Only
+	// the rebase below is dangerous while a write is in flight, so the deferral
+	// decision is taken there.
+	//
+	// warn carries everything that must reach the user but must not stop the
+	// push: a task file too broken to commit, and (below) an autostash conflict.
+	_, warn, err := sweepOrphanedTaskWrites(repoPath, start)
+	if err != nil {
+		return res, errors.Join(warn, err)
+	}
+
 	out, err := pushWithTimeout(repoPath, timeout, pushArgs...)
 	if err == nil {
 		res.Pushed = true
-		return res, nil
+		return res, warn
 	}
 	if !isNonFastForward(out) {
 		// The remote state is unknown (DNS, auth, timeout, protected branch), so
 		// rebasing onto it would be a guess. Surface the failure unchanged.
-		return res, err
+		return res, errors.Join(warn, err)
 	}
 
 	// Rejected because the remote holds commits we do not have — the one
@@ -185,38 +207,19 @@ func AutoPush(repoPath string, timeout time.Duration) (PushResult, error) {
 	// conflicting pop writes conflict markers into the JSON, which the pending
 	// `git add` then commits. A rebase deferred to the next push costs a cycle
 	// of staleness; a task file full of conflict markers costs user data.
-	pending, err := pendingTaskWrites(repoPath)
+	//
+	// Re-read rather than reusing the sweep above: the push just held repoMu
+	// for up to timeout, and a writer's store.Create runs BEFORE it blocks on
+	// that mutex, so the write this deferral protects is very often one that
+	// landed during the push. The second answer supersedes the first — same
+	// repo, one push later — so warn is replaced, not accumulated.
+	inFlight, warn, err := sweepOrphanedTaskWrites(repoPath, start)
 	if err != nil {
-		return res, fmt.Errorf("check pending task writes: %w", err)
+		return res, errors.Join(warn, err)
 	}
-	// warn carries everything that must reach the user but must not stop the
-	// push: a task file too broken to commit, and (below) an autostash conflict.
-	var warn error
-	if len(pending) > 0 {
-		if writesInFlight(repoPath, pending, start, time.Now()) {
-			return res, fmt.Errorf("%w (%s); the next push commits it, or run 'monolog sync' now",
-				ErrRebaseDeferred, strings.Join(pending, ", "))
-		}
-		// Settled, so nobody is mid-write: this is an orphan, and deferring
-		// again would defer forever. Commit it — it is a task the user created
-		// — and carry it to the remote with everything else.
-		orphans, broken := partitionParsableTasks(repoPath, pending)
-		if len(broken) > 0 {
-			// A file that does not parse must NOT be pushed: store.List fails on
-			// the first unreadable task file rather than skipping it, so one
-			// truncated write (store.writeTask is a plain os.WriteFile, not
-			// atomic) would break `monolog ls`, the TUI and the bot on every
-			// device instead of just this one.
-			warn = fmt.Errorf("not pushing unreadable task file(s) (%s): fix or delete them, then run 'monolog sync'",
-				strings.Join(broken, ", "))
-		}
-		if len(orphans) > 0 {
-			msg := fmt.Sprintf("recover: %d uncommitted task write(s)", len(orphans))
-			if err := autoCommit(repoPath, msg, orphans...); err != nil {
-				return res, errors.Join(warn, fmt.Errorf("commit orphaned task write (%s): %w",
-					strings.Join(orphans, ", "), err))
-			}
-		}
+	if len(inFlight) > 0 {
+		return res, errors.Join(warn, fmt.Errorf("%w (%s); the next push commits it, or run 'monolog sync' now",
+			ErrRebaseDeferred, strings.Join(inFlight, ", ")))
 	}
 
 	// Autostash: AutoPush deliberately does not commit unrelated files, and the
@@ -268,6 +271,50 @@ func pushWithTimeout(repoPath string, timeout time.Duration, args ...string) (st
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return runOut(ctx, repoPath, noPromptEnv, "git", args...)
+}
+
+// sweepOrphanedTaskWrites commits every uncommitted task write that has
+// outlived writeSettleWindow, so the caller's push carries it to the remote.
+//
+// Past that window a pending write is not a write in flight but an orphan: a
+// real task whose commit failed. Committing it is the safe direction — it is a
+// task the user created — and leaving it forever is not, since store writes
+// that never reach a commit are precisely what auto-push exists to catch up on.
+//
+// Returns the pending paths, untouched, when any of them is still INSIDE the
+// window: nothing is committed in that case, and it is the caller's decision
+// what to do with the news (AutoPush pushes anyway, but defers its rebase —
+// see writeSettleWindow). warn names files too broken to commit and must not
+// stop the push; only a failed recovery commit is returned as a hard error.
+func sweepOrphanedTaskWrites(repoPath string, start time.Time) (inFlight []string, warn, err error) {
+	pending, err := pendingTaskWrites(repoPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("check pending task writes: %w", err)
+	}
+	if len(pending) == 0 {
+		return nil, nil, nil
+	}
+	if writesInFlight(repoPath, pending, start, time.Now()) {
+		return pending, nil, nil
+	}
+	orphans, broken := partitionParsableTasks(repoPath, pending)
+	if len(broken) > 0 {
+		// A file that does not parse must NOT be pushed: store.List fails on
+		// the first unreadable task file rather than skipping it, so one
+		// truncated write (store.writeTask is a plain os.WriteFile, not atomic)
+		// would break `monolog ls`, the TUI and the bot on every device instead
+		// of just this one.
+		warn = fmt.Errorf("not pushing unreadable task file(s) (%s): fix or delete them, then run 'monolog sync'",
+			strings.Join(broken, ", "))
+	}
+	if len(orphans) > 0 {
+		msg := fmt.Sprintf("recover: %d uncommitted task write(s)", len(orphans))
+		if cErr := autoCommit(repoPath, msg, orphans...); cErr != nil {
+			return nil, warn, fmt.Errorf("commit orphaned task write (%s): %w",
+				strings.Join(orphans, ", "), cErr)
+		}
+	}
+	return nil, warn, nil
 }
 
 // pendingTaskWrites returns the repo-relative paths of task JSON files with

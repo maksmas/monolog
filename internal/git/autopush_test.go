@@ -1312,14 +1312,18 @@ func TestAutoPush_AutostashConflictStillPushes(t *testing.T) {
 }
 
 // TestWriteSettleWindowOutlastsAPush pins the sizing invariant: AutoPush holds
-// repoMu across a push and, on the rejection path, a fetch, and every one of
-// those seconds is time a concurrent AutoCommitSHA spends blocked on that same
-// mutex without touching its file. A window shorter than that sum would let
-// AutoPush classify a write it is itself delaying as an orphan.
+// repoMu across BOTH of its pushes and, on the rejection path, the rebase
+// fallback's fetch, and every one of those seconds is time a concurrent
+// AutoCommitSHA spends blocked on that same mutex without touching its file. A
+// window shorter than that sum would let AutoPush classify a write it is itself
+// delaying as an orphan. (The rebase between the two pushes is deliberately
+// unbounded and cannot be covered by any constant — see writeSettleWindow —
+// which is exactly why the bounded part must not be a near miss.)
 func TestWriteSettleWindowOutlastsAPush(t *testing.T) {
-	if writeSettleWindow <= DefaultPushTimeout+DefaultFetchTimeout {
-		t.Errorf("writeSettleWindow = %v, want > DefaultPushTimeout+DefaultFetchTimeout (%v)",
-			writeSettleWindow, DefaultPushTimeout+DefaultFetchTimeout)
+	bounded := 2*DefaultPushTimeout + DefaultFetchTimeout
+	if writeSettleWindow <= bounded {
+		t.Errorf("writeSettleWindow = %v, want > 2*DefaultPushTimeout+DefaultFetchTimeout (%v)",
+			writeSettleWindow, bounded)
 	}
 }
 
@@ -1511,5 +1515,60 @@ func TestAutoPush_DoesNotPushAnUnreadableTaskFile(t *testing.T) {
 	if _, sErr := os.Stat(filepath.Join(fresh, badRel)); !os.IsNotExist(sErr) {
 		t.Errorf("the unreadable file reached the remote (stat err = %v); every device's "+
 			"store.List would fail on it", sErr)
+	}
+}
+
+// TestAutoPush_SweepsAnOrphanOnTheFastForwardPath is the regression test for
+// the orphan sweep running only after a rejected push.
+//
+// The single-device case never sees a rejection: every push fast-forwards. So
+// a task whose commit failed — a store write that already landed, which is the
+// exact file this recovery exists for — was committed by nothing and reached
+// the remote never, while the user saw only the one `commit:` error.
+func TestAutoPush_SweepsAnOrphanOnTheFastForwardPath(t *testing.T) {
+	bare, a := setupRemoteFixture(t)
+	commitTask(t, a, model.Task{
+		ID: "01FFA", Title: "from A", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-10T00:00:00Z",
+	})
+
+	// A task written by store.Create whose AutoCommit then failed, settled long
+	// enough ago that nobody can still be mid-write on it.
+	orphanRel := filepath.Join(".monolog", "tasks", "01FFORPH.json")
+	orphan := filepath.Join(a, orphanRel)
+	writeTaskJSON(t, orphan, model.Task{
+		ID: "01FFORPH", Title: "orphaned write", Status: "open", Schedule: "today",
+		UpdatedAt: "2026-04-12T00:00:00Z", CreatedAt: "2026-04-12T00:00:00Z",
+	})
+	old := time.Now().Add(-writeSettleWindow - time.Minute)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatalf("backdate orphan: %v", err)
+	}
+
+	res, err := AutoPush(a, DefaultPushTimeout)
+	if err != nil {
+		t.Fatalf("AutoPush() error = %v", err)
+	}
+	if !res.Pushed {
+		t.Fatalf("res = %+v, want Pushed", res)
+	}
+	if res.Rebased {
+		t.Errorf("res = %+v, want no rebase: the remote is not ahead", res)
+	}
+	if status := gitOut(t, a, "status", "--porcelain"); status != "" {
+		t.Errorf("status = %q, want a clean tree: the orphan must be committed", status)
+	}
+	if got, want := bareHead(t, bare), gitOut(t, a, "rev-parse", "HEAD"); got != want {
+		t.Errorf("remote HEAD = %q, want the pushed local HEAD %q", got, want)
+	}
+	// Committed-but-unpushed is the same bug in a new shape, so the file is
+	// checked through a fresh clone rather than through the local HEAD.
+	fresh2 := cloneOf(t, bare, "clone-fresh")
+	body, err := os.ReadFile(filepath.Join(fresh2, orphanRel))
+	if err != nil {
+		t.Fatalf("the orphan never reached the remote: %v", err)
+	}
+	if !strings.Contains(string(body), "orphaned write") {
+		t.Errorf("remote %s = %q, want the orphan's content", orphanRel, body)
 	}
 }
