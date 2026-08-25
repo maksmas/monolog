@@ -744,8 +744,8 @@ func TestBuildDetailKeyboard(t *testing.T) {
 	if len(row) != 3 {
 		t.Fatalf("expected 3 buttons, got %d", len(row))
 	}
-	wantData := []string{"collapse:" + id, "done:" + id, "active:" + id}
-	wantText := []string{"⬆ Collapse", "✅ Done", "⭐ Active"}
+	wantData := []string{"done:" + id, "active:" + id, "collapse:" + id}
+	wantText := []string{"✅ Done", "⭐ Active", "⬆ Collapse"}
 	for i, b := range row {
 		if b.CallbackData != wantData[i] {
 			t.Errorf("button %d data=%q want %q", i, b.CallbackData, wantData[i])
@@ -753,6 +753,30 @@ func TestBuildDetailKeyboard(t *testing.T) {
 		if b.Text != wantText[i] {
 			t.Errorf("button %d text=%q want %q", i, b.Text, wantText[i])
 		}
+	}
+}
+
+// TestKeyboardsKeepWriteButtonPositions pins the positional contract
+// between the two keyboards: tapping Details edits the message in place,
+// so Done and Active must not move under the user's thumb. Only the
+// third slot swaps (Details ↔ Collapse).
+func TestKeyboardsKeepWriteButtonPositions(t *testing.T) {
+	const id = "01J5K7VC9RXMQ8NPZF2W3Y4ABC"
+	summary := BuildSummaryKeyboard(id)[0]
+	detail := BuildDetailKeyboard(id)[0]
+	if len(summary) != len(detail) {
+		t.Fatalf("row lengths differ: summary=%d detail=%d", len(summary), len(detail))
+	}
+	for i := 0; i < 2; i++ {
+		if summary[i] != detail[i] {
+			t.Errorf("button %d moved: summary=%+v detail=%+v", i, summary[i], detail[i])
+		}
+	}
+	if summary[2].CallbackData != "view:"+id {
+		t.Errorf("summary third button=%q want view:", summary[2].CallbackData)
+	}
+	if detail[2].CallbackData != "collapse:"+id {
+		t.Errorf("detail third button=%q want collapse:", detail[2].CallbackData)
 	}
 }
 

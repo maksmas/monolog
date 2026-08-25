@@ -1339,9 +1339,10 @@ func TestHandleCallbackViewExpandsToDetail(t *testing.T) {
 	if len(kb) != 1 || len(kb[0]) != 3 {
 		t.Fatalf("expected 3-button detail keyboard, got %+v", kb)
 	}
-	// First button is Collapse on the detail keyboard.
-	if !strings.Contains(kb[0][0].Text, "Collapse") {
-		t.Fatalf("expected first button to be Collapse, got %q", kb[0][0].Text)
+	// Collapse takes the third slot — the one Details held on the summary
+	// keyboard — so Done and Active stay put across the in-place edit.
+	if !strings.Contains(kb[0][2].Text, "Collapse") {
+		t.Fatalf("expected third button to be Collapse, got %+v", kb[0])
 	}
 	if len(bot.answers) != 1 || bot.answers[0].Toast != "" {
 		t.Fatalf("expected silent answer, got %+v", bot.answers)

@@ -431,17 +431,21 @@ func BuildSummaryKeyboard(taskID string) InlineKeyboard {
 }
 
 // BuildDetailKeyboard returns the inline keyboard shown beneath the
-// expanded detail view: a single row with [Collapse] [Done] [Active].
-// The Collapse button is placed first (leftmost = back-out gesture),
-// followed by the same two write actions exposed on the summary row.
+// expanded detail view: a single row with [Done] [Active] [Collapse].
+//
+// Button order deliberately MIRRORS BuildSummaryKeyboard: Done and Active
+// keep their exact slots and Collapse takes over the slot Details held.
+// Expanding a task edits the message in place, so any reordering here
+// moves the two write buttons under the user's thumb mid-tap — tapping
+// Details and then Done would hit whatever slid into Done's old position.
 // Details is intentionally omitted — the user is already in the detail
 // view, so a second "Details" button would be a no-op.
 func BuildDetailKeyboard(taskID string) InlineKeyboard {
 	return InlineKeyboard{
 		{
-			{Text: "⬆ Collapse", CallbackData: "collapse:" + taskID},
 			{Text: "✅ Done", CallbackData: "done:" + taskID},
 			{Text: "⭐ Active", CallbackData: "active:" + taskID},
+			{Text: "⬆ Collapse", CallbackData: "collapse:" + taskID},
 		},
 	}
 }
