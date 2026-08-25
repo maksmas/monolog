@@ -84,6 +84,33 @@ func TestSyncCommand_NothingToCommit(t *testing.T) {
 	}
 }
 
+// TestSyncCommand_FailurePrintsNoUsageBlock covers the manual escape hatch's
+// output when it fails. A sync fails because of the repo or the network, never
+// because of how it was typed (no arguments, no flags), so cobra's usage block
+// under the error is pure noise that buries git's diagnosis.
+func TestSyncCommand_FailurePrintsNoUsageBlock(t *testing.T) {
+	// A directory that is not a git repo at all: git.Sync fails on its first
+	// command.
+	dir := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("MONOLOG_DIR", dir)
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"sync"})
+
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("sync outside a repo should fail; output: %s", buf.String())
+	}
+	if out := buf.String(); strings.Contains(out, "Usage:") {
+		t.Errorf("output = %q, want no usage block on a runtime failure", out)
+	}
+}
+
 func TestSyncCommand_NoRemoteWarning(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)

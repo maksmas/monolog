@@ -1614,6 +1614,45 @@ func TestAutoCommit_UnstagesAfterAFailedCommit(t *testing.T) {
 	}
 }
 
+func TestShortError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"single line", errors.New("boom"), "boom"},
+		{
+			// gitError's shape: the diagnosis is on the SECOND line, which is
+			// why this is not a "first line only" trim.
+			name: "keeps git's fatal line",
+			err: errors.New("git [push]: exit status 128\n" +
+				"fatal: could not read Username for 'https://github.com'\n"),
+			want: "git [push]: exit status 128 fatal: could not read Username for 'https://github.com'",
+		},
+		{
+			name: "drops the hint block",
+			err: errors.New("rebase continue: exit status 1\n" +
+				"CONFLICT (content): Merge conflict in .monolog/tasks/01X.json\n" +
+				"hint: Resolve all conflicts manually, mark them as resolved with\n" +
+				"hint: \"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\n"),
+			want: "rebase continue: exit status 1 CONFLICT (content): Merge conflict in .monolog/tasks/01X.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ShortError(tt.err); got != tt.want {
+				t.Errorf("ShortError() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	long := ShortError(errors.New(strings.Repeat("x", shortErrorLimit*2)))
+	if len([]rune(long)) != shortErrorLimit+1 { // +1 for the ellipsis
+		t.Errorf("ShortError() length = %d, want it capped at %d", len([]rune(long)), shortErrorLimit)
+	}
+}
+
 // TestRecoverAutostash_DeleteModifyReportsTheDiscardAndTheStash covers the
 // autostash conflict shape that has no stage 3: the stash deleted the file
 // (the user removed config.json locally without committing) while the incoming

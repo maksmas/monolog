@@ -1114,11 +1114,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// saying (an autostash conflict over config.json). Calling that
 			// "push failed" would send the user chasing a task that is already
 			// synced.
-			m.statusMsg = fmt.Sprintf("Synced; %v", msg.err)
+			//
+			// git.ShortError, not %v: clampStatus already flattens the message
+			// onto one row, so git's four-line "hint:" block would eat the whole
+			// status bar and push the actual diagnosis off the right edge.
+			m.statusMsg = fmt.Sprintf("Synced; %s", git.ShortError(msg.err))
 		case msg.err != nil:
 			// Non-fatal: the commit is durable locally and the next push or
 			// `s` catches up, so no m.err and no rollback.
-			m.statusMsg = fmt.Sprintf("push failed: %v", msg.err)
+			m.statusMsg = fmt.Sprintf("push failed: %s", git.ShortError(msg.err))
 		case msg.rebased && msg.resolved > 0:
 			m.statusMsg = fmt.Sprintf("Synced (auto-resolved %d conflicts)", msg.resolved)
 		case msg.rebased:

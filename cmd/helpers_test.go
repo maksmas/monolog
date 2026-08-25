@@ -153,6 +153,34 @@ func TestPushAfter_FailureWarnsAndSwallows(t *testing.T) {
 	}
 }
 
+// TestPushAfter_FailureIsTrimmedToOneLine pins that git's advice block never
+// reaches the terminal. Errors out of internal/git carry git's whole combined
+// output, and a rejected push or a stopped rebase appends four "hint:" lines
+// telling the user to run by hand exactly what auto-push just did — under a
+// one-line `Added: <title>`.
+func TestPushAfter_FailureIsTrimmedToOneLine(t *testing.T) {
+	enableAutoPushConfig(t)
+	stubAutoPushFn(t, git.PushResult{}, errors.New(
+		"rebase continue: git rebase --continue: exit status 1\n"+
+			"CONFLICT (content): Merge conflict in .monolog/tasks/01X.json\n"+
+			"hint: Resolve all conflicts manually, mark them as resolved with\n"+
+			"hint: \"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\n"))
+
+	w := new(bytes.Buffer)
+	pushAfter(w, "/some/repo")
+
+	got := w.String()
+	if n := strings.Count(strings.TrimSuffix(got, "\n"), "\n"); n != 0 {
+		t.Errorf("output = %q, want a single line", got)
+	}
+	if strings.Contains(got, "hint:") {
+		t.Errorf("output = %q, want git's hint block dropped", got)
+	}
+	if !strings.Contains(got, "rebase continue") || !strings.Contains(got, "CONFLICT") {
+		t.Errorf("output = %q, want the diagnosis kept", got)
+	}
+}
+
 func TestPushAfter_AutoResolvedConflictIsReported(t *testing.T) {
 	// A rejected push rebases, and ResolveConflicts settles a task-file conflict
 	// by keeping the newer UpdatedAt and DISCARDING the other side. Staying

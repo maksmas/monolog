@@ -603,6 +603,43 @@ func redactCredentials(s string) string {
 	return credentialsRe.ReplaceAllString(s, "://***@")
 }
 
+// shortErrorLimit caps ShortError's output. Long enough for a header line plus
+// git's "fatal:"/"error:" line, short enough not to bury a CLI success line.
+const shortErrorLimit = 240
+
+// ShortError renders a git error for a one-line surface: the CLI's `push
+// failed:` warning and the TUI status bar.
+//
+// Every error out of this package carries git's whole combined output (see
+// gitError), and for a rejected push or a stopped rebase most of that is a
+// four-line "hint:" block telling a human at a terminal to run
+// `git rebase --continue` or `git pull` by hand — advice that is actively wrong
+// here, since monolog is doing the rebase itself, and that buries the one line
+// that says what went wrong. So the hint block is dropped, what remains is
+// collapsed onto a single line, and the result is capped.
+//
+// It is deliberately not a "first line only" trim: gitError's first line is the
+// command and its exit status, and the diagnosis ("fatal: could not read
+// Username…") is on the second.
+func ShortError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var kept []string
+	for _, line := range strings.Split(err.Error(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "hint:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	s := strings.Join(kept, " ")
+	if r := []rune(s); len(r) > shortErrorLimit {
+		s = string(r[:shortErrorLimit]) + "…"
+	}
+	return s
+}
+
 // gitError formats a failed command uniformly, with credentials redacted out of
 // both the argument list and git's output.
 func gitError(name string, args []string, err error, out []byte) error {

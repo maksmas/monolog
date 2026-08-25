@@ -754,7 +754,13 @@ func TestAutoPush_ConcurrentWithAutoCommitSHA(t *testing.T) {
 		commitErr <- err
 	}()
 
-	if err := <-pushErr; err != nil {
+	// Both orderings are legitimate and the race between them is the point of
+	// the test: if AutoCommitSHA takes repoMu first, the push carries its commit
+	// to the remote; if AutoPush takes it first, it finds an uncommitted task
+	// write and defers the rebase to the next push BY DESIGN, rather than
+	// autostashing a file someone else is mid-write on. Only a third outcome is
+	// a defect, and that is what the assertions below cover.
+	if err := <-pushErr; err != nil && !errors.Is(err, ErrRebaseDeferred) {
 		t.Errorf("AutoPush() error = %v", err)
 	}
 	// The commit may legitimately find nothing to commit: the rebase's autostash
