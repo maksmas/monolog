@@ -22,10 +22,19 @@ type PushResult struct {
 	Pushed   bool // a push succeeded (possibly after a rebase)
 	Rebased  bool // pull --rebase ran → local SHAs rewritten, undo/redo invalid
 	Resolved int  // task-file conflicts auto-resolved during that rebase
-	Skipped  bool // no remote or no upstream; no-op, not an error
+
+	// Skipped marks the no-op case: no remote, several remotes with no
+	// `origin`, or a detached HEAD. Notably NOT the missing-upstream case —
+	// AutoPush pushes that one with --set-upstream.
+	//
+	// Kept even though no production caller branches on it (`err == nil &&
+	// !Pushed` says the same thing): it is the named outcome of a push rather
+	// than a derived one, and the whole autopush suite asserts on it.
+	Skipped bool
 }
 
-// DefaultPushTimeout bounds the git push invocations in an AutoPush call.
+// DefaultPushTimeout bounds the git push invocations on the automatic push
+// paths (AutoPush and SyncUnattended).
 // It does NOT bound the rebase fallback — see pullRebaseResolving.
 const DefaultPushTimeout = 10 * time.Second
 

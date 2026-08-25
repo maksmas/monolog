@@ -27,6 +27,7 @@ func taskRelPath(taskID string) string {
 // We do NOT inject these per-Handler because they would multiply the
 // constructor surface; package-level vars keep the Handler struct lean
 // and tests reset them via t.Cleanup.
+//
 // syncFunc is git.SyncUnattended, not git.Sync: the bot has no terminal, so a
 // credential prompt would block the fetch or push forever while holding both
 // h.mu and the git package's repo mutex.

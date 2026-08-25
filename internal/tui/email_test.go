@@ -374,11 +374,45 @@ func TestEmailSyncResult_PositiveCreatedDispatchesPush(t *testing.T) {
 	if rec.count() != 1 {
 		t.Fatalf("runAutoPush calls = %d, want 1", rec.count())
 	}
-	if rec.paths[0] != m.repoPath {
-		t.Errorf("push repoPath = %q, want %q", rec.paths[0], m.repoPath)
+	if rec.path(0) != m.repoPath {
+		t.Errorf("push repoPath = %q, want %q", rec.path(0), m.repoPath)
 	}
-	if rec.timeouts[0] != git.DefaultPushTimeout {
-		t.Errorf("push timeout = %v, want git.DefaultPushTimeout (%v)", rec.timeouts[0], git.DefaultPushTimeout)
+	if rec.timeout(0) != git.DefaultPushTimeout {
+		t.Errorf("push timeout = %v, want git.DefaultPushTimeout (%v)", rec.timeout(0), git.DefaultPushTimeout)
+	}
+}
+
+// TestEmailSyncResult_TagViewCursorSkipsSeparator pins that the email reload
+// leaves the cursor on a real task in tag view. emailSyncResult used to reload
+// and recompute the layout without the separator guard every other reload
+// branch ran, so an import landing while the cursor sat on a bucket separator
+// left it parked there — selectedTask() returns nil on a separator, so the
+// next `d`/`e`/`Enter` would silently do nothing.
+func TestEmailSyncResult_TagViewCursorSkipsSeparator(t *testing.T) {
+	m := newTestModelWithEmail(t,
+		model.Task{ID: "01TVS1", Title: "tagged task", Status: "open",
+			Schedule: "today", Tags: []string{"work"}, Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.width = 80
+	m.height = 40
+	m.recomputeLayout()
+
+	// Tag view: each tab starts with a bucket separator at index 0.
+	m, _ = key(t, m, "v")
+	m.activeTab = findTabByLabel(t, m, "work")
+	m.lists[m.activeTab].Select(0)
+	if !m.lists[m.activeTab].Items()[0].(item).isSeparator {
+		t.Fatal("precondition: index 0 of a tag tab should be a bucket separator")
+	}
+
+	m.emailSyncing = true
+	next, _ := m.Update(emailSyncResult{created: 1})
+	m = next.(*Model)
+
+	if m.selectedTask() == nil {
+		t.Errorf("cursor rests on a separator after an email import (index %d); "+
+			"the reload must skip past it in tag view", m.lists[m.activeTab].Index())
 	}
 }
 

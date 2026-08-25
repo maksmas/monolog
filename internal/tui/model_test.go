@@ -5744,6 +5744,30 @@ func (r *autoPushRecorder) count() int {
 	return r.calls
 }
 
+// path and timeout read the recorded arguments of the i-th call under the same
+// mutex record writes them behind — the seam is invoked from a tea.Cmd
+// goroutine, so bare field reads would be a data race the moment a test drove
+// a push without draining it first. Out-of-range returns the zero value so a
+// caller that skipped its count() check fails on the comparison rather than
+// panicking.
+func (r *autoPushRecorder) path(i int) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i < 0 || i >= len(r.paths) {
+		return ""
+	}
+	return r.paths[i]
+}
+
+func (r *autoPushRecorder) timeout(i int) time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i < 0 || i >= len(r.timeouts) {
+		return 0
+	}
+	return r.timeouts[i]
+}
+
 // stubAutoPush swaps the runAutoPush seam for the duration of the test so no
 // test outside internal/git touches the network. Every call returns res/err
 // and is recorded on the returned recorder.
@@ -10777,11 +10801,11 @@ func TestTaskSavedMsg_DispatchesAutoPush(t *testing.T) {
 	if rec.count() != 1 {
 		t.Fatalf("runAutoPush calls = %d, want 1", rec.count())
 	}
-	if rec.paths[0] != m.repoPath {
-		t.Errorf("push repoPath = %q, want %q", rec.paths[0], m.repoPath)
+	if rec.path(0) != m.repoPath {
+		t.Errorf("push repoPath = %q, want %q", rec.path(0), m.repoPath)
 	}
-	if rec.timeouts[0] != git.DefaultPushTimeout {
-		t.Errorf("push timeout = %v, want git.DefaultPushTimeout (%v)", rec.timeouts[0], git.DefaultPushTimeout)
+	if rec.timeout(0) != git.DefaultPushTimeout {
+		t.Errorf("push timeout = %v, want git.DefaultPushTimeout (%v)", rec.timeout(0), git.DefaultPushTimeout)
 	}
 }
 
@@ -11619,7 +11643,7 @@ func TestQuit_FlushesAPendingPush(t *testing.T) {
 	if rec.count() != 1 {
 		t.Fatalf("auto-push calls on quit = %d, want 1: the coalesced push must be flushed", rec.count())
 	}
-	if got := rec.timeouts[0]; got != git.CLIPushTimeout {
+	if got := rec.timeout(0); got != git.CLIPushTimeout {
 		t.Errorf("flush timeout = %v, want CLIPushTimeout %v (a human is waiting on the process to exit)",
 			got, git.CLIPushTimeout)
 	}

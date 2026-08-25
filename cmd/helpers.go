@@ -64,6 +64,12 @@ var autoPushFn = git.AutoPush
 // the newer UpdatedAt and discarding the other side — dropping a phone-side
 // edit with no output at all would be the one case where silence costs data.
 // `monolog sync` and the TUI both report the same count.
+//
+// The stream differs on purpose: `monolog sync` prints that identical line on
+// stdout — it is that command's own result and has printed there since long
+// before auto-push existed — while pushAfter is always handed
+// cmd.ErrOrStderr(). Under `monolog add` the push is a side note, and stdout
+// belongs to the line the user asked for.
 func pushAfter(w io.Writer, repoPath string) {
 	if !config.AutoPush() {
 		return

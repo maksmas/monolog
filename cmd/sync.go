@@ -25,6 +25,12 @@ func newSyncCmd() *cobra.Command {
 			if err != nil {
 				// Collapsed to one line for the same reason: git's "hint:"
 				// block advises running by hand what sync just tried.
+				//
+				// Deliberately flattened rather than wrapped with %w, which
+				// the rest of the project uses: this is the top of the stack —
+				// cobra prints it and the process exits — so nothing above
+				// unwraps it or asks errors.Is about ErrAutostashConflict /
+				// ErrRebaseInProgress.
 				return errors.New(git.ShortError(err))
 			}
 			if !res.HasRemote {

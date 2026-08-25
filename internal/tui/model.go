@@ -550,6 +550,25 @@ func (m *Model) reloadAll() error {
 	return nil
 }
 
+// reloadAndRelayout is the "something changed underneath us" sequence every
+// Update branch that refreshes the whole model runs: reload from the store,
+// park a load error on m.err (never fatal — the previous task set stays on
+// screen), recompute the layout for the new item heights, and, in tag view,
+// nudge the cursor off a separator the reload may have slid under it.
+//
+// Extracted because four Update branches (taskSavedMsg, autoPushResult,
+// emailSyncResult, externalChangeMsg) need exactly this and one of them used
+// to omit the separator guard.
+func (m *Model) reloadAndRelayout() {
+	if err := m.reloadAll(); err != nil {
+		m.err = err
+	}
+	m.recomputeLayout()
+	if m.viewMode == viewTag {
+		m.skipSeparator(0)
+	}
+}
+
 // refreshTagTabs rescans tasks and rebuilds tagTabs/tabs/lists if the set of
 // tags has changed. Called from reloadAll in tag view mode.
 func (m *Model) refreshTagTabs() error {
@@ -1038,16 +1057,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.redoSHA != "" {
 			m.redoStack = pushCappedSHA(m.redoStack, msg.redoSHA)
 		}
-		if err := m.reloadAll(); err != nil {
-			m.err = err
-		}
-		m.recomputeLayout()
+		m.reloadAndRelayout()
 		if msg.focusID != "" {
 			m.focusTaskByID(msg.focusID)
-		}
-		// After reload/focus, the cursor may rest on a separator in tag view.
-		if m.viewMode == viewTag {
-			m.skipSeparator(0)
+			// Focus moved the cursor after reloadAndRelayout already ran its
+			// guard, so re-check: the focused row's neighbourhood may put the
+			// cursor on a separator in tag view.
+			if m.viewMode == viewTag {
+				m.skipSeparator(0)
+			}
 		}
 		// archiveSourceID is set by doneSelected when a gmail-sourced task
 		// is completed; the archive call runs in its own goroutine via
@@ -1096,13 +1114,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.rebased {
 			m.undoStack = nil
 			m.redoStack = nil
-			if err := m.reloadAll(); err != nil {
-				m.err = err
-			}
-			m.recomputeLayout()
-			if m.viewMode == viewTag {
-				m.skipSeparator(0)
-			}
+			m.reloadAndRelayout()
 		}
 		// Silent on plain success — a flash here would immediately overwrite
 		// the mutation's own "Added: <title>". Flash only on failure and on a
@@ -1153,12 +1165,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// to push.
 			return m, nil
 		}
-		if err := m.reloadAll(); err != nil {
-			m.err = err
-		}
-		m.recomputeLayout()
-		// email.Sync's batch commit is a seventh commit site that never
-		// produces a taskSavedMsg, so the taskSavedMsg push trigger does not
+		m.reloadAndRelayout()
+		// email.Sync commits its own batch and never produces a
+		// taskSavedMsg, so the taskSavedMsg push trigger does not
 		// cover it — dispatch the push here or Gmail-imported tasks never
 		// reach the remote. Reached only on err == nil, which excludes the
 		// created>0-but-commit-failed case: no commit, nothing to push.
@@ -1176,13 +1185,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// second terminal, external git pull). Reload to pick up the
 		// changes, then re-arm the watch loop. We do not flash a status
 		// message — the user already sees the new tasks appear.
-		if err := m.reloadAll(); err != nil {
-			m.err = err
-		}
-		m.recomputeLayout()
-		if m.viewMode == viewTag {
-			m.skipSeparator(0)
-		}
+		m.reloadAndRelayout()
 		return m, m.watchCmd()
 
 	case emailTickMsg:
