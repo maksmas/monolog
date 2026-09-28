@@ -158,17 +158,55 @@ func Init(path string, remote string) error {
 func AutoCommit(repoPath string, message string, files ...string) error {
 	repoMu.Lock()
 	defer repoMu.Unlock()
-	return autoCommit(repoPath, message, files...)
+	_, err := autoCommit(repoPath, message, files...)
+	return err
+}
+
+// hasStagedChanges reports whether the index differs from HEAD — i.e.
+// whether `git commit` right now would actually create a commit. Deliberately
+// pathspec-less, mirroring autoCommit's own commit call: it asks about the
+// whole index, not just the files this call staged.
+func hasStagedChanges(repoPath string) (bool, error) {
+	cmd := exec.Command("git", "diff", "--cached", "--quiet")
+	cmd.Dir = repoPath
+	cmd.Env = gitEnv()
+	err := cmd.Run()
+	if err == nil {
+		return false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true, nil
+	}
+	return false, fmt.Errorf("git diff --cached: %w", err)
 }
 
 // autoCommit is AutoCommit's unlocked core, shared with AutoCommitSHA so the
-// latter can hold repoMu across both the commit and the HEAD read.
-func autoCommit(repoPath string, message string, files ...string) error {
+// latter can hold repoMu across both the commit and the HEAD read. It returns
+// whether a commit was actually created.
+func autoCommit(repoPath string, message string, files ...string) (bool, error) {
 	for _, f := range files {
 		if err := run(repoPath, "git", "add", f); err != nil {
-			return fmt.Errorf("git add %s: %w", f, err)
+			return false, fmt.Errorf("git add %s: %w", f, err)
 		}
 	}
+
+	// A caller can end up staging content byte-identical to HEAD — most
+	// commonly a mutation re-applied to a task already in its target state
+	// (e.g. an already-active task re-activated, or any edit re-issued
+	// within the same UpdatedAt second so even the timestamp doesn't
+	// differ). `git commit` then fails with "nothing to commit, working
+	// tree clean" even though the store write that got us here succeeded
+	// and the on-disk state is already correct. Treat that as a no-op
+	// rather than a failure: there is nothing new to persist.
+	staged, err := hasStagedChanges(repoPath)
+	if err != nil {
+		return false, err
+	}
+	if !staged {
+		return false, nil
+	}
+
 	// Deliberately pathspec-LESS. `git commit -m msg -- <files>` would narrow
 	// the commit to what this call staged, which is otherwise attractive: with
 	// two monolog processes running, the first to reach the commit currently
@@ -202,9 +240,9 @@ func autoCommit(repoPath string, message string, files ...string) error {
 		for _, f := range files {
 			_ = run(repoPath, "git", "reset", "-q", "--", f)
 		}
-		return fmt.Errorf("git commit: %w", err)
+		return false, fmt.Errorf("git commit: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // headSHA returns the SHA of the current HEAD commit.
@@ -219,15 +257,23 @@ func headSHA(repoPath string) (string, error) {
 }
 
 // AutoCommitSHA stages the specified files, commits with the given message,
-// then returns the SHA of the resulting HEAD commit.
+// then returns the SHA of the resulting HEAD commit. When autoCommit found
+// nothing to actually commit (the staged content was already identical to
+// HEAD — see autoCommit), it returns "" rather than the unchanged HEAD SHA:
+// no new commit exists, so there is nothing for the caller to push onto an
+// undo stack or hand to auto-push.
 //
 // The commit and the HEAD read happen under one repoMu hold, so a concurrent
 // mutation cannot slip a commit in between and hand back the wrong SHA.
 func AutoCommitSHA(repoPath string, message string, files ...string) (string, error) {
 	repoMu.Lock()
 	defer repoMu.Unlock()
-	if err := autoCommit(repoPath, message, files...); err != nil {
+	committed, err := autoCommit(repoPath, message, files...)
+	if err != nil {
 		return "", err
+	}
+	if !committed {
+		return "", nil
 	}
 	sha, err := headSHA(repoPath)
 	if err != nil {

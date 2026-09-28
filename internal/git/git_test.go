@@ -227,6 +227,94 @@ func TestAutoCommit(t *testing.T) {
 	}
 }
 
+// TestAutoCommit_NoOpWhenContentUnchanged is the regression guard for a
+// caller re-committing content byte-identical to HEAD (e.g. an edit
+// re-applied to a task already in its target state, or any mutation reissued
+// within the same UpdatedAt second so even the timestamp doesn't differ).
+// git itself refuses that commit with "nothing to commit, working tree
+// clean"; AutoCommit must treat it as a no-op rather than surface that as a
+// failure, since the file on disk already holds the correct content.
+func TestAutoCommit_NoOpWhenContentUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	testFile := filepath.Join(repoPath, ".monolog", "tasks", "test.json")
+	relPath := filepath.Join(".monolog", "tasks", "test.json")
+	if err := os.WriteFile(testFile, []byte(`{"id":"test"}`), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	if err := AutoCommit(repoPath, "add: test task", relPath); err != nil {
+		t.Fatalf("first AutoCommit() error = %v", err)
+	}
+
+	// Re-write the exact same content and commit again with a different
+	// message — git sees no diff to stage, regardless of the message.
+	if err := os.WriteFile(testFile, []byte(`{"id":"test"}`), 0o644); err != nil {
+		t.Fatalf("rewrite test file: %v", err)
+	}
+	if err := AutoCommit(repoPath, "edit: test task", relPath); err != nil {
+		t.Fatalf("second AutoCommit() with unchanged content should be a no-op, got error = %v", err)
+	}
+
+	cmd := exec.Command("git", "-C", repoPath, "log", "--oneline")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git log failed: %v", err)
+	}
+	if strings.Contains(string(out), "edit: test task") {
+		t.Errorf("no new commit should have been created, got log:\n%s", string(out))
+	}
+
+	statusCmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		t.Fatalf("git status failed: %v", err)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Errorf("working tree should be clean, got:\n%s", string(statusOut))
+	}
+}
+
+// TestAutoCommitSHA_NoOpReturnsEmptySHA is TestAutoCommit_NoOpWhenContentUnchanged's
+// AutoCommitSHA counterpart. Returning the unchanged HEAD SHA here would be
+// wrong: callers (the TUI's undo stack, auto-push dispatch) treat a non-empty
+// sha as "a new commit just landed" and would push the same already-pushed
+// SHA onto the undo stack a second time.
+func TestAutoCommitSHA_NoOpReturnsEmptySHA(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "test-monolog")
+	if err := Init(repoPath, ""); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	testFile := filepath.Join(repoPath, ".monolog", "tasks", "test.json")
+	relPath := filepath.Join(".monolog", "tasks", "test.json")
+	if err := os.WriteFile(testFile, []byte(`{"id":"test"}`), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	firstSHA, err := AutoCommitSHA(repoPath, "add: test task", relPath)
+	if err != nil {
+		t.Fatalf("first AutoCommitSHA() error = %v", err)
+	}
+	if firstSHA == "" {
+		t.Fatal("first AutoCommitSHA() should return a real SHA")
+	}
+
+	if err := os.WriteFile(testFile, []byte(`{"id":"test"}`), 0o644); err != nil {
+		t.Fatalf("rewrite test file: %v", err)
+	}
+	secondSHA, err := AutoCommitSHA(repoPath, "edit: test task", relPath)
+	if err != nil {
+		t.Fatalf("second AutoCommitSHA() with unchanged content should be a no-op, got error = %v", err)
+	}
+	if secondSHA != "" {
+		t.Errorf("second AutoCommitSHA() = %q, want empty string (no new commit)", secondSHA)
+	}
+}
+
 func TestAutoCommit_MultipleFiles(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "test-monolog")
@@ -1358,13 +1446,15 @@ func TestAutoCommitSHA_ConcurrentWithSync(t *testing.T) {
 
 	// A concurrent Sync commits everything it finds (`git add -A`), so it may
 	// legitimately absorb the pending write and leave AutoCommitSHA with
-	// nothing to commit. That is a pre-existing interaction between the two
-	// entry points, not lock corruption, so retry with a fresh task until the
-	// commit lands. What repoMu must guarantee is that neither call ever fails
-	// on .git/index.lock or commits onto a detached rebase HEAD.
+	// nothing to commit — surfaced as (sha: "", err: nil), a no-op, not a
+	// failure (see AutoCommit's "no-op when nothing actually changed"
+	// design). That is a pre-existing interaction between the two entry
+	// points, not lock corruption, so retry with a fresh task until a commit
+	// actually lands. What repoMu must guarantee is that neither call ever
+	// fails on .git/index.lock or commits onto a detached rebase HEAD.
 	sha, lastErr := first.sha, first.err
-	for i := 1; lastErr != nil && i < 20; i++ {
-		if strings.Contains(lastErr.Error(), "index.lock") {
+	for i := 1; (lastErr != nil || sha == "") && i < 20; i++ {
+		if lastErr != nil && strings.Contains(lastErr.Error(), "index.lock") {
 			t.Fatalf("AutoCommitSHA raced Sync on the git index: %v", lastErr)
 		}
 		id := fmt.Sprintf("01CT%04d", i)

@@ -318,7 +318,7 @@ func sweepOrphanedTaskWrites(repoPath string, start time.Time) (inFlight []strin
 	}
 	if len(orphans) > 0 {
 		msg := fmt.Sprintf("recover: %d uncommitted task write(s)", len(orphans))
-		if cErr := autoCommit(repoPath, msg, orphans...); cErr != nil {
+		if _, cErr := autoCommit(repoPath, msg, orphans...); cErr != nil {
 			return nil, warn, fmt.Errorf("commit orphaned task write (%s): %w",
 				strings.Join(orphans, ", "), cErr)
 		}
