@@ -13,6 +13,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Several packages' tests create real temp git repos (git.Init commits
+      # immediately) without injecting their own author identity — unlike
+      # internal/git's own tests, which set GIT_AUTHOR_NAME/EMAIL themselves.
+      # The runner has no ~/.gitconfig, so without this those commits fail
+      # with "Author identity unknown".
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@monolog.invalid"
       - run: go build ./...
       - run: go test ./...
       - run: go vet ./...
