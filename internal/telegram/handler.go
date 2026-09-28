@@ -767,7 +767,34 @@ func (h *Handler) handleCallbackActive(ctx context.Context, cq *CallbackQuery, t
 
 		wasActive := task.IsActive()
 		task.SetActive(!wasActive)
-		task.UpdatedAt = h.now().UTC().Format(time.RFC3339)
+		nowT := h.now()
+		task.UpdatedAt = nowT.UTC().Format(time.RFC3339)
+
+		// Activating pulls the task into today's bucket (unless it's
+		// already there — an overdue task's bucket is also Today, and we
+		// must not clobber that custom date) and to the top of Today,
+		// mirroring the TUI's toggleActive. Deactivating never moves
+		// anything.
+		commitFiles := []string{taskRelPath(task.ID)}
+		if !wasActive {
+			if schedule.Bucket(task.Schedule, nowT) != schedule.Today {
+				if iso, err := schedule.Parse(schedule.Today, nowT, ""); err == nil {
+					task.Schedule = iso
+				}
+			}
+			if schedule.Bucket(task.Schedule, nowT) == schedule.Today {
+				all, err := h.store.List(store.ListOptions{Status: "open"})
+				if err == nil {
+					var others []model.Task
+					for _, o := range all {
+						if o.ID != task.ID && schedule.MatchesBucket(o.Schedule, schedule.Today, nowT) {
+							others = append(others, o)
+						}
+					}
+					task.Position = ordering.PositionTop(others)
+				}
+			}
+		}
 
 		if err := h.store.Update(task); err != nil {
 			out.toast = "internal error"
@@ -775,12 +802,41 @@ func (h *Handler) handleCallbackActive(ctx context.Context, cq *CallbackQuery, t
 			return
 		}
 
+		if !wasActive {
+			// Re-list including the just-updated task so a whole-bucket
+			// rebalance (if the new top position tightened a gap) commits
+			// every affected sibling alongside it — otherwise
+			// .monolog/tasks/ stays dirty and blocks auto-push.
+			all, err := h.store.List(store.ListOptions{Status: "open"})
+			if err == nil {
+				var group []model.Task
+				for _, o := range all {
+					if schedule.MatchesBucket(o.Schedule, schedule.Today, nowT) {
+						group = append(group, o)
+					}
+				}
+				if ordering.NeedsRebalance(group) {
+					rebalanced := ordering.Rebalance(group)
+					for _, rt := range rebalanced {
+						if err := h.store.Update(rt); err != nil {
+							out.toast = "internal error"
+							out.err = fmt.Errorf("rebalance store.Update: %w", err)
+							return
+						}
+						if rt.ID != task.ID {
+							commitFiles = append(commitFiles, taskRelPath(rt.ID))
+						}
+					}
+				}
+			}
+		}
+
 		verb := "active"
 		if wasActive {
 			verb = "inactive"
 		}
 		commitMsg := fmt.Sprintf("%s: %s", verb, task.Title)
-		if syncErr := h.commitAndSync(commitMsg, taskRelPath(task.ID)); syncErr != nil {
+		if syncErr := h.commitAndSync(commitMsg, commitFiles...); syncErr != nil {
 			out.toast = "sync conflict — resolve on laptop"
 			out.err = syncErr
 			return

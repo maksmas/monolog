@@ -1258,6 +1258,197 @@ func TestHandleCallbackActiveTogglesTagAndEditsRow(t *testing.T) {
 	}
 }
 
+func TestHandleCallbackActivateMovesToTodayTop(t *testing.T) {
+	h, _, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:       "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:    "already today",
+		Schedule: handlerTestNow.Format("2006-01-02"),
+		Position: 1000,
+	})
+	seedSingleTask(t, s, model.Task{
+		ID:       "01BYZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:    "week task",
+		Schedule: "week",
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01BYZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	moved, err := s.Get("01BYZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !moved.IsActive() {
+		t.Fatal("expected task to be active after toggle")
+	}
+	wantSchedule := handlerTestNow.Format("2006-01-02")
+	if moved.Schedule != wantSchedule {
+		t.Errorf("Schedule = %q, want %q (today)", moved.Schedule, wantSchedule)
+	}
+	today, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if moved.Position >= today.Position {
+		t.Errorf("activated task Position = %v, want less than existing today task's %v", moved.Position, today.Position)
+	}
+}
+
+func TestHandleCallbackDeactivateDoesNotMoveTask(t *testing.T) {
+	h, _, s, _ := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:       "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:    "week task",
+		Schedule: "week",
+		Position: 1000,
+	})
+
+	// Activate first (the step that moves the task to today's top), then
+	// deactivate and assert schedule/position stay exactly where activation
+	// left them.
+	activate := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), activate); err != nil {
+		t.Fatalf("Handle activate: %v", err)
+	}
+	afterActivate, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	deactivate := Update{
+		UpdateID: 2,
+		Callback: &CallbackQuery{ID: "cb2", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), deactivate); err != nil {
+		t.Fatalf("Handle deactivate: %v", err)
+	}
+
+	task, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if task.IsActive() {
+		t.Error("expected task to be inactive after second toggle")
+	}
+	if task.Schedule != afterActivate.Schedule {
+		t.Errorf("Schedule = %q, want unchanged from post-activate value %q", task.Schedule, afterActivate.Schedule)
+	}
+	if task.Position != afterActivate.Position {
+		t.Errorf("Position = %v, want unchanged from post-activate value %v", task.Position, afterActivate.Position)
+	}
+}
+
+func TestHandleCallbackActivateOverdueTaskKeepsSchedule(t *testing.T) {
+	h, _, s, _ := newTestHandler(t, []int64{100})
+	overdue := handlerTestNow.AddDate(0, 0, -3).Format("2006-01-02")
+	seedSingleTask(t, s, model.Task{
+		ID:       "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:    "overdue task",
+		Schedule: overdue,
+		Position: 1000,
+	})
+	seedSingleTask(t, s, model.Task{
+		ID:       "01BYZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:    "today task",
+		Schedule: handlerTestNow.Format("2006-01-02"),
+		Position: 2000,
+	})
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	task, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Fatal("expected task to be active after toggle")
+	}
+	if task.Schedule != overdue {
+		t.Errorf("Schedule = %q, want unchanged overdue date %q (must not clobber a custom date)", task.Schedule, overdue)
+	}
+	if task.Position >= 2000 {
+		t.Errorf("Position = %v, want moved to the top (below the Today sibling's 2000)", task.Position)
+	}
+}
+
+// TestHandleCallbackActivateRebalancesTodayBucketCleanly mirrors the TUI's
+// TestTUI_ActivateRebalancesTodayBucketCleanly: PositionTop halves the
+// lowest sibling's position, so a sibling seeded close enough to zero forces
+// a whole-bucket rebalance. Every rebalanced file must land in the same
+// commit as the activation, or .monolog/tasks/ stays dirty and blocks
+// auto-push (see CLAUDE.md's Auto-push-on-mutation section).
+func TestHandleCallbackActivateRebalancesTodayBucketCleanly(t *testing.T) {
+	h, _, s, repoPath := newTestHandler(t, []int64{100})
+	seedSingleTask(t, s, model.Task{
+		ID:       "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:    "tight today",
+		Schedule: handlerTestNow.Format("2006-01-02"),
+		Position: 1,
+	})
+	seedSingleTask(t, s, model.Task{
+		ID:       "01BYZ3NDEKTSV4RRFFQ69G5FAV",
+		Title:    "week task",
+		Schedule: "week",
+	})
+	// seedSingleTask writes task files directly via store.Create, bypassing
+	// git entirely — unlike the TUI fixture (seeded through `monolog add`),
+	// there is no clean-start commit to assert here. What matters is that
+	// the activation's own commit leaves nothing behind afterwards.
+
+	upd := Update{
+		UpdateID: 1,
+		Callback: &CallbackQuery{ID: "cb", UserID: 100, ChatID: 5, MessageID: 9, Data: "active:01BYZ3NDEKTSV4RRFFQ69G5FAV"},
+	}
+	if err := h.Handle(context.Background(), upd); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	moved, err := s.Get("01BYZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	tight, err := s.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if moved.Position >= tight.Position {
+		t.Errorf("activated task Position = %v, want less than sibling's %v", moved.Position, tight.Position)
+	}
+	if tight.Position-moved.Position < 100 {
+		t.Fatalf("fixture did not trigger a rebalance; positions were not spread back out (moved=%v tight=%v)", moved.Position, tight.Position)
+	}
+
+	if dirty := telegramTasksStatus(t, repoPath); dirty != "" {
+		t.Errorf("rebalanced siblings left uncommitted, which permanently defers auto-push's rebase:\n%s", dirty)
+	}
+}
+
+// telegramTasksStatus returns `git status --porcelain` restricted to the
+// tasks directory — mirrors internal/tui's tasksStatus helper.
+func telegramTasksStatus(t *testing.T, repoPath string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repoPath, "status", "--porcelain", "--", ".monolog/tasks/").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // TestHandleCallbackActivePlainTaskRowChangesBetweenStates is the regression
 // guard for the silent EditMessage failure on plainest-case tasks. Before
 // the ⭐ marker fix, a task with no other tags / no recur / no notes

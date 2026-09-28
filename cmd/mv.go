@@ -87,36 +87,43 @@ func bucketGroup(s *store.Store, task model.Task, now time.Time) ([]model.Task, 
 	return out, nil
 }
 
+// rebalanceBucket rebalances task's schedule bucket if any adjacent position
+// gap has fallen below the rebalance threshold, persisting every affected
+// sibling. It returns the relative task file paths of the rebalanced
+// siblings (task's own file is never included — callers already have it).
+func rebalanceBucket(s *store.Store, task model.Task, now time.Time) ([]string, error) {
+	allGroup, err := bucketGroup(s, task, now)
+	if err != nil {
+		return nil, fmt.Errorf("list tasks for rebalance check: %w", err)
+	}
+	if !ordering.NeedsRebalance(allGroup) {
+		return nil, nil
+	}
+	var files []string
+	rebalanced := ordering.Rebalance(allGroup)
+	for _, rt := range rebalanced {
+		rt.UpdatedAt = now.UTC().Format(time.RFC3339)
+		if err := s.Update(rt); err != nil {
+			return nil, fmt.Errorf("rebalance update: %w", err)
+		}
+		if rt.ID != task.ID {
+			files = append(files, filepath.Join(".monolog", "tasks", rt.ID+".json"))
+		}
+	}
+	return files, nil
+}
+
 // rebalanceAndCommit checks if rebalancing is needed, performs it, and commits all changes.
 func rebalanceAndCommit(s *store.Store, repoPath string, task model.Task, posLabel string) error {
 	commitFiles := []string{filepath.Join(".monolog", "tasks", task.ID+".json")}
 
-	allGroup, err := bucketGroup(s, task, time.Now())
+	extra, err := rebalanceBucket(s, task, time.Now())
 	if err != nil {
-		return fmt.Errorf("list tasks for rebalance check: %w", err)
+		return err
 	}
-	if ordering.NeedsRebalance(allGroup) {
-		rebalanced := ordering.Rebalance(allGroup)
-		for _, rt := range rebalanced {
-			rt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			if err := s.Update(rt); err != nil {
-				return fmt.Errorf("rebalance update: %w", err)
-			}
-			commitFiles = append(commitFiles, filepath.Join(".monolog", "tasks", rt.ID+".json"))
-		}
-	}
+	commitFiles = append(commitFiles, extra...)
 
-	// Deduplicate commit files
-	seen := make(map[string]bool)
-	var uniqueFiles []string
-	for _, f := range commitFiles {
-		if !seen[f] {
-			seen[f] = true
-			uniqueFiles = append(uniqueFiles, f)
-		}
-	}
-
-	return git.AutoCommit(repoPath, fmt.Sprintf("mv: %s to %s", task.Title, posLabel), uniqueFiles...)
+	return git.AutoCommit(repoPath, fmt.Sprintf("mv: %s to %s", task.Title, posLabel), commitFiles...)
 }
 
 func newMvCmd() *cobra.Command {

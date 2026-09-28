@@ -1541,14 +1541,74 @@ func (m *Model) toggleActive() tea.Cmd {
 		return nil
 	}
 	t := *task
-	t.SetActive(!t.IsActive())
+	wasActive := t.IsActive()
+	t.SetActive(!wasActive)
 	t.UpdatedAt = now()
-	label := "activated"
-	if !t.IsActive() {
-		label = "deactivated"
-	}
 	flat := flattenTitle(t.Title)
-	return m.saveCmd(t, fmt.Sprintf("edit: %s", flat), fmt.Sprintf("%s: %s", label, flat))
+
+	if wasActive {
+		// Deactivating never moves the task.
+		return m.saveCmd(t, fmt.Sprintf("edit: %s", flat), fmt.Sprintf("deactivated: %s", flat))
+	}
+
+	// Activating pulls the task into today's bucket (unless it's already
+	// there — an overdue task's bucket is also Today, and we must not
+	// clobber that custom date) and to the top of Today. Position may need
+	// a whole-bucket rebalance afterwards, so this mirrors commitGrab's
+	// multi-file commit shape rather than saveCmd's single-file path: every
+	// file the rebalance touches must land in the
+	// same commit or .monolog/tasks/ stays dirty and blocks auto-push.
+	nowT := time.Now()
+	movedToToday := schedule.Bucket(t.Schedule, nowT) != schedule.Today
+	if movedToToday {
+		if iso, err := schedule.Parse(schedule.Today, nowT, ""); err == nil {
+			t.Schedule = iso
+		}
+	} else {
+		t.Schedule = schedule.Normalize(t.Schedule, nowT)
+	}
+	if siblings, err := bucketSiblings(m.store, t.Schedule, nowT); err == nil {
+		var others []model.Task
+		for _, sib := range siblings {
+			if sib.ID != t.ID {
+				others = append(others, sib)
+			}
+		}
+		t.Position = ordering.PositionTop(others)
+	}
+
+	storeRef := m.store
+	repoPath := m.repoPath
+	return func() tea.Msg {
+		if err := storeRef.Update(t); err != nil {
+			return taskSavedMsg{err: fmt.Errorf("update: %w", err)}
+		}
+		commitFiles := []string{taskRelPath(t.ID)}
+		if siblings, err := bucketSiblings(storeRef, t.Schedule, nowT); err == nil && ordering.NeedsRebalance(siblings) {
+			rebalanced := ordering.Rebalance(siblings)
+			for _, rt := range rebalanced {
+				if err := storeRef.Update(rt); err != nil {
+					return taskSavedMsg{err: fmt.Errorf("rebalance: %w", err)}
+				}
+				if rt.ID != t.ID {
+					commitFiles = append(commitFiles, taskRelPath(rt.ID))
+				}
+			}
+		}
+		sha, err := git.AutoCommitSHA(repoPath, fmt.Sprintf("edit: %s", flat), commitFiles...)
+		if err != nil {
+			return taskSavedMsg{err: fmt.Errorf("commit: %w", err)}
+		}
+		status := fmt.Sprintf("activated: %s", flat)
+		if movedToToday {
+			// Surfaces the bucket jump explicitly — from any other tab this
+			// otherwise looks like a plain activation, and the task silently
+			// vanishing from the current list (it moved to Today) would
+			// otherwise read as a bug rather than the intended behavior.
+			status = fmt.Sprintf("activated: %s (moved to Today)", flat)
+		}
+		return taskSavedMsg{status: status, focusID: t.ID, sha: sha}
+	}
 }
 
 // --- reschedule modal ------------------------------------------------------

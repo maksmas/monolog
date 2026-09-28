@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/maksmas/monolog/internal/config"
 	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/schedule"
 )
 
 // addTestTask adds a task via the CLI and returns its ID.
@@ -695,6 +698,50 @@ func TestEditCommand_NoFlagsNoChange(t *testing.T) {
 	}
 }
 
+// TestEditCommand_RepeatedIdenticalEditDoesNotError is the regression guard
+// for a real crash: re-issuing an edit that doesn't actually change the
+// stored task (most commonly --active=true on an already-active task, or any
+// edit flag reissued fast enough to land within the same UpdatedAt second)
+// used to fail with "nothing to commit, working tree clean" — git's honest
+// answer to being asked to commit content byte-identical to HEAD, surfaced
+// as a command failure even though the store write had already succeeded and
+// the task was already in the requested state. Neither call here should
+// error; whether the second one produces a real commit depends on whether it
+// landed in the same wall-clock second as the first, which this test does
+// not control and doesn't need to.
+func TestEditCommand_RepeatedIdenticalEditDoesNotError(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTask(t, dir, "Repeat me")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("first edit --active=true error = %v\noutput: %s", err, buf.String())
+	}
+
+	rootCmd2 := NewRootCmd()
+	buf2 := new(bytes.Buffer)
+	rootCmd2.SetOut(buf2)
+	rootCmd2.SetErr(buf2)
+	rootCmd2.SetArgs([]string{"edit", id[:8], "--active=true"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("repeated edit --active=true error = %v\noutput: %s", err, buf2.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if !task.IsActive() {
+		t.Error("task should still be active")
+	}
+}
+
 // --- Edit --active tests ---
 
 func TestEdit_ActivateAndDeactivate(t *testing.T) {
@@ -763,6 +810,208 @@ func TestEdit_ActivateAndDeactivate(t *testing.T) {
 	}
 	if task.IsActive() {
 		t.Error("task should remain inactive when --active is not passed")
+	}
+}
+
+func TestEdit_ActivateMovesToTodayTop(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	idToday := addTestTaskWithSchedule(t, dir, "already today", "today")
+	idWeek := addTestTaskWithSchedule(t, dir, "week task", "week")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", idWeek, "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --active=true error = %v\noutput: %s", err, buf.String())
+	}
+
+	moved, ok := getTaskByID(t, dir, idWeek)
+	if !ok {
+		t.Fatal("task not found after activate")
+	}
+	if !moved.IsActive() {
+		t.Error("task should be active")
+	}
+	today, ok := getTaskByID(t, dir, idToday)
+	if !ok {
+		t.Fatal("today task not found")
+	}
+	if moved.Schedule != today.Schedule {
+		t.Errorf("Schedule = %q, want %q (today, matching existing today task)", moved.Schedule, today.Schedule)
+	}
+	if moved.Position >= today.Position {
+		t.Errorf("activated task Position = %v, want less than existing today task's %v", moved.Position, today.Position)
+	}
+}
+
+func TestEdit_ActivateWithExplicitScheduleWins(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTaskWithSchedule(t, dir, "week task", "week")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id[:8], "--active=true", "--schedule", "month"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if !task.IsActive() {
+		t.Error("task should be active")
+	}
+	wantSchedule, err := schedule.Parse("month", time.Now(), config.DateFormat())
+	if err != nil {
+		t.Fatalf("schedule.Parse: %v", err)
+	}
+	if task.Schedule != wantSchedule {
+		t.Errorf("Schedule = %q, want explicit --schedule value %q (not auto-moved to today)", task.Schedule, wantSchedule)
+	}
+}
+
+func TestEdit_DeactivateDoesNotMoveTask(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	id := addTestTaskWithSchedule(t, dir, "week task", "week")
+
+	// Activate first (this is the step that moves the task to today's top),
+	// then deactivate and assert the post-activate schedule/position are
+	// left exactly as they were — deactivating must not move anything.
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id, "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --active=true error = %v\noutput: %s", err, buf.String())
+	}
+	afterActivate, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found after activate")
+	}
+
+	rootCmd2 := NewRootCmd()
+	buf2 := new(bytes.Buffer)
+	rootCmd2.SetOut(buf2)
+	rootCmd2.SetErr(buf2)
+	rootCmd2.SetArgs([]string{"edit", id, "--active=false"})
+	if err := rootCmd2.Execute(); err != nil {
+		t.Fatalf("edit --active=false error = %v\noutput: %s", err, buf2.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if task.IsActive() {
+		t.Error("task should be inactive")
+	}
+	if task.Schedule != afterActivate.Schedule {
+		t.Errorf("Schedule = %q, want unchanged from post-activate value %q", task.Schedule, afterActivate.Schedule)
+	}
+	if task.Position != afterActivate.Position {
+		t.Errorf("Position = %v, want unchanged from post-activate value %v", task.Position, afterActivate.Position)
+	}
+}
+
+func TestEdit_ActivateOverdueTaskKeepsSchedule(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	overdue := time.Now().AddDate(0, 0, -3).Format(schedule.IsoLayout)
+	id := addTestTaskWithSchedule(t, dir, "overdue task", overdue)
+	idToday := addTestTaskWithSchedule(t, dir, "today task", "today")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", id, "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --active=true error = %v\noutput: %s", err, buf.String())
+	}
+
+	task, ok := getTaskByID(t, dir, id)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if !task.IsActive() {
+		t.Error("task should be active")
+	}
+	if task.Schedule != overdue {
+		t.Errorf("Schedule = %q, want unchanged overdue date %q (must not clobber a custom date)", task.Schedule, overdue)
+	}
+	today, ok := getTaskByID(t, dir, idToday)
+	if !ok {
+		t.Fatal("today task not found")
+	}
+	if task.Position >= today.Position {
+		t.Errorf("activated task Position = %v, want less than existing today task's %v", task.Position, today.Position)
+	}
+}
+
+// TestEdit_ActivateRebalancesTodayBucketCleanly mirrors the TUI/Telegram
+// activate-rebalance tests: PositionTop halves the lowest sibling's
+// position, so a sibling seeded close enough to zero forces a whole-bucket
+// rebalance. Every rebalanced file must land in the same commit as the
+// activation, or .monolog/tasks/ stays dirty and blocks auto-push (see
+// CLAUDE.md's Auto-push-on-mutation section).
+func TestEdit_ActivateRebalancesTodayBucketCleanly(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "monolog")
+	initTestRepo(t, dir)
+
+	idTight := addTestTaskWithSchedule(t, dir, "tight today", "today")
+	tight, ok := getTaskByID(t, dir, idTight)
+	if !ok {
+		t.Fatal("tight task not found")
+	}
+	tight.Position = 1
+	writeTestTask(t, dir, tight)
+
+	idWeek := addTestTaskWithSchedule(t, dir, "week task", "week")
+
+	rootCmd := NewRootCmd()
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"edit", idWeek, "--active=true"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("edit --active=true error = %v\noutput: %s", err, buf.String())
+	}
+
+	moved, ok := getTaskByID(t, dir, idWeek)
+	if !ok {
+		t.Fatal("moved task not found")
+	}
+	rebalancedTight, ok := getTaskByID(t, dir, idTight)
+	if !ok {
+		t.Fatal("tight task not found")
+	}
+	if moved.Position >= rebalancedTight.Position {
+		t.Errorf("activated task Position = %v, want less than sibling's %v", moved.Position, rebalancedTight.Position)
+	}
+	if rebalancedTight.Position-moved.Position < 100 {
+		t.Fatalf("fixture did not trigger a rebalance; positions were not spread back out (moved=%v tight=%v)", moved.Position, rebalancedTight.Position)
+	}
+
+	gitCmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	out, err := gitCmd.Output()
+	if err != nil {
+		t.Fatalf("git status failed: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("rebalanced siblings left uncommitted, which permanently defers auto-push's rebase:\n%s", string(out))
 	}
 }
 

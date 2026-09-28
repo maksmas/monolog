@@ -10,6 +10,7 @@ import (
 	"github.com/maksmas/monolog/internal/display"
 	"github.com/maksmas/monolog/internal/git"
 	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/ordering"
 	"github.com/maksmas/monolog/internal/recurrence"
 	"github.com/maksmas/monolog/internal/schedule"
 	"github.com/spf13/cobra"
@@ -90,8 +91,34 @@ func newEditCmd() *cobra.Command {
 				task.Tags = model.SanitizeTags(tags)
 				task.SetActive(wasActive)
 			}
+			// Activating (inactive -> active) pulls the task into today's
+			// bucket — unless the caller also passed --schedule, which wins
+			// — and to the top of Today, mirroring the TUI/Telegram active
+			// toggle. Deactivating never moves anything.
+			movedToTodayTop := false
 			if cmd.Flags().Changed("active") {
+				wasActive := task.IsActive()
 				task.SetActive(active)
+				if active && !wasActive {
+					if !cmd.Flags().Changed("schedule") && schedule.Bucket(task.Schedule, now) != schedule.Today {
+						if iso, err := schedule.Parse(schedule.Today, now, ""); err == nil {
+							task.Schedule = iso
+						}
+					}
+					if schedule.Bucket(task.Schedule, now) == schedule.Today {
+						group, err := bucketGroup(s, task, now)
+						if err == nil {
+							var others []model.Task
+							for _, gt := range group {
+								if gt.ID != task.ID {
+									others = append(others, gt)
+								}
+							}
+							task.Position = ordering.PositionTop(others)
+							movedToTodayTop = true
+						}
+					}
+				}
 			}
 			if cmd.Flags().Changed("recur") {
 				task.Recurrence = newRecur
@@ -103,8 +130,15 @@ func newEditCmd() *cobra.Command {
 				return fmt.Errorf("update task: %w", err)
 			}
 
-			taskFile := filepath.Join(".monolog", "tasks", task.ID+".json")
-			if err := git.AutoCommit(repoPath, fmt.Sprintf("edit: %s", task.Title), taskFile); err != nil {
+			commitFiles := []string{filepath.Join(".monolog", "tasks", task.ID+".json")}
+			if movedToTodayTop {
+				extra, err := rebalanceBucket(s, task, now)
+				if err != nil {
+					return fmt.Errorf("rebalance: %w", err)
+				}
+				commitFiles = append(commitFiles, extra...)
+			}
+			if err := git.AutoCommit(repoPath, fmt.Sprintf("edit: %s", task.Title), commitFiles...); err != nil {
 				return fmt.Errorf("auto-commit: %w", err)
 			}
 
@@ -119,7 +153,7 @@ func newEditCmd() *cobra.Command {
 	cmd.Flags().StringVar(&body, "body", "", "New body text")
 	cmd.Flags().StringVar(&scheduleArg, "schedule", "", fmt.Sprintf("New schedule (today, tomorrow, week, month, someday, or %s)", config.DateFormatLabel()))
 	cmd.Flags().StringVar(&tags, "tags", "", "New comma-separated tags")
-	cmd.Flags().BoolVar(&active, "active", false, "Mark as active (use --active=false to deactivate)")
+	cmd.Flags().BoolVar(&active, "active", false, "Mark as active (use --active=false to deactivate); activating moves the task to today and to the top of Today unless --schedule is also given")
 	cmd.Flags().StringVar(&recur, "recur", "", "New recurrence rule: "+recurrence.GrammarHint+" (e.g. monthly:1, weekly:mon, workdays, days:7; pass \"\" to clear)")
 
 	return cmd

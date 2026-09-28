@@ -1257,6 +1257,231 @@ func TestTUI_AKeyTogglesActive(t *testing.T) {
 	}
 }
 
+func TestTUI_ActivateMovesToTodayTop(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01TODAY", Title: "already today", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01WEEK", Title: "week task", Status: "open", Schedule: "week",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Switch from Today (tab 0) to Week (tab 2), where 01WEEK lives.
+	m, _ = key(t, m, "right")
+	m, _ = key(t, m, "right")
+	if got := m.selectedTask(); got == nil || got.ID != "01WEEK" {
+		t.Fatalf("precondition: selected task = %+v, want 01WEEK", got)
+	}
+
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	moved, err := m.store.GetByPrefix("01WEEK")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !moved.IsActive() {
+		t.Error("task should be active after activation")
+	}
+	wantSchedule := expectSchedule(t, "today")
+	if moved.Schedule != wantSchedule {
+		t.Errorf("Schedule = %q, want %q (today)", moved.Schedule, wantSchedule)
+	}
+
+	today, err := m.store.GetByPrefix("01TODAY")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if moved.Position >= today.Position {
+		t.Errorf("activated task Position = %v, want less than existing Today sibling's %v", moved.Position, today.Position)
+	}
+
+	// The cursor should follow the task to its new home in Today, not stay
+	// behind on the now-empty Week tab or land on some other row.
+	if m.activeTab != 0 {
+		t.Errorf("activeTab = %d, want 0 (Today)", m.activeTab)
+	}
+	if got := m.selectedTask(); got == nil || got.ID != "01WEEK" {
+		t.Errorf("selected task after activation = %+v, want 01WEEK", got)
+	}
+
+	// Since the task just vanished from the Week tab, the status bar must
+	// call out the bucket jump explicitly.
+	if !strings.Contains(m.statusMsg, "moved to Today") {
+		t.Errorf("statusMsg = %q, want it to mention the move to Today", m.statusMsg)
+	}
+}
+
+func TestTUI_ActivateAlreadyTodayMovesToTop(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01FIRST", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01SECOND", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Cursor starts on the first (lowest-position) item; move down to select
+	// the second before activating it.
+	m, _ = key(t, m, "down")
+	if got := m.selectedTask(); got == nil || got.ID != "01SECOND" {
+		t.Fatalf("precondition: selected task = %+v, want 01SECOND", got)
+	}
+
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	second, err := m.store.GetByPrefix("01SECOND")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	first, err := m.store.GetByPrefix("01FIRST")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if second.Position >= first.Position {
+		t.Errorf("activated task Position = %v, want less than sibling's %v", second.Position, first.Position)
+	}
+	if got := m.selectedTask(); got == nil || got.ID != "01SECOND" {
+		t.Errorf("selected task after activation = %+v, want cursor to follow the moved task 01SECOND", got)
+	}
+	// The task was already in Today — no bucket jump happened, so the
+	// status bar should not claim one did.
+	if strings.Contains(m.statusMsg, "moved to Today") {
+		t.Errorf("statusMsg = %q, should not mention a move when the task was already in Today", m.statusMsg)
+	}
+}
+
+func TestTUI_DeactivateDoesNotMoveTask(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "active week task", Status: "open", Schedule: "week",
+			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// The task lives in Week; switch there to select it.
+	m, _ = key(t, m, "right")
+	m, _ = key(t, m, "right")
+	if got := m.selectedTask(); got == nil || got.ID != "01A" {
+		t.Fatalf("precondition: selected task = %+v, want 01A", got)
+	}
+
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01A")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if task.IsActive() {
+		t.Error("task should be inactive after toggling off")
+	}
+	if task.Schedule != "week" {
+		t.Errorf("Schedule = %q, want unchanged %q", task.Schedule, "week")
+	}
+	if task.Position != 1000 {
+		t.Errorf("Position = %v, want unchanged 1000", task.Position)
+	}
+}
+
+func TestTUI_ActivateOverdueTaskKeepsScheduleButMovesToTop(t *testing.T) {
+	overdue := time.Now().AddDate(0, 0, -3).Format(schedule.IsoLayout)
+	m := newTestModel(t,
+		model.Task{ID: "01OVERDUE", Title: "overdue task", Status: "open", Schedule: overdue,
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01TODAY", Title: "today task", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	// Overdue dates classify as the Today bucket too, so both tasks already
+	// live in tab 0; the lowest-position item (the overdue one) is selected
+	// by default.
+	if got := m.selectedTask(); got == nil || got.ID != "01OVERDUE" {
+		t.Fatalf("precondition: selected task = %+v, want 01OVERDUE", got)
+	}
+
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+
+	task, err := m.store.GetByPrefix("01OVERDUE")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !task.IsActive() {
+		t.Error("task should be active")
+	}
+	if task.Schedule != overdue {
+		t.Errorf("Schedule = %q, want unchanged overdue date %q (must not clobber a custom date)", task.Schedule, overdue)
+	}
+	if task.Position >= 2000 {
+		t.Errorf("Position = %v, want moved to the top (below the Today sibling's 2000)", task.Position)
+	}
+	// The task was already classified as Today (overdue is Today), so no
+	// bucket jump happened — the status bar should not claim one did.
+	if strings.Contains(m.statusMsg, "moved to Today") {
+		t.Errorf("statusMsg = %q, should not mention a move for an already-Today (overdue) task", m.statusMsg)
+	}
+}
+
+// TestTUI_ActivateRebalancesTodayBucketCleanly is the activation analogue of
+// TestGrab_RebalanceCommitsEverySiblingItWrote: PositionTop halves the lowest
+// sibling's position, so a sibling seeded close enough to zero forces a
+// rebalance of the whole Today bucket. Every rebalanced file must land in the
+// same commit as the activation, or .monolog/tasks/ stays dirty and blocks
+// auto-push (see CLAUDE.md's Auto-push-on-mutation section).
+func TestTUI_ActivateRebalancesTodayBucketCleanly(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01TIGHT", Title: "tight today", Status: "open", Schedule: "today",
+			Position: 1, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01WEEK", Title: "week task", Status: "open", Schedule: "week",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	if dirty := tasksStatus(t, m.repoPath); dirty != "" {
+		t.Fatalf("fixture should start clean, got:\n%s", dirty)
+	}
+	m, _ = key(t, m, "right")
+	m, _ = key(t, m, "right")
+	if got := m.selectedTask(); got == nil || got.ID != "01WEEK" {
+		t.Fatalf("precondition: selected task = %+v, want 01WEEK", got)
+	}
+
+	m, cmd := key(t, m, "a")
+	if cmd == nil {
+		t.Fatal("a should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if m.err != nil {
+		t.Fatalf("activate error: %v", m.err)
+	}
+
+	moved, err := m.store.GetByPrefix("01WEEK")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	tight, err := m.store.GetByPrefix("01TIGHT")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if moved.Position >= tight.Position {
+		t.Errorf("activated task Position = %v, want less than sibling's %v", moved.Position, tight.Position)
+	}
+	// The fixture only actually exercises the rebalance path if the gap that
+	// PositionTop produced (1/2 = 0.5, a 0.5 gap below the existing 1) was
+	// below ordering.RebalanceThreshold and got spread back out.
+	if tight.Position-moved.Position < 100 {
+		t.Fatalf("fixture did not trigger a rebalance; positions were not spread back out (moved=%v tight=%v)", moved.Position, tight.Position)
+	}
+
+	if dirty := tasksStatus(t, m.repoPath); dirty != "" {
+		t.Errorf("rebalanced siblings left uncommitted, which permanently defers auto-push's rebase:\n%s", dirty)
+	}
+}
+
 func TestTUI_AKeyNoOpWhenListEmpty(t *testing.T) {
 	m := newTestModel(t) // no tasks
 	m, cmd := key(t, m, "a")
