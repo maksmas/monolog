@@ -186,6 +186,10 @@ Print full task detail to stdout: title, ID, status, schedule, recurrence (when 
 
 Show tasks completed in the last 7 days, with `created→done` compact dates.
 
+### `monolog stats [--tag <tag>]`
+
+Print the numbers from the TUI stats bar: total, open and done task counts, the average age of open tasks, and the average time from creation to completion for done tasks. Averages show `-` when there is nothing to average. `-t, --tag` limits every number to tasks with that tag.
+
 ### `monolog sync`
 
 Commit local changes, pull with rebase, and push. Warns if no remote is configured.

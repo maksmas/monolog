@@ -45,6 +45,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newEditCmd())
 	rootCmd.AddCommand(newMvCmd())
 	rootCmd.AddCommand(newLogCmd())
+	rootCmd.AddCommand(newStatsCmd())
 	rootCmd.AddCommand(newSyncCmd())
 	rootCmd.AddCommand(newNoteCmd())
 	rootCmd.AddCommand(newShowCmd())
