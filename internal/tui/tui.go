@@ -5,12 +5,13 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/maksmas/monolog/internal/store"
 )
@@ -56,9 +57,27 @@ func Run(s *store.Store, repoPath string, opts Options) error {
 	m.watcher = w
 	defer func() { _ = w.Stop() }()
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m)
 	_, err = p.Run()
 	return err
+}
+
+// View returns the screen content plus the program-level terminal settings.
+// The kitty keyboard protocol flags make the terminal report the base-layout
+// key (Key.BaseCode) alongside the typed text, so shortcuts can be resolved on
+// non-Latin layouts. ReportAllKeysAsEscapeCodes is needed because
+// ReportAlternateKeys only affects keys already sent as escape codes, and
+// ReportAssociatedText keeps shifted non-Latin text (e.g. "П") intact.
+func (m *Model) View() tea.View {
+	return tea.View{
+		Content:   m.render(),
+		AltScreen: true,
+		KeyboardEnhancements: tea.KeyboardEnhancements{
+			ReportAllKeysAsEscapeCodes: true,
+			ReportAlternateKeys:        true,
+			ReportAssociatedText:       true,
+		},
+	}
 }
 
 // Theme-independent package-level styles. These have no theme colors and do not
@@ -131,57 +150,58 @@ type tuiStyles struct {
 }
 
 // buildStyles constructs a tuiStyles value driven by the given theme. All
-// color roles are sourced from t so the palette stays cohesive and
-// theme-swappable.
-func buildStyles(t Theme) tuiStyles {
+// color roles are sourced from t, resolved for the terminal background
+// (isDark), so the palette stays cohesive and theme-swappable.
+func buildStyles(t Theme, isDark bool) tuiStyles {
+	c := func(a AdaptiveColor) color.Color { return a.Resolve(isDark) }
 	return tuiStyles{
 		tabStyle: lipgloss.NewStyle().
 			Padding(0, 2).
-			Foreground(t.TabFg),
+			Foreground(c(t.TabFg)),
 
 		activeTabStyle: lipgloss.NewStyle().
 			Padding(0, 2).
 			Bold(true).
-			Foreground(t.ActiveTabFg).
-			Background(t.ActiveTabBg),
+			Foreground(c(t.ActiveTabFg)).
+			Background(c(t.ActiveTabBg)),
 
 		statusStyle: lipgloss.NewStyle().
-			Foreground(t.TabFg).
+			Foreground(c(t.TabFg)).
 			Padding(0, 1),
 
 		helpStyle: lipgloss.NewStyle().
-			Foreground(t.Borders).
+			Foreground(c(t.Borders)).
 			Padding(0, 1),
 
 		separatorStyle: lipgloss.NewStyle().
-			Foreground(t.Borders).
+			Foreground(c(t.Borders)).
 			Bold(true).
 			PaddingLeft(2),
 
 		helpKeyStyle: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(t.Hotkey),
+			Foreground(c(t.Hotkey)),
 
 		helpTextStyle: lipgloss.NewStyle().
-			Foreground(t.Borders),
+			Foreground(c(t.Borders)),
 
-		searchDoneStyle: lipgloss.NewStyle().Foreground(t.SearchDone),
+		searchDoneStyle: lipgloss.NewStyle().Foreground(c(t.SearchDone)),
 
-		searchActiveStyle: lipgloss.NewStyle().Foreground(t.SearchActive),
+		searchActiveStyle: lipgloss.NewStyle().Foreground(c(t.SearchActive)),
 
-		searchCountStyle: lipgloss.NewStyle().Foreground(t.SearchCount),
+		searchCountStyle: lipgloss.NewStyle().Foreground(c(t.SearchCount)),
 
 		searchMetaStyle: lipgloss.NewStyle().
-			Foreground(t.SearchMeta).
+			Foreground(c(t.SearchMeta)).
 			Padding(0, 1),
 
 		searchPreviewBorderStyle: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(t.SearchPreviewBorder).
+			BorderForeground(c(t.SearchPreviewBorder)).
 			Padding(0, 1),
 
 		searchPreviewDimStyle: lipgloss.NewStyle().
-			Foreground(t.SearchPreviewDim).
+			Foreground(c(t.SearchPreviewDim)).
 			Italic(true),
 	}
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +12,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"gopkg.in/yaml.v3"
 
 	"github.com/maksmas/monolog/internal/config"
@@ -129,8 +130,14 @@ type Model struct {
 	// theme is the active color theme resolved at startup.
 	theme Theme
 
+	// isDark records whether the terminal background is dark. It starts
+	// true and is updated from the tea.BackgroundColorMsg answering the
+	// RequestBackgroundColor query sent by Init. Every theme color is
+	// resolved against it (see restyle).
+	isDark bool
+
 	// styles holds all lipgloss styles for this model instance, built from
-	// the active theme by buildStyles in newModel.
+	// the active theme by restyle.
 	styles tuiStyles
 
 	// Style sets for list item rendering.
@@ -299,27 +306,60 @@ func (i item) Description() string {
 func (i item) FilterValue() string { return i.task.Title }
 
 // initStyles sets up the three style sets used for list item rendering.
+// Colors are resolved for the terminal background (isDark).
 // Styles carry only foreground colors (no padding or borders) because bullet
 // prefixes handle indentation and selection indication.
-func initStyles(t Theme) (base, grab, active list.DefaultItemStyles) {
-	base.NormalTitle = lipgloss.NewStyle().Foreground(t.NormalText)
-	base.SelectedTitle = lipgloss.NewStyle().Foreground(t.SelectedText)
-	base.NormalDesc = lipgloss.NewStyle().Foreground(t.DimText)
-	base.SelectedDesc = lipgloss.NewStyle().Foreground(t.SelectedText)
+func initStyles(t Theme, isDark bool) (base, grab, active list.DefaultItemStyles) {
+	c := func(a AdaptiveColor) color.Color { return a.Resolve(isDark) }
+	base.NormalTitle = lipgloss.NewStyle().Foreground(c(t.NormalText))
+	base.SelectedTitle = lipgloss.NewStyle().Foreground(c(t.SelectedText))
+	base.NormalDesc = lipgloss.NewStyle().Foreground(c(t.DimText))
+	base.SelectedDesc = lipgloss.NewStyle().Foreground(c(t.SelectedText))
 
 	// Distinct from default pink selection: orange/yellow reads as "held".
 	grab = base
-	grab.SelectedTitle = lipgloss.NewStyle().Foreground(t.GrabText).Bold(true)
-	grab.SelectedDesc = lipgloss.NewStyle().Foreground(t.GrabText)
+	grab.SelectedTitle = lipgloss.NewStyle().Foreground(c(t.GrabText)).Bold(true)
+	grab.SelectedDesc = lipgloss.NewStyle().Foreground(c(t.GrabText))
 
 	// Green styling for active tasks (persistent "currently working on" state).
 	active = base
-	active.NormalTitle = lipgloss.NewStyle().Foreground(t.ActiveNormal)
-	active.NormalDesc = lipgloss.NewStyle().Foreground(t.ActiveNormal)
-	active.SelectedTitle = lipgloss.NewStyle().Foreground(t.ActiveSelected).Bold(true)
-	active.SelectedDesc = lipgloss.NewStyle().Foreground(t.ActiveSelected)
+	active.NormalTitle = lipgloss.NewStyle().Foreground(c(t.ActiveNormal))
+	active.NormalDesc = lipgloss.NewStyle().Foreground(c(t.ActiveNormal))
+	active.SelectedTitle = lipgloss.NewStyle().Foreground(c(t.ActiveSelected)).Bold(true)
+	active.SelectedDesc = lipgloss.NewStyle().Foreground(c(t.ActiveSelected))
 
 	return
+}
+
+// restyle rebuilds every theme- and background-dependent style from
+// m.theme and m.isDark: the tuiStyles set, the three list-item style sets,
+// and the bubbles input styles (whose defaults are themselves light/dark
+// aware). It is the single path used at construction, by applySettings on a
+// theme switch, and when the terminal reports its background color.
+func (m *Model) restyle() {
+	m.styles = buildStyles(m.theme, m.isDark)
+	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(m.theme, m.isDark)
+
+	tiStyles := textinput.DefaultStyles(m.isDark)
+	for _, ti := range []*textinput.Model{&m.input, &m.tagInput, &m.recurInput, &m.search.input} {
+		ti.SetStyles(tiStyles)
+	}
+	taStyles := flatTextareaStyles(m.isDark)
+	m.titleArea.SetStyles(taStyles)
+	m.noteArea.SetStyles(taStyles)
+}
+
+// flatTextareaStyles returns the default textarea styles for the given
+// background with the cursor-line background and base style flattened, so
+// the add-modal title and the note input look like regular one-line inputs
+// until the user presses Alt+Enter.
+func flatTextareaStyles(isDark bool) textarea.Styles {
+	st := textarea.DefaultStyles(isDark)
+	st.Focused.CursorLine = lipgloss.NewStyle()
+	st.Focused.Base = lipgloss.NewStyle()
+	st.Blurred.CursorLine = lipgloss.NewStyle()
+	st.Blurred.Base = lipgloss.NewStyle()
+	return st
 }
 
 // renderListItem renders a single list item (regular or separator) as a
@@ -443,12 +483,6 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	// one level up in updateAdd() where it submits the task.
 	ta.KeyMap.InsertNewline.SetKeys("alt+enter")
 	ta.SetHeight(1)
-	// Flatten the textarea's own cursor-line background so the modal looks like
-	// a regular one-line input until the user presses Alt+Enter.
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Base = lipgloss.NewStyle()
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.Base = lipgloss.NewStyle()
 
 	// Note textarea for the detail panel. Alt+Enter inserts newlines; plain
 	// Enter is handled one level up where it submits the note.
@@ -459,10 +493,6 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 	noteTA.Prompt = ""
 	noteTA.KeyMap.InsertNewline.SetKeys("alt+enter")
 	noteTA.SetHeight(3)
-	noteTA.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	noteTA.FocusedStyle.Base = lipgloss.NewStyle()
-	noteTA.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	noteTA.BlurredStyle.Base = lipgloss.NewStyle()
 
 	// Resolve the active color theme: read config, look up by name, fall back.
 	themeName := config.Theme()
@@ -494,7 +524,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		noteArea:        noteTA,
 		search:          searchState{input: searchTi},
 		theme:           activeTheme,
-		styles:          buildStyles(activeTheme),
+		isDark:          true,
 		emailEnabled:    ec.Enabled,
 		emailLabel:      ec.Label,
 		emailMaxPerSync: ec.MaxPerSync,
@@ -502,7 +532,7 @@ func newModel(s *store.Store, repoPath string, opts Options) (*Model, error) {
 		autoPushEnabled: autoPush,
 		launchCfg:       config.Launch(),
 	}
-	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(activeTheme)
+	m.restyle()
 	if !ok {
 		m.statusMsg = fmt.Sprintf("theme %q not found, using default", themeName)
 	}
@@ -986,7 +1016,10 @@ func (m *Model) skipSeparator(dir int) {
 // email sync plus the periodic ticker. tea.Batch silently drops nil entries
 // so each cmd is added unconditionally; missing pieces just no-op.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.watchCmd()}
+	// Ask the terminal for its background color; the reply arrives as a
+	// tea.BackgroundColorMsg and switches the theme to its light variant
+	// when needed. Until then the dark variant is used.
+	cmds := []tea.Cmd{m.watchCmd(), tea.RequestBackgroundColor}
 	if m.emailEnabled {
 		m.emailSyncing = true
 		cmds = append(cmds, m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
@@ -1026,6 +1059,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.recomputeLayout()
+		return m, nil
+
+	case tea.BackgroundColorMsg:
+		m.isDark = msg.IsDark()
+		m.restyle()
 		return m, nil
 
 	case taskSavedMsg:
@@ -1207,7 +1245,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emailSyncing = true
 		return m, tea.Batch(m.emailSyncCmd(), m.emailTickCmd(m.emailInterval))
 
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		return m, m.routePaste(msg)
+
+	case tea.KeyPressMsg:
+		// Under the kitty keyboard protocol (ReportAllKeysAsEscapeCodes) a
+		// modifier pressed on its own arrives as a key event. Drop it before
+		// any mode dispatch: otherwise a bare Shift would dismiss help,
+		// cancel delete-confirm before the "Y" arrives, and clear statusMsg.
+		if isModifierOnly(msg.Code) {
+			return m, nil
+		}
 		switch m.mode {
 		case modeNormal:
 			return m.updateNormal(msg)
@@ -1227,8 +1275,54 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// routePaste delivers a bracketed paste to whichever text input currently
+// owns the keyboard, through the same helpers the key path uses so a paste
+// gets the same post-processing as typing. v2 sends paste as its own message
+// (not a key), so without this every input would silently drop it. Command
+// contexts (the list, grab, help, settings, delete-confirm, reschedule's
+// preset picker) have no input and ignore the paste.
+func (m *Model) routePaste(msg tea.PasteMsg) tea.Cmd {
+	switch m.mode {
+	case modeAdd:
+		return m.updateAddInput(msg)
+	case modeRetag:
+		return m.updateRetagInput(msg)
+	case modeReschedule:
+		// Sub-step 0 is the preset picker; only the custom-date step has a
+		// focused input.
+		if m.rescheduleSub == 0 {
+			return nil
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return cmd
+	case modeSearch:
+		return m.updateSearchInput(msg)
+	case modeNormal:
+		if !m.detailOpen {
+			return nil
+		}
+		var cmd tea.Cmd
+		m.noteArea, cmd = m.noteArea.Update(msg)
+		return cmd
+	}
+	return nil
+}
+
+// isModifierOnly reports whether code is a modifier or lock key pressed on
+// its own (kitty reports these under ReportAllKeysAsEscapeCodes).
+func isModifierOnly(code rune) bool {
+	switch {
+	case code >= tea.KeyLeftShift && code <= tea.KeyIsoLevel5Shift:
+		return true
+	case code == tea.KeyCapsLock, code == tea.KeyNumLock, code == tea.KeyScrollLock:
+		return true
+	}
+	return false
+}
+
 // updateNormal handles keys when no modal is open.
-func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateNormal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = ""
 
 	// When the detail panel is open, the note textarea owns the keyboard so
@@ -1237,12 +1331,12 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// newline. Non-rune keys (arrows, Home/End, PgUp/PgDn, Tab) fall through
 	// for task/tab navigation. [/] still scroll the detail body.
 	if m.detailOpen {
-		switch msg.Type {
-		case tea.KeyEsc:
+		switch msg.Code {
+		case tea.KeyEscape:
 			m.closeDetailPanel()
 			return m, nil
 		case tea.KeyEnter:
-			if msg.Alt {
+			if msg.Mod.Contains(tea.ModAlt) {
 				var cmd tea.Cmd
 				m.noteArea, cmd = m.noteArea.Update(msg)
 				return m, cmd
@@ -1250,8 +1344,8 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.submitNote()
 		}
 
-		if msg.Type == tea.KeyRunes {
-			switch string(msg.Runes) {
+		if msg.Text != "" && !msg.Mod.Contains(tea.ModCtrl) && !msg.Mod.Contains(tea.ModAlt) {
+			switch msg.Text {
 			case "[", "]":
 				// Fall through for body scroll.
 			default:
@@ -1260,7 +1354,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
-		if msg.Type == tea.KeySpace || msg.Type == tea.KeyBackspace {
+		if msg.Code == tea.KeySpace || msg.Code == tea.KeyBackspace {
 			var cmd tea.Cmd
 			m.noteArea, cmd = m.noteArea.Update(msg)
 			return m, cmd
@@ -1418,10 +1512,10 @@ func (m *Model) closeDetailPanel() {
 }
 
 // updateModal routes keys based on the current modal.
-func (m *Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Esc: when the suggestion dropdown (tag or recurrence) is visible, clear
 	// it instead of closing the modal. Let the modal handler decide.
-	if msg.Type == tea.KeyEsc {
+	if msg.Code == tea.KeyEscape {
 		if len(m.suggestions) > 0 && (m.mode == modeAdd || m.mode == modeRetag) {
 			m.suggestions = nil
 			m.suggestionIdx = -1
@@ -1649,7 +1743,7 @@ func (m *Model) openReschedule() tea.Cmd {
 	return nil
 }
 
-func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateReschedule(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.rescheduleSub == 0 {
 		// Picker step. Presets are bucket names; resolve them once here
 		// rather than again inside applyReschedule.
@@ -1665,7 +1759,7 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.applyReschedule(iso, preset)
 		case "6":
 			m.rescheduleSub = 1
-			m.input.Width = m.modalInnerWidth() - 1
+			m.input.SetWidth(m.modalInnerWidth() - 1)
 			m.input.Placeholder = config.DateFormatLabel() + " or Nd/Nw/Nm"
 			m.input.SetValue("")
 			m.input.Focus()
@@ -1680,7 +1774,7 @@ func (m *Model) updateReschedule(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// so the modal automatically follows the configured format. The parsed
 	// ISO is threaded into applyReschedule so we do not re-parse the same
 	// input twice.
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEnter:
 		date := strings.TrimSpace(m.input.Value())
 		now := time.Now()
@@ -1759,7 +1853,7 @@ func (m *Model) openRetag() tea.Cmd {
 	m.modalTask = &t
 	m.mode = modeRetag
 	// Subtract 1 for the trailing cursor space that textinput appends.
-	m.input.Width = m.modalInnerWidth() - 1
+	m.input.SetWidth(m.modalInnerWidth() - 1)
 	m.input.Placeholder = "tag1, tag2"
 	// Filter out the reserved active tag so the user only sees their own tags.
 	// Active state is preserved separately via wasActive/SetActive in updateRetag.
@@ -1773,14 +1867,14 @@ func (m *Model) openRetag() tea.Cmd {
 	return textinput.Blink
 }
 
-func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateRetag(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Delegate Up/Down/Tab/Enter to shared suggestion navigation.
 	if m.handleSuggestionNav(msg, &m.input) {
 		return m, nil
 	}
 
 	// Enter: submit retag (suggestion case already handled above).
-	if msg.Type == tea.KeyEnter {
+	if msg.Code == tea.KeyEnter {
 		if m.modalTask == nil {
 			m.closeModal()
 			return m, nil
@@ -1797,11 +1891,17 @@ func (m *Model) updateRetag(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("Retagged: %s", flat))
 	}
 
+	return m, m.updateRetagInput(msg)
+}
+
+// updateRetagInput routes msg — a key press or a tea.PasteMsg — to the retag
+// field and refreshes tag suggestions. Shared by the key and paste paths.
+func (m *Model) updateRetagInput(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	// Refresh suggestions after every keystroke in the tag field.
 	m.refreshSuggestions(m.input.Value())
-	return m, cmd
+	return cmd
 }
 
 // --- add modal -------------------------------------------------------------
@@ -1814,8 +1914,8 @@ func (m *Model) openAdd() tea.Cmd {
 	inputW := m.modalInnerWidth() - 8
 	m.titleArea.SetWidth(inputW)
 	m.titleArea.SetHeight(1)
-	m.tagInput.Width = inputW
-	m.recurInput.Width = inputW
+	m.tagInput.SetWidth(inputW)
+	m.recurInput.SetWidth(inputW)
 	m.titleArea.Reset()
 	m.titleArea.Focus()
 	// In tag view, prepopulate the tag field with the current tab's tag.
@@ -1840,7 +1940,7 @@ func (m *Model) openAdd() tea.Cmd {
 	return textinput.Blink
 }
 
-func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateAdd(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	tagsFocused := m.addFocus == addFocusTags
 	recurFocused := m.addFocus == addFocusRecur
 
@@ -1859,7 +1959,7 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tab: cycle focus title -> tags -> recur -> title.
-	if msg.Type == tea.KeyTab {
+	if msg.String() == "tab" {
 		switch m.addFocus {
 		case addFocusTitle:
 			m.addFocus = addFocusTags
@@ -1893,7 +1993,7 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Enter: submit (plain Enter) or insert newline (Alt+Enter).
 	// Suggestion acceptance is handled by handleSuggestionNav above.
-	if msg.Type == tea.KeyEnter && !msg.Alt {
+	if msg.Code == tea.KeyEnter && !msg.Mod.Contains(tea.ModAlt) {
 		title := sanitizeTitle(m.titleArea.Value())
 		if title == "" {
 			m.closeModal()
@@ -1909,22 +2009,39 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.createCmd(title, tags, recur)
 	}
 
-	// Route remaining keys to the focused input only.
+	return m, m.updateAddInput(msg)
+}
+
+// updateAddInput routes msg — a key press or a tea.PasteMsg — to the add
+// modal's focused input and runs that field's post-processing (suggestion
+// refresh, title height dance, title-prefix auto-tag). Shared by the key and
+// paste paths so a paste gets the same treatment as typing.
+func (m *Model) updateAddInput(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
-	if recurFocused {
+	switch m.addFocus {
+	case addFocusRecur:
 		m.recurInput, cmd = m.recurInput.Update(msg)
 		// Refresh suggestions after every keystroke in the recur field.
 		m.refreshRecurSuggestions(m.recurInput.Value())
-	} else if tagsFocused {
+	case addFocusTags:
 		m.tagInput, cmd = m.tagInput.Update(msg)
 		// Refresh suggestions after every keystroke in the tag field.
 		m.refreshSuggestions(m.tagInput.Value())
-	} else {
+	default:
 		// Pre-grow the textarea height before the update so the viewport
 		// never needs to scroll. Without this, Update()'s internal
 		// repositionView sees a too-small viewport and scrolls the top
 		// line out of view. After the update we trim to the exact count.
-		m.titleArea.SetHeight(textareaVisualHeight(m.titleArea) + 1)
+		// A keystroke adds at most one visual line; a paste can add many,
+		// so grow by the pasted content's own visual height. The textarea's
+		// sanitizer turns every '\r' into a newline too, so count it as one;
+		// over-growing is harmless because the height is trimmed below.
+		grow := 1
+		if p, ok := msg.(tea.PasteMsg); ok {
+			content := strings.ReplaceAll(p.Content, "\r", "\n")
+			grow = visualLines(content, m.titleArea.Width()) + 1
+		}
+		m.titleArea.SetHeight(textareaVisualHeight(m.titleArea) + grow)
 		m.titleArea, cmd = m.titleArea.Update(msg)
 		m.titleArea.SetHeight(textareaVisualHeight(m.titleArea) + 1)
 		// After updating the title input, check if a known tag prefix was typed.
@@ -1940,18 +2057,18 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	return m, cmd
+	return cmd
 }
 
 // handleSuggestionNav handles Up/Down/Tab/Enter keys when suggestions are
 // visible. It returns true when the key was consumed (caller should return
 // early).
-func (m *Model) handleSuggestionNav(msg tea.KeyMsg, ti *textinput.Model) bool {
+func (m *Model) handleSuggestionNav(msg tea.KeyPressMsg, ti *textinput.Model) bool {
 	hasSuggestions := len(m.suggestions) > 0
 
 	// Up/Down navigate suggestions.
-	if hasSuggestions && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
-		if msg.Type == tea.KeyUp {
+	if hasSuggestions && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
+		if msg.Code == tea.KeyUp {
 			if m.suggestionIdx > 0 {
 				m.suggestionIdx--
 			}
@@ -1964,7 +2081,7 @@ func (m *Model) handleSuggestionNav(msg tea.KeyMsg, ti *textinput.Model) bool {
 	}
 
 	// Tab/Enter: accept suggestion if visible with a selection.
-	if (msg.Type == tea.KeyTab || msg.Type == tea.KeyEnter) && hasSuggestions && m.suggestionIdx >= 0 {
+	if (msg.String() == "tab" || msg.Code == tea.KeyEnter) && hasSuggestions && m.suggestionIdx >= 0 {
 		m.acceptSuggestion(ti)
 		return true
 	}
@@ -2003,12 +2120,12 @@ func (m *Model) refreshRecurSuggestions(fieldValue string) {
 // suggestion). Enter is deliberately NOT consumed here — it must submit the
 // modal even when the dropdown is visible. Returns true when the key was
 // consumed.
-func (m *Model) handleRecurSuggestionNav(msg tea.KeyMsg) bool {
+func (m *Model) handleRecurSuggestionNav(msg tea.KeyPressMsg) bool {
 	hasSuggestions := len(m.suggestions) > 0
 
 	// Up/Down navigate suggestions.
-	if hasSuggestions && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
-		if msg.Type == tea.KeyUp {
+	if hasSuggestions && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
+		if msg.Code == tea.KeyUp {
 			if m.suggestionIdx > 0 {
 				m.suggestionIdx--
 			}
@@ -2028,7 +2145,7 @@ func (m *Model) handleRecurSuggestionNav(msg tea.KeyMsg) bool {
 	// through to the focus-cycle handler so the user can move on without
 	// first pressing Esc to dismiss the self-matching dropdown, and without
 	// Tab silently rewriting their typed case.
-	if msg.Type == tea.KeyTab && hasSuggestions && m.suggestionIdx >= 0 {
+	if msg.String() == "tab" && hasSuggestions && m.suggestionIdx >= 0 {
 		if strings.EqualFold(m.suggestions[m.suggestionIdx], m.recurInput.Value()) {
 			return false
 		}
@@ -2135,7 +2252,7 @@ func (m *Model) openConfirmDelete() tea.Cmd {
 	return nil
 }
 
-func (m *Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateConfirmDelete(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "y" || msg.String() == "Y" {
 		if m.modalTask == nil {
 			m.closeModal()
@@ -2318,14 +2435,14 @@ func (m *Model) openGrab() {
 }
 
 // updateGrab handles key events while a task is grabbed.
-func (m *Model) updateGrab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateGrab(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.grabTask == nil {
 		m.mode = modeNormal
 		return m, nil
 	}
 
-	switch msg.Type {
-	case tea.KeyEsc:
+	switch msg.Code {
+	case tea.KeyEscape:
 		// Cancel: discard in-memory moves, reload from disk.
 		m.mode = modeNormal
 		m.grabTask = nil
@@ -3025,7 +3142,7 @@ func (m *Model) activePanelView() string {
 	content := strings.Join(lines, "\n")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.theme.ActiveBorder).
+		BorderForeground(m.theme.ActiveBorder.Resolve(m.isDark)).
 		Padding(0, 1).
 		Render(content)
 }
@@ -3195,10 +3312,10 @@ func (m *Model) recomputeLayout() {
 	case modeAdd:
 		inputW := m.modalInnerWidth() - 8
 		m.titleArea.SetWidth(inputW)
-		m.tagInput.Width = inputW
-		m.recurInput.Width = inputW
+		m.tagInput.SetWidth(inputW)
+		m.recurInput.SetWidth(inputW)
 	case modeRetag, modeReschedule:
-		m.input.Width = m.modalInnerWidth() - 1
+		m.input.SetWidth(m.modalInnerWidth() - 1)
 	case modeSearch:
 		// Leave room for the "> " prompt (2) plus a few columns for the
 		// right-aligned count counter added by renderSearch in Task 6.
@@ -3206,7 +3323,7 @@ func (m *Model) recomputeLayout() {
 		if w < 10 {
 			w = 10
 		}
-		m.search.input.Width = w
+		m.search.input.SetWidth(w)
 	}
 }
 
@@ -3339,13 +3456,15 @@ func (m *Model) detailPanelView() string {
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.theme.ModalBorder).
+		BorderForeground(m.theme.ModalBorder.Resolve(m.isDark)).
 		Padding(0, 2).
-		Width(pw - 2). // subtract border columns
+		Width(pw). // lipgloss v2: Width includes the border columns
 		Render(content)
 }
 
-func (m *Model) View() string {
+// render builds the full screen content. View wraps it with the program-level
+// view settings; every render branch lives here so none can drop them.
+func (m *Model) render() string {
 	// Search overlay owns the full screen: render and return before computing
 	// anything specific to the normal-mode layout (tab bar, panels, etc).
 	if m.mode == modeSearch {
@@ -3603,7 +3722,7 @@ func settingsThemeNames() []string {
 }
 
 // updateSettings handles keyboard events in the settings modal.
-func (m *Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateSettings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	fmts := settingsFormatNames()
 	themeNames := settingsThemeNames()
 
@@ -3676,8 +3795,7 @@ func (m *Model) applySettings() (tea.Model, tea.Cmd) {
 		t = defaultTheme
 	}
 	m.theme = t
-	m.styles = buildStyles(t)
-	m.baseStyles, m.grabStyles, m.activeStyles = initStyles(t)
+	m.restyle()
 	m.mode = modeNormal
 	m.statusMsg = "Settings saved"
 	return m, nil
@@ -3834,15 +3952,16 @@ func (m *Model) modalInnerWidth() int {
 // modalBox wraps content in a subtle bordered box of fixed width so the
 // border never shifts as the user types.
 //
-// innerWidth is the usable content-area width (where text wraps). lipgloss's
-// .Width() actually wraps at `Width - leftPadding - rightPadding`, so we pass
-// innerWidth+4 to get an effective wrap point of innerWidth.
+// innerWidth is the usable content-area width (where text wraps). lipgloss
+// v2's .Width() includes borders and padding (it wraps at `Width - borders -
+// leftPadding - rightPadding`), so we pass innerWidth+6 to get an effective
+// wrap point of innerWidth.
 func (m *Model) modalBox(content string, innerWidth int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.theme.ModalBorder).
+		BorderForeground(m.theme.ModalBorder.Resolve(m.isDark)).
 		Padding(1, 2).
-		Width(innerWidth + 4).
+		Width(innerWidth + 6).
 		Render(content)
 }
 
@@ -3856,9 +3975,17 @@ func textareaVisualHeight(ta textarea.Model) int {
 	if w <= 0 {
 		return max(1, ta.LineCount())
 	}
-	val := ta.Value()
+	return visualLines(ta.Value(), w)
+}
+
+// visualLines returns how many display lines val occupies when soft-wrapped
+// at width w (at least 1). A non-positive width counts logical lines only.
+func visualLines(val string, w int) int {
 	if val == "" {
 		return 1
+	}
+	if w <= 0 {
+		return strings.Count(val, "\n") + 1
 	}
 	total := 0
 	for _, line := range strings.Split(val, "\n") {

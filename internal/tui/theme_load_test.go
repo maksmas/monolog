@@ -7,8 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // writeThemeFile is a test helper that writes a JSON payload to
@@ -114,7 +112,7 @@ func TestLoadUserThemes_Valid(t *testing.T) {
 		t.Fatalf("theme mismatch\n got: %+v\nwant: %+v", loaded, defaultTheme)
 	}
 	// Spot-check one value survived as an AdaptiveColor with Light+Dark set.
-	if loaded.ActiveBorder != (lipgloss.AdaptiveColor{Light: "28", Dark: "28"}) {
+	if loaded.ActiveBorder != (AdaptiveColor{Light: "28", Dark: "28"}) {
 		t.Fatalf("active_border wrong: %+v", loaded.ActiveBorder)
 	}
 }

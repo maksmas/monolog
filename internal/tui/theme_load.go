@@ -8,11 +8,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
-// colorPair is the on-disk representation of a single lipgloss.AdaptiveColor:
+// colorPair is the on-disk representation of a single AdaptiveColor:
 // a light value and a dark value for terminals with the matching background.
 type colorPair struct {
 	Light string `json:"light"`
@@ -86,8 +84,8 @@ func (tf themeFile) toTheme() (Theme, error) {
 			return Theme{}, fmt.Errorf("empty color for field %q", f.key)
 		}
 	}
-	adapt := func(p colorPair) lipgloss.AdaptiveColor {
-		return lipgloss.AdaptiveColor{Light: p.Light, Dark: p.Dark}
+	adapt := func(p colorPair) AdaptiveColor {
+		return AdaptiveColor{Light: p.Light, Dark: p.Dark}
 	}
 	return Theme{
 		ActiveBorder: adapt(tf.ActiveBorder),
@@ -118,7 +116,7 @@ func (tf themeFile) toTheme() (Theme, error) {
 // step to serialize defaultTheme back to disk, keeping the file schema
 // and the in-memory schema in sync via a single pair of functions.
 func themeToFile(t Theme) themeFile {
-	pair := func(c lipgloss.AdaptiveColor) colorPair {
+	pair := func(c AdaptiveColor) colorPair {
 		return colorPair{Light: c.Light, Dark: c.Dark}
 	}
 	return themeFile{

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/maksmas/monolog/internal/config"
@@ -63,12 +63,12 @@ func (m *Model) closeSearch() {
 // Ctrl+C cancels; Enter commits; arrow / ctrl-nav keys move the cursor;
 // everything else is delegated to the text input, and if the query changes
 // the results are re-ranked.
-func (m *Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyCtrlC:
+func (m *Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Code == tea.KeyEscape || msg.String() == "ctrl+c" {
 		m.closeSearch()
 		return m, nil
-	case tea.KeyEnter:
+	}
+	if msg.Code == tea.KeyEnter {
 		m.commitSearch()
 		return m, nil
 	}
@@ -88,8 +88,16 @@ func (m *Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Anything else is treated as input editing. Capture the value before and
-	// after to decide whether re-ranking is needed.
+	// Anything else is treated as input editing.
+	return m, m.updateSearchInput(msg)
+}
+
+// updateSearchInput routes msg — a key press or a tea.PasteMsg — to the query
+// input and re-ranks when the query changed. Shared by the key and paste
+// paths.
+func (m *Model) updateSearchInput(msg tea.Msg) tea.Cmd {
+	// Capture the value before and after to decide whether re-ranking is
+	// needed.
 	before := m.search.input.Value()
 	var cmd tea.Cmd
 	m.search.input, cmd = m.search.input.Update(msg)
@@ -97,7 +105,7 @@ func (m *Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.search.results = m.search.index.Rank(m.search.input.Value(), searchResultLimit)
 		m.clampSearchCursor()
 	}
-	return m, cmd
+	return cmd
 }
 
 // moveSearchCursor shifts the result cursor by delta and clamps to the valid
@@ -290,8 +298,8 @@ func (m *Model) renderSearch() string {
 		if stackedPreviewH < 2 {
 			stackedPreviewH = 2
 		}
-		// Preview border adds 2 cols outside its .Width(), so pass m.width-2
-		// to keep the rendered row at exactly m.width. Results uses the same
+		// The preview's border takes 2 cols, so pass m.width-2 as its content
+		// width to keep the rendered row at exactly m.width. Results uses the same
 		// width (no border) so both panes align.
 		previewW := m.width - 2
 		if previewW < 10 {
@@ -357,7 +365,7 @@ func searchSplitWidths(total int) (int, int) {
 
 // searchBodyHeight carves out vertical space for the results+preview region.
 // Reserves rows for input bar, meta line, help line, and the preview's 2-row
-// rounded border (which renders outside the height passed to .Height()).
+// rounded border (renderSearchPreview adds it on top of the height it is given).
 // The returned value is the content height to pass to renderSearchPreview;
 // the results pane uses h+2 in the wide layout so both panes occupy the same
 // number of rows.
@@ -512,7 +520,7 @@ func (m *Model) renderSearchPreview(width, height int) string {
 
 	if len(m.search.results) == 0 {
 		ph := m.styles.searchPreviewDimStyle.Render("(no task selected)")
-		return m.styles.searchPreviewBorderStyle.Width(width).Height(height).Render(ph)
+		return m.renderPreviewBox(width, height, ph)
 	}
 
 	task := m.search.results[m.search.cursor].Task
@@ -526,7 +534,14 @@ func (m *Model) renderSearchPreview(width, height int) string {
 	}
 
 	content := title + "\n\n" + body
-	return m.styles.searchPreviewBorderStyle.Width(width).Height(height).Render(content)
+	return m.renderPreviewBox(width, height, content)
+}
+
+// renderPreviewBox wraps content in the bordered preview style. width and
+// height are the size inside the border (lipgloss v1 semantics); lipgloss v2
+// counts the border inside Width/Height, so add it back here.
+func (m *Model) renderPreviewBox(width, height int, content string) string {
+	return m.styles.searchPreviewBorderStyle.Width(width + 2).Height(height + 2).Render(content)
 }
 
 // renderSearchMeta formats the meta line: "schedule · status · created {date}".

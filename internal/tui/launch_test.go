@@ -440,7 +440,7 @@ func TestLaunch_ClearsStaleError(t *testing.T) {
 
 	m, _ = key(t, m, "o")
 
-	if line := m.helpLine(); !strings.Contains(line, "launch not configured") {
+	if line := ansi.Strip(m.helpLine()); !strings.Contains(line, "launch not configured") {
 		t.Errorf("help line = %q, want the launch status", line)
 	}
 }
@@ -463,8 +463,8 @@ func TestLaunch_ResolveFailureThenSuccessIsNotSticky(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("unresolvable dir should not launch")
 	}
-	if !strings.Contains(m.helpLine(), "no launch dir for tags [unmapped]") {
-		t.Errorf("help line = %q, want the resolve error", m.helpLine())
+	if !strings.Contains(ansi.Strip(m.helpLine()), "no launch dir for tags [unmapped]") {
+		t.Errorf("help line = %q, want the resolve error", ansi.Strip(m.helpLine()))
 	}
 
 	m, _ = key(t, m, "j")
@@ -477,7 +477,7 @@ func TestLaunch_ResolveFailureThenSuccessIsNotSticky(t *testing.T) {
 	if m.err != nil {
 		t.Errorf("m.err = %v, want nil", m.err)
 	}
-	if line := m.helpLine(); !strings.Contains(line, "launched: somewhere") {
+	if line := ansi.Strip(m.helpLine()); !strings.Contains(line, "launched: somewhere") {
 		t.Errorf("help line = %q, want launched status", line)
 	}
 }
@@ -626,12 +626,12 @@ func TestHelpLine_ClaudeHintOnlyWhenLaunchConfigured(t *testing.T) {
 			m.width = 400
 			m.viewMode = view.mode
 
-			if h := m.helpLine(); strings.Contains(h, "claude") {
+			if h := ansi.Strip(m.helpLine()); strings.Contains(h, "claude") {
 				t.Errorf("unconfigured help line has claude hint: %q", h)
 			}
 
 			m.launchCfg = testLaunchCfg(t.TempDir())
-			h := m.helpLine()
+			h := ansi.Strip(m.helpLine())
 			if !strings.Contains(h, "claude") {
 				t.Errorf("configured help line missing claude hint: %q", h)
 			}
@@ -650,7 +650,7 @@ func TestHelpLine_ClaudeHintOnlyWhenLaunchConfigured(t *testing.T) {
 
 func TestHelpModalContent_ListsLaunchKey(t *testing.T) {
 	m := newTestModel(t)
-	if help := m.helpModalContent(); !strings.Contains(help, "open in Claude Code (and activate)") {
+	if help := ansi.Strip(m.helpModalContent()); !strings.Contains(help, "open in Claude Code (and activate)") {
 		t.Errorf("help overlay missing o line:\n%s", help)
 	}
 }

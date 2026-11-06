@@ -11,12 +11,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"github.com/maksmas/monolog/internal/config"
 	"github.com/maksmas/monolog/internal/display"
@@ -64,38 +64,56 @@ func key(t *testing.T, m *Model, s string) (*Model, tea.Cmd) {
 func typeString(t *testing.T, m *Model, s string) *Model {
 	t.Helper()
 	for _, r := range s {
-		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
-		next, _ := m.Update(msg)
+		next, _ := m.Update(runeKey(r))
 		m = next.(*Model)
 	}
 	return m
 }
 
-// toKeyMsg converts a string spec to a tea.KeyMsg.
-func toKeyMsg(s string) tea.KeyMsg {
-	switch s {
-	case "left":
-		return tea.KeyMsg{Type: tea.KeyLeft}
-	case "right":
-		return tea.KeyMsg{Type: tea.KeyRight}
-	case "up":
-		return tea.KeyMsg{Type: tea.KeyUp}
-	case "down":
-		return tea.KeyMsg{Type: tea.KeyDown}
-	case "tab":
-		return tea.KeyMsg{Type: tea.KeyTab}
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
-	case "backspace":
-		return tea.KeyMsg{Type: tea.KeyBackspace}
-	case "ctrl+z":
-		return tea.KeyMsg{Type: tea.KeyCtrlZ}
-	case "ctrl+y":
-		return tea.KeyMsg{Type: tea.KeyCtrlY}
+// runeKey builds the key press a terminal delivers for typing r on a
+// US layout: the rune as both Code and Text.
+func runeKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
+// namedKeys maps the key() spec strings for non-text keys to their codes.
+var namedKeys = map[string]rune{
+	"left":      tea.KeyLeft,
+	"right":     tea.KeyRight,
+	"up":        tea.KeyUp,
+	"down":      tea.KeyDown,
+	"pgup":      tea.KeyPgUp,
+	"pgdown":    tea.KeyPgDown,
+	"home":      tea.KeyHome,
+	"end":       tea.KeyEnd,
+	"tab":       tea.KeyTab,
+	"enter":     tea.KeyEnter,
+	"esc":       tea.KeyEscape,
+	"backspace": tea.KeyBackspace,
+}
+
+// toKeyMsg converts a string spec to a tea.KeyPressMsg. Specs are a single
+// rune ("d", "G", " "), a named key ("enter", "pgdown"), "shift+tab", or a
+// ctrl combo ("ctrl+z").
+func toKeyMsg(s string) tea.KeyPressMsg {
+	if code, ok := namedKeys[s]; ok {
+		return tea.KeyPressMsg{Code: code}
 	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	switch s {
+	case "space":
+		return runeKey(' ')
+	case "shift+tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+	}
+	if rest, ok := strings.CutPrefix(s, "ctrl+"); ok && utf8.RuneCountInString(rest) == 1 {
+		r, _ := utf8.DecodeRuneInString(rest)
+		return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
+	}
+	if utf8.RuneCountInString(s) == 1 {
+		r, _ := utf8.DecodeRuneInString(s)
+		return runeKey(r)
+	}
+	return tea.KeyPressMsg{Code: tea.KeyExtended, Text: s}
 }
 
 // runCmd executes cmd, feeds the resulting msg back through the model, and
@@ -196,7 +214,7 @@ func TestSkeleton_DoneSortedByUpdatedAtDesc(t *testing.T) {
 
 func TestSkeleton_QuitReturnsQuitCmd(t *testing.T) {
 	m := newTestModel(t)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	_, cmd := m.Update(runeKey('q'))
 	if cmd == nil {
 		t.Fatal("q should return tea.Quit cmd, got nil")
 	}
@@ -754,13 +772,6 @@ func TestGrab_UpDownNoOpInDoneTab(t *testing.T) {
 }
 
 func TestGrab_DelegateHighlightsGrabbedItemOnly(t *testing.T) {
-	// Force a color profile so the rendered output actually contains ANSI
-	// escape codes; otherwise lipgloss strips them when stdout isn't a TTY
-	// (as under `go test`) and styled vs. unstyled text becomes identical.
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "first", Status: "open", Schedule: "today",
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -1648,11 +1659,6 @@ func TestTUI_DKeyOnActiveTaskDeactivates(t *testing.T) {
 // --- active delegate styling tests -------------------------------------------
 
 func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
-	// Force color profile so ANSI codes survive in test output.
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "first", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -1667,14 +1673,15 @@ func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
 	activeOut := m.renderListItem(0, items[0], true)
 	normalOut := m.renderListItem(1, items[1], false)
 
-	// When the active item is selected it uses the brighter AdaptiveColor Dark="#4ADE80" = RGB(73,222,128).
-	// In TrueColor mode this produces the ANSI sequence "38;2;73;222;128".
-	brightGreenSeq := "38;2;73;222;128"
+	// The model defaults to a dark background, so the selected active item
+	// uses ActiveSelected.Dark (#4ADE80) and lipgloss v2 emits its truecolor
+	// SGR sequence.
+	brightGreenSeq := fgSGR(t, defaultTheme.ActiveSelected.Dark)
 	if !strings.Contains(activeOut, brightGreenSeq) {
 		t.Errorf("selected active item should contain bright green ANSI sequence %q;\n rendered=%q", brightGreenSeq, activeOut)
 	}
 	// The normal (non-active, unselected) item should contain neither green shade.
-	normalGreenSeq := "38;2;34;197;94"
+	normalGreenSeq := fgSGR(t, defaultTheme.ActiveNormal.Dark)
 	if strings.Contains(normalOut, brightGreenSeq) {
 		t.Errorf("normal item should NOT contain bright green ANSI sequence %q;\n rendered=%q", brightGreenSeq, normalOut)
 	}
@@ -1684,11 +1691,6 @@ func TestActive_DelegateRendersGreenForActiveItem(t *testing.T) {
 }
 
 func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
-	// Force color profile so ANSI codes survive in test output.
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "the task", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -1710,9 +1712,10 @@ func TestActive_GrabStyleWinsOverActiveStyle(t *testing.T) {
 	// Grab style uses orange/yellow. Active style uses green. When both
 	// apply, grab must win — so green should NOT appear in the output, and
 	// the grab color (orange) SHOULD appear.
-	greenSeq := "38;2;34;197;94"
-	grabSeq := "38;2;255;179;84" // AdaptiveColor Dark="#FFB454" rendered by lipgloss
-	if strings.Contains(grabbedOut, greenSeq) {
+	greenSeq := fgSGR(t, defaultTheme.ActiveNormal.Dark)
+	brightGreenSeq := fgSGR(t, defaultTheme.ActiveSelected.Dark)
+	grabSeq := fgSGR(t, defaultTheme.GrabText.Dark)
+	if strings.Contains(grabbedOut, greenSeq) || strings.Contains(grabbedOut, brightGreenSeq) {
 		t.Errorf("grabbed+active row should NOT contain green ANSI sequence (grab wins);\n rendered=%q", grabbedOut)
 	}
 	if !strings.Contains(grabbedOut, grabSeq) {
@@ -1922,7 +1925,7 @@ func TestActivePanel_HiddenWhenNoActiveTasks(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
 
-	panel := m.activePanelView()
+	panel := ansi.Strip(m.activePanelView())
 	if panel != "" {
 		t.Errorf("activePanelView() should return empty string when no active tasks, got %q", panel)
 	}
@@ -1939,7 +1942,7 @@ func TestActivePanel_ShownWithActiveTasks(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
 
-	panel := m.activePanelView()
+	panel := ansi.Strip(m.activePanelView())
 	if panel == "" {
 		t.Fatal("activePanelView() should not be empty when active tasks exist")
 	}
@@ -1950,7 +1953,7 @@ func TestActivePanel_ShownWithActiveTasks(t *testing.T) {
 		t.Errorf("active panel should contain short ID; got %q", panel)
 	}
 
-	view := m.View()
+	view := ansi.Strip(m.View().Content)
 	if !strings.Contains(view, "my active task") {
 		t.Errorf("View() should contain the active task title somewhere; got %q", view)
 	}
@@ -1971,7 +1974,7 @@ func TestActivePanel_RefreshedAfterToggle(t *testing.T) {
 	}
 	m = runCmd(t, m, cmd)
 
-	panel := m.activePanelView()
+	panel := ansi.Strip(m.activePanelView())
 	if !strings.Contains(panel, "toggle panel task") {
 		t.Errorf("panel should contain task after activation; got %q", panel)
 	}
@@ -1983,7 +1986,7 @@ func TestActivePanel_RefreshedAfterToggle(t *testing.T) {
 	}
 	m = runCmd(t, m, cmd)
 
-	panel = m.activePanelView()
+	panel = ansi.Strip(m.activePanelView())
 	if strings.Contains(panel, "toggle panel task") {
 		t.Errorf("panel should NOT contain task after deactivation; got %q", panel)
 	}
@@ -2028,9 +2031,6 @@ func TestActivePanel_ShrinksListHeight(t *testing.T) {
 func TestActivePanel_HeightMatchesRendered(t *testing.T) {
 	// Verify the fast activePanelHeight() matches lipgloss.Height(activePanelView())
 	// so the two never drift apart.
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.Ascii)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "first active", Status: "open", Schedule: "today",
 			Position: 1000, Tags: []string{"active"}, UpdatedAt: "2026-04-13T00:00:00Z"},
@@ -2041,16 +2041,13 @@ func TestActivePanel_HeightMatchesRendered(t *testing.T) {
 	m = next.(*Model)
 
 	fast := m.activePanelHeight()
-	rendered := lipgloss.Height(m.activePanelView())
+	rendered := lipgloss.Height(ansi.Strip(m.activePanelView()))
 	if fast != rendered {
 		t.Errorf("activePanelHeight() = %d, lipgloss.Height(activePanelView()) = %d; they must match", fast, rendered)
 	}
 }
 
 func TestActivePanel_ShowsFullLongTitle(t *testing.T) {
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.Ascii)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 	longTitle := strings.Repeat("x", 200)
 	m := newTestModel(t,
 		model.Task{ID: "01AAAAAA", Title: longTitle, Status: "open", Schedule: "today",
@@ -2060,10 +2057,10 @@ func TestActivePanel_ShowsFullLongTitle(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
 	m = next.(*Model)
 
-	panel := m.activePanelView()
+	panel := ansi.Strip(m.activePanelView())
 	panelLines := strings.Split(panel, "\n")
 	for _, line := range panelLines {
-		lineLen := len([]rune(line))
+		lineLen := len([]rune(ansi.Strip(line)))
 		if lineLen > width {
 			t.Errorf("panel line exceeds terminal width (%d): got %d runes: %q", width, lineLen, line)
 		}
@@ -2353,7 +2350,7 @@ func TestAdd_ModalViewShowsBothLabels(t *testing.T) {
 	if m.mode != modeAdd {
 		t.Fatalf("mode = %v, want modeAdd", m.mode)
 	}
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	if !strings.Contains(view, "Title:") {
 		t.Errorf("modalView should contain 'Title:', got %q", view)
 	}
@@ -2592,10 +2589,6 @@ func TestVlistItemHeight_Separator(t *testing.T) {
 }
 
 func TestActivePanel_WrapsLongTitles(t *testing.T) {
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.Ascii)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	longTitle := strings.Repeat("word ", 20) // 100 chars
 	m := newTestModel(t,
 		model.Task{ID: "01AAAAAA", Title: longTitle, Status: "open", Schedule: "today",
@@ -2605,7 +2598,7 @@ func TestActivePanel_WrapsLongTitles(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
 	m = next.(*Model)
 
-	panel := m.activePanelView()
+	panel := ansi.Strip(m.activePanelView())
 
 	// Panel should use at least 2 content lines for this task (1 wrapped + 1 continuation).
 	fast := m.activePanelHeight()
@@ -2621,8 +2614,8 @@ func TestActivePanel_WrapsLongTitles(t *testing.T) {
 
 	// No line should exceed terminal width.
 	for _, line := range strings.Split(panel, "\n") {
-		if len([]rune(line)) > width {
-			t.Errorf("panel line exceeds width %d: %d runes: %q", width, len([]rune(line)), line)
+		if n := len([]rune(ansi.Strip(line))); n > width {
+			t.Errorf("panel line exceeds width %d: %d runes: %q", width, n, line)
 		}
 	}
 }
@@ -3129,7 +3122,7 @@ func TestAdd_ModalViewRendersSuggestions(t *testing.T) {
 	if len(m.suggestions) == 0 {
 		t.Fatal("expected suggestions after typing 'w'")
 	}
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	// The selected suggestion should appear with "> " prefix.
 	if !strings.Contains(view, "> "+m.suggestions[0]) {
 		t.Errorf("modalView should contain highlighted suggestion %q, got:\n%s", m.suggestions[0], view)
@@ -3149,7 +3142,7 @@ func TestAdd_ModalViewNoSuggestionsWhenEmpty(t *testing.T) {
 	)
 	m, _ = key(t, m, "c")
 	// Don't type anything in the tag field.
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	// Should not contain the indented suggestion marker format.
 	if strings.Contains(view, "       > ") {
 		t.Errorf("modalView should not contain suggestion markers when no suggestions, got:\n%s", view)
@@ -3168,13 +3161,13 @@ func TestAdd_ModalViewSuggestionHighlightChangesOnNavigation(t *testing.T) {
 		t.Fatalf("expected at least 2 suggestions, got %d", len(m.suggestions))
 	}
 	// Initially the first suggestion is highlighted.
-	view1 := m.modalView()
+	view1 := ansi.Strip(m.modalView())
 	if !strings.Contains(view1, "> "+m.suggestions[0]) {
 		t.Errorf("first suggestion should be highlighted initially")
 	}
 	// Navigate down — second suggestion should now be highlighted.
 	m, _ = key(t, m, "down")
-	view2 := m.modalView()
+	view2 := ansi.Strip(m.modalView())
 	if !strings.Contains(view2, "> "+m.suggestions[1]) {
 		t.Errorf("second suggestion should be highlighted after down, got:\n%s", view2)
 	}
@@ -3630,7 +3623,7 @@ func TestAdd_ModalViewRecurSuggestionsRendered(t *testing.T) {
 	if len(m.suggestions) == 0 {
 		t.Fatal("expected weekday suggestions")
 	}
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	// At least the first weekday completion (weekly:mon) should render.
 	if !strings.Contains(view, "weekly:mon") {
 		t.Errorf("modalView should contain 'weekly:mon' suggestion; got:\n%s", view)
@@ -3662,7 +3655,7 @@ func TestAdd_ModalViewTagFocusRendersTagSuggestionsNotRecur(t *testing.T) {
 			t.Fatalf("unexpected recur-looking suggestion in tag-focus: %q", s)
 		}
 	}
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	// The highlighted tag should render.
 	if !strings.Contains(view, "> "+m.suggestions[0]) {
 		t.Errorf("expected highlighted tag suggestion in view, got:\n%s", view)
@@ -3683,7 +3676,7 @@ func TestAdd_ModalViewEmptyRecurHasNoSuggestionLines(t *testing.T) {
 	m, _ = key(t, m, "c")
 	m, _ = key(t, m, "tab") // -> tags
 	m, _ = key(t, m, "tab") // -> recur
-	rawView := m.modalView()
+	rawView := ansi.Strip(m.modalView())
 	// No suggestion markers should be rendered for an empty recur field
 	// (the seven-space indent followed by "> " is the suggestion marker).
 	if strings.Contains(rawView, "       > ") {
@@ -3862,7 +3855,7 @@ func TestRetag_ModalViewRendersSuggestions(t *testing.T) {
 	if len(m.suggestions) == 0 {
 		t.Fatal("expected suggestions after typing 'w'")
 	}
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	// The selected suggestion should appear with "> " prefix.
 	if !strings.Contains(view, "> "+m.suggestions[0]) {
 		t.Errorf("retag modalView should contain highlighted suggestion %q, got:\n%s", m.suggestions[0], view)
@@ -3882,7 +3875,7 @@ func TestRetag_ModalViewNoSuggestionsWhenEmpty(t *testing.T) {
 	)
 	m, _ = key(t, m, "t")
 	// Don't type anything new in the tag field.
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	// Should not contain the indented suggestion marker format.
 	if strings.Contains(view, "       > ") {
 		t.Errorf("retag modalView should not contain suggestion markers when no suggestions, got:\n%s", view)
@@ -4136,7 +4129,7 @@ func TestHelpLine_GrabMode_ContainsActionKeys(t *testing.T) {
 		t.Fatalf("mode = %v, want modeGrab", m.mode)
 	}
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 
 	// Verify core grab controls are present.
 	for _, want := range []string{"GRAB", "reorder", "bucket", "drop", "cancel"} {
@@ -4593,7 +4586,6 @@ func TestSeparatorItem_MixedList_SkipsSeparators(t *testing.T) {
 
 func TestSeparatorRender_ContainsLabel(t *testing.T) {
 	// Verify that the separator renderer produces output containing the label.
-	lipgloss.SetColorProfile(termenv.Ascii)
 	m := newTestModel(t)
 
 	sep := newSeparatorItem("Week")
@@ -5081,7 +5073,7 @@ func TestActivePanel_HiddenInTagView(t *testing.T) {
 	m.height = 40
 
 	// In schedule view, active panel should be visible.
-	if m.activePanelView() == "" {
+	if ansi.Strip(m.activePanelView()) == "" {
 		t.Error("active panel should be visible in schedule view with active tasks")
 	}
 	if m.activePanelHeight() == 0 {
@@ -5093,7 +5085,7 @@ func TestActivePanel_HiddenInTagView(t *testing.T) {
 		t.Fatalf("rebuildForTagView: %v", err)
 	}
 
-	if m.activePanelView() != "" {
+	if ansi.Strip(m.activePanelView()) != "" {
 		t.Error("active panel should be hidden in tag view")
 	}
 	if m.activePanelHeight() != 0 {
@@ -5110,14 +5102,14 @@ func TestActivePanel_VisibleAgainAfterScheduleView(t *testing.T) {
 	if err := m.rebuildForTagView(); err != nil {
 		t.Fatalf("rebuildForTagView: %v", err)
 	}
-	if m.activePanelView() != "" {
+	if ansi.Strip(m.activePanelView()) != "" {
 		t.Error("should be hidden in tag view")
 	}
 
 	if err := m.rebuildForScheduleView(); err != nil {
 		t.Fatalf("rebuildForScheduleView: %v", err)
 	}
-	if m.activePanelView() == "" {
+	if ansi.Strip(m.activePanelView()) == "" {
 		t.Error("active panel should be visible again in schedule view")
 	}
 }
@@ -5424,7 +5416,7 @@ func TestToggleViewMode_HelpLine_ScheduleView(t *testing.T) {
 	m.mode = modeNormal
 	m.viewMode = viewSchedule
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "v tags") {
 		t.Errorf("schedule view help line should contain 'v tags', got: %s", help)
 	}
@@ -5438,7 +5430,7 @@ func TestToggleViewMode_HelpLine_TagView(t *testing.T) {
 	}
 	m.mode = modeNormal
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "v schedule") {
 		t.Errorf("tag view help line should contain 'v schedule', got: %s", help)
 	}
@@ -5456,7 +5448,7 @@ func TestToggleViewMode_GrabHelpLine_TagView(t *testing.T) {
 	}
 	m.mode = modeGrab
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	// Tag view grab help should not contain ←/→ bucket hint.
 	if strings.Contains(help, "←/→ bucket") {
 		t.Errorf("tag view grab help should not contain '←/→ bucket', got: %s", help)
@@ -5470,7 +5462,7 @@ func TestToggleViewMode_GrabHelpLine_ScheduleView(t *testing.T) {
 	m := newTestModel(t)
 	m.mode = modeGrab
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "←/→ bucket") {
 		t.Errorf("schedule view grab help should contain '←/→ bucket', got: %s", help)
 	}
@@ -5487,7 +5479,7 @@ func TestToggleViewMode_TabBarWorksWithDynamicTabs(t *testing.T) {
 	m, _ = key(t, m, "v")
 
 	// View should render without panicking.
-	view := m.View()
+	view := ansi.Strip(m.View().Content)
 	if view == "" {
 		t.Error("View() returned empty string in tag view")
 	}
@@ -6181,7 +6173,7 @@ func TestNewModel_ExistingThemeNoStatus(t *testing.T) {
 
 func TestHelpModalContent_MentionsThemesAndSettings(t *testing.T) {
 	m := newTestModelWithOpts(t, Options{})
-	help := m.helpModalContent()
+	help := ansi.Strip(m.helpModalContent())
 
 	// The themes file source must be discoverable from the help dialog
 	// — that's the entire point of adding the section.
@@ -6579,7 +6571,7 @@ func TestHelpLine_ScheduleView_UpdatedLabels(t *testing.T) {
 	m.mode = modeNormal
 	m.viewMode = viewSchedule
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	for _, want := range []string{"r date", "c create", "h help"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("schedule view help line missing %q, got: %s", want, help)
@@ -6600,7 +6592,7 @@ func TestHelpLine_TagView_UpdatedLabels(t *testing.T) {
 	}
 	m.mode = modeNormal
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	for _, want := range []string{"r date", "c create", "h help"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("tag view help line missing %q, got: %s", want, help)
@@ -6635,7 +6627,7 @@ func TestHelpMode_HelpLineText(t *testing.T) {
 	m := newTestModel(t)
 	m.mode = modeHelp
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "press any key to close") {
 		t.Errorf("modeHelp help line = %q, want to contain 'press any key to close'", help)
 	}
@@ -6645,7 +6637,7 @@ func TestHelpMode_ModalViewNonEmpty(t *testing.T) {
 	m := newTestModel(t)
 	m.mode = modeHelp
 
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	if view == "" {
 		t.Error("modeHelp modalView() returned empty string")
 	}
@@ -6659,7 +6651,7 @@ func TestHelpLine_ScheduleView_EnterNotes(t *testing.T) {
 	m.mode = modeNormal
 	m.viewMode = viewSchedule
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "enter") || !strings.Contains(help, "notes") {
 		t.Errorf("schedule view help line should contain 'enter notes', got: %s", help)
 	}
@@ -6673,7 +6665,7 @@ func TestHelpLine_TagView_EnterNotes(t *testing.T) {
 	}
 	m.mode = modeNormal
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "enter") || !strings.Contains(help, "notes") {
 		t.Errorf("tag view help line should contain 'enter notes', got: %s", help)
 	}
@@ -6687,7 +6679,7 @@ func TestHelpLine_DetailOpen_ShowsPanelKeys(t *testing.T) {
 	m.mode = modeNormal
 	m.detailOpen = true
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	for _, want := range []string{"esc", "close", "enter", "submit", "alt+enter", "newline"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("detail open help line should contain %q, got: %s", want, help)
@@ -6708,7 +6700,7 @@ func TestHelpLine_NormalMode_ContainsSearchHint_ScheduleView(t *testing.T) {
 	m.mode = modeNormal
 	m.viewMode = viewSchedule
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "/") {
 		t.Errorf("schedule view help line missing '/' hint, got: %s", help)
 	}
@@ -6725,7 +6717,7 @@ func TestHelpLine_NormalMode_ContainsSearchHint_TagView(t *testing.T) {
 	}
 	m.mode = modeNormal
 
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "/") {
 		t.Errorf("tag view help line missing '/' hint, got: %s", help)
 	}
@@ -6740,7 +6732,7 @@ func TestHelpModal_ContainsSearchSection(t *testing.T) {
 	m := newTestModel(t)
 	m.mode = modeHelp
 
-	view := m.modalView()
+	view := ansi.Strip(m.modalView())
 	if !strings.Contains(view, "/") {
 		t.Errorf("help modal missing '/' key: %s", view)
 	}
@@ -6940,7 +6932,7 @@ func TestStatsBarView_ScheduleView(t *testing.T) {
 			CompletedAt: "2026-04-11T00:00:00Z"},
 	)
 
-	bar := m.statsBarView()
+	bar := ansi.Strip(m.statsBarView())
 	if !strings.Contains(bar, "3 tasks") {
 		t.Errorf("statsBarView missing '3 tasks': %q", bar)
 	}
@@ -6981,7 +6973,7 @@ func TestStatsBarView_TagView_WorkTab(t *testing.T) {
 	workIdx := findTabByLabel(t, m, "work")
 	m.activeTab = workIdx
 
-	bar := m.statsBarView()
+	bar := ansi.Strip(m.statsBarView())
 	if !strings.Contains(bar, "2 tasks") {
 		t.Errorf("statsBarView missing '2 tasks': %q", bar)
 	}
@@ -7002,7 +6994,7 @@ func TestStatsBarView_TagView_ActiveTabNoTagDone(t *testing.T) {
 	// Active tab is always index 0.
 	m.activeTab = 0
 
-	bar := m.statsBarView()
+	bar := ansi.Strip(m.statsBarView())
 	if strings.Contains(bar, "tag-done") {
 		t.Errorf("statsBarView should not show 'tag-done' on Active tab: %q", bar)
 	}
@@ -7016,7 +7008,7 @@ func TestStatsBarView_NoAvgWhenNoData(t *testing.T) {
 		model.Task{ID: "01A", Title: "open", Status: "open", Schedule: "today",
 			Position: 1000, UpdatedAt: "2026-04-10T00:00:00Z"}, // no CreatedAt
 	)
-	bar := m.statsBarView()
+	bar := ansi.Strip(m.statsBarView())
 	// AvgDaysOpen should be absent when CreatedAt is empty (can't compute).
 	// AvgDaysToComplete should be absent when no done tasks with CompletedAt.
 	if strings.Contains(bar, "~") {
@@ -7058,7 +7050,7 @@ func TestAdd_AltEnterInsertsNewline(t *testing.T) {
 	}
 	m = typeString(t, m, "first")
 	// Alt+Enter should insert a newline, not submit.
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
 	m = next.(*Model)
 	if cmd != nil {
 		// Running the cmd would advance textinput.Blink; nothing destructive.
@@ -7103,7 +7095,7 @@ func TestAdd_AltEnterKeepsFirstLineVisible(t *testing.T) {
 	m, _ = key(t, m, "c")
 	m = typeString(t, m, "first")
 	_ = m.titleArea.View() // simulate a render cycle so viewport.lines is populated
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
 	m = next.(*Model)
 	_ = m.titleArea.View()
 	m = typeString(t, m, "second")
@@ -7707,7 +7699,7 @@ func TestDetailPanelView_EmptyWhenClosed(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = next.(*Model)
 
-	if got := m.detailPanelView(); got != "" {
+	if got := ansi.Strip(m.detailPanelView()); got != "" {
 		t.Errorf("detailPanelView() should be empty when panel is closed, got %q", got)
 	}
 }
@@ -7729,7 +7721,7 @@ func TestDetailPanelView_ShowsTaskMetadata(t *testing.T) {
 		t.Fatal("panel should be open")
 	}
 
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 	if panel == "" {
 		t.Fatal("detailPanelView() should not be empty when panel is open")
 	}
@@ -7773,7 +7765,7 @@ func TestDetailPanelView_ShowsRecurrence(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 	if !strings.Contains(panel, "Recur: weekly:mon") {
 		t.Errorf("panel should contain 'Recur: weekly:mon'; got %q", panel)
 	}
@@ -7790,7 +7782,7 @@ func TestDetailPanelView_NoRecurrenceLine(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 	if strings.Contains(panel, "Recur:") {
 		t.Errorf("panel should not contain 'Recur:' when Recurrence is empty; got %q", panel)
 	}
@@ -7809,7 +7801,7 @@ func TestDetailPanelView_RecurrenceOrderBetweenScheduleAndTags(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 	idxSched := strings.Index(panel, "Schedule:")
 	idxRecur := strings.Index(panel, "Recur:")
 	idxTags := strings.Index(panel, "Tags:")
@@ -7841,7 +7833,7 @@ func TestDetailPanelView_ShowsCompletedDate(t *testing.T) {
 
 	// Open the panel.
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 
 	if !strings.Contains(panel, "Completed:") {
 		t.Errorf("panel should show completed date for done tasks; got %q", panel)
@@ -7860,7 +7852,7 @@ func TestDetailPanelView_ShowsBody(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 
 	if !strings.Contains(panel, "this is the body text") {
 		t.Errorf("panel should contain body text; got %q", panel)
@@ -7882,7 +7874,7 @@ func TestDetailPanelView_EmptyBodyOK(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 	if panel == "" {
 		t.Error("panel should render even with empty body")
 	}
@@ -7904,7 +7896,7 @@ func TestDetailPanelView_HidesActiveTag(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 
 	// "work" should be visible but "active" tag should be filtered by VisibleTags.
 	if !strings.Contains(panel, "work") {
@@ -7931,7 +7923,7 @@ func TestDetailPanelView_NoTagsLine(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	panel := m.detailPanelView()
+	panel := ansi.Strip(m.detailPanelView())
 	if strings.Contains(panel, "Tags:") {
 		t.Errorf("panel should not show Tags line when there are no tags; got %q", panel)
 	}
@@ -8175,11 +8167,11 @@ func TestDetailPanelView_AppearsInView(t *testing.T) {
 	m = next.(*Model)
 
 	// View without panel open should not contain detail-panel-specific content.
-	viewClosed := m.View()
+	viewClosed := ansi.Strip(m.View().Content)
 
 	// Open panel.
 	m, _ = key(t, m, "enter")
-	viewOpen := m.View()
+	viewOpen := ansi.Strip(m.View().Content)
 
 	// The open view should contain the task title in the panel.
 	if !strings.Contains(viewOpen, "my viewable task") {
@@ -8251,14 +8243,14 @@ func TestDetailPanelView_BodyScrollOffset(t *testing.T) {
 	m, _ = key(t, m, "enter")
 
 	// With scroll at 0, "line 0" should be visible.
-	panel0 := m.detailPanelView()
+	panel0 := ansi.Strip(m.detailPanelView())
 	if !strings.Contains(panel0, "line 0 of the body") {
 		t.Error("panel at scroll=0 should show line 0")
 	}
 
 	// Set scroll offset to skip first 10 lines.
 	m.detailScroll = 10
-	panel10 := m.detailPanelView()
+	panel10 := ansi.Strip(m.detailPanelView())
 
 	// "line 0" should no longer be visible (scrolled past).
 	if strings.Contains(panel10, "line 0 of the body") {
@@ -8426,7 +8418,7 @@ func TestDetailPanel_AltEnterInsertsNewline(t *testing.T) {
 	m = typeString(t, m, "line one")
 
 	// Send Alt+Enter — should insert a newline, not submit.
-	altEnter := tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+	altEnter := tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}
 	next2, cmd := m.Update(altEnter)
 	m = next2.(*Model)
 	// If there was a cmd from the textarea update, run it (textarea internal).
@@ -8506,7 +8498,7 @@ func TestDetailPanel_ViewWithNoTaskSelected(t *testing.T) {
 
 	// Force panel open — detailPanelView should return "" with no task.
 	m.detailOpen = true
-	got := m.detailPanelView()
+	got := ansi.Strip(m.detailPanelView())
 	if got != "" {
 		t.Errorf("detailPanelView with no task should return empty, got %q", got)
 	}
@@ -8565,7 +8557,7 @@ func TestDetailPanel_ScrollOutOfBoundsStillRenders(t *testing.T) {
 	m.detailScroll = 999
 
 	// detailPanelView should still render without panic.
-	got := m.detailPanelView()
+	got := ansi.Strip(m.detailPanelView())
 	if got == "" {
 		t.Error("detailPanelView should still render even with scroll out of bounds")
 	}
@@ -8581,7 +8573,7 @@ func TestDetailPanel_HelpLineShowsScrollKeys(t *testing.T) {
 	m = next.(*Model)
 
 	m, _ = key(t, m, "enter")
-	help := m.helpLine()
+	help := ansi.Strip(m.helpLine())
 	if !strings.Contains(help, "scroll") {
 		t.Errorf("help line when detail open should mention scroll, got: %s", help)
 	}
@@ -8840,13 +8832,13 @@ func TestSearch_CtrlNavAliasesMoveCursor(t *testing.T) {
 	)
 	m, _ = key(t, m, "/")
 	// ctrl+n should move cursor down.
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	next, _ := m.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
 	m = next.(*Model)
 	if m.search.cursor != 1 {
 		t.Errorf("cursor after ctrl+n = %d, want 1", m.search.cursor)
 	}
 	// ctrl+p should move cursor up.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	m = next.(*Model)
 	if m.search.cursor != 0 {
 		t.Errorf("cursor after ctrl+p = %d, want 0", m.search.cursor)
@@ -8900,7 +8892,7 @@ func TestSearch_CtrlCClosesLikeEsc(t *testing.T) {
 	if m.mode != modeSearch {
 		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
 	}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	next, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = next.(*Model)
 	if m.mode != modeNormal {
 		t.Errorf("mode after ctrl+c = %v, want modeNormal", m.mode)
@@ -8921,7 +8913,7 @@ func TestSearch_RecomputeLayoutSetsInputWidthInSearchMode(t *testing.T) {
 	m, _ = key(t, m, "/")
 	// recomputeLayout is called inside openSearch; input width should be set.
 	wantW := 120 - searchInputReserve
-	if got := m.search.input.Width; got != wantW {
+	if got := m.search.input.Width(); got != wantW {
 		t.Errorf("search input width = %d, want %d", got, wantW)
 	}
 
@@ -8929,7 +8921,7 @@ func TestSearch_RecomputeLayoutSetsInputWidthInSearchMode(t *testing.T) {
 	next, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	m = next.(*Model)
 	wantW = 80 - searchInputReserve
-	if got := m.search.input.Width; got != wantW {
+	if got := m.search.input.Width(); got != wantW {
 		t.Errorf("search input width after resize = %d, want %d", got, wantW)
 	}
 }
@@ -9167,7 +9159,7 @@ func TestSearch_RenderSearchWideSplitPane(t *testing.T) {
 	m.recomputeLayout()
 	m, _ = key(t, m, "/")
 
-	out := m.renderSearch()
+	out := ansi.Strip(m.renderSearch())
 	if out == "" {
 		t.Fatal("renderSearch() returned empty string")
 	}
@@ -9228,7 +9220,7 @@ func TestSearch_RenderSearchNarrowStacked(t *testing.T) {
 	m.recomputeLayout()
 	m, _ = key(t, m, "/")
 
-	out := m.renderSearch()
+	out := ansi.Strip(m.renderSearch())
 	if out == "" {
 		t.Fatal("renderSearch() returned empty string in narrow layout")
 	}
@@ -9257,7 +9249,7 @@ func TestSearch_RenderSearchEmptyResults(t *testing.T) {
 	m.recomputeLayout()
 	m, _ = key(t, m, "/")
 	m = typeString(t, m, "zzzzznomatch")
-	out := m.renderSearch()
+	out := ansi.Strip(m.renderSearch())
 	if out == "" {
 		t.Fatal("renderSearch() returned empty with empty results")
 	}
@@ -9267,11 +9259,6 @@ func TestSearch_RenderSearchEmptyResults(t *testing.T) {
 }
 
 func TestSearch_HighlightMatchesBoldsMatches(t *testing.T) {
-	// Reset style profile so ANSI output is deterministic regardless of TERM.
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	plain := highlightMatches("hello", nil)
 	if plain != "hello" {
 		t.Errorf("highlightMatches with nil hits = %q, want %q", plain, "hello")
@@ -9302,10 +9289,6 @@ func TestSearch_HighlightMatchesSkipsOutOfRange(t *testing.T) {
 // implementation mis-aligned or dropped highlights here because sahilm/fuzzy
 // returns byte offsets. "café" has bytes: c=0, a=1, f=2, é=3..4.
 func TestSearch_HighlightMatchesMultibyte(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	styled := highlightMatches("café", []int{3})
 	if plain := ansi.Strip(styled); plain != "café" {
 		t.Errorf("highlightMatches round-trip on multibyte = %q, want %q", plain, "café")
@@ -9446,7 +9429,7 @@ func TestSearch_RenderSearchTinyTerminalFitsBounds(t *testing.T) {
 			m.recomputeLayout()
 			m, _ = key(t, m, "/")
 
-			out := m.renderSearch()
+			out := ansi.Strip(m.renderSearch())
 			if out == "" {
 				t.Fatal("renderSearch() returned empty string")
 			}
@@ -9775,11 +9758,6 @@ func TestRenderListItem_LongURLWithoutSpacesStaysLinkified(t *testing.T) {
 // style from the active delegate AND the OSC 8 hyperlink escape — styling
 // and linking compose cleanly.
 func TestRenderListItem_ActiveRowWithURLComposesStyleAndLink(t *testing.T) {
-	// Force color profile so ANSI codes survive in test output.
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "check https://example.com status", Status: "open",
 			Schedule: "today", Position: 1000, Tags: []string{"active"},
@@ -9795,7 +9773,7 @@ func TestRenderListItem_ActiveRowWithURLComposesStyleAndLink(t *testing.T) {
 		t.Errorf("active row should contain OSC 8 opener for URL;\n rendered=%q", out)
 	}
 	// SGR color from the active delegate (bright green for selected active row).
-	brightGreenSeq := "38;2;73;222;128"
+	brightGreenSeq := fgSGR(t, defaultTheme.ActiveSelected.Dark)
 	if !strings.Contains(out, brightGreenSeq) {
 		t.Errorf("active selected row should contain bright green SGR sequence %q;\n rendered=%q",
 			brightGreenSeq, out)
@@ -11485,8 +11463,8 @@ func TestStatsBar_PushIndicator(t *testing.T) {
 	)
 	rec := stubAutoPush(t, git.PushResult{Pushed: true}, nil)
 
-	if strings.Contains(m.statsBarView(), "↑") {
-		t.Errorf("statsBarView while idle contains ↑; want absent: %q", m.statsBarView())
+	if strings.Contains(ansi.Strip(m.statsBarView()), "↑") {
+		t.Errorf("statsBarView while idle contains ↑; want absent: %q", ansi.Strip(m.statsBarView()))
 	}
 
 	// A committed mutation dispatches the push; the indicator goes up.
@@ -11495,8 +11473,8 @@ func TestStatsBar_PushIndicator(t *testing.T) {
 	if !m.pushInFlight {
 		t.Fatal("pushInFlight = false after a committed mutation; expected a dispatched push")
 	}
-	if !strings.Contains(m.statsBarView(), "↑") {
-		t.Errorf("statsBarView with pushInFlight=true missing ↑: %q", m.statsBarView())
+	if !strings.Contains(ansi.Strip(m.statsBarView()), "↑") {
+		t.Errorf("statsBarView with pushInFlight=true missing ↑: %q", ansi.Strip(m.statsBarView()))
 	}
 
 	// The push completes; the indicator comes back down.
@@ -11504,8 +11482,8 @@ func TestStatsBar_PushIndicator(t *testing.T) {
 	if m.pushInFlight {
 		t.Error("pushInFlight = true after autoPushResult; the gate must clear")
 	}
-	if strings.Contains(m.statsBarView(), "↑") {
-		t.Errorf("statsBarView after the push finished contains ↑; want absent: %q", m.statsBarView())
+	if strings.Contains(ansi.Strip(m.statsBarView()), "↑") {
+		t.Errorf("statsBarView after the push finished contains ↑; want absent: %q", ansi.Strip(m.statsBarView()))
 	}
 	if rec.count() != 1 {
 		t.Errorf("runAutoPush calls = %d, want 1", rec.count())
@@ -11520,7 +11498,7 @@ func TestStatsBar_PushAndEmailIndicatorsCoexist(t *testing.T) {
 	m.emailSyncing = true
 	m.pushInFlight = true
 
-	bar := m.statsBarView()
+	bar := ansi.Strip(m.statsBarView())
 	if !strings.Contains(bar, "↻") {
 		t.Errorf("statsBarView missing ↻ with emailSyncing=true: %q", bar)
 	}
@@ -11545,8 +11523,8 @@ func TestStatsBar_NoPushIndicatorWhenAutoPushDisabled(t *testing.T) {
 	if m.pushInFlight {
 		t.Error("pushInFlight = true with auto-push disabled")
 	}
-	if strings.Contains(m.statsBarView(), "↑") {
-		t.Errorf("statsBarView contains ↑ with auto-push disabled: %q", m.statsBarView())
+	if strings.Contains(ansi.Strip(m.statsBarView()), "↑") {
+		t.Errorf("statsBarView contains ↑ with auto-push disabled: %q", ansi.Strip(m.statsBarView()))
 	}
 	if got := msgsOfType[autoPushResult](runCmds(cmd)); len(got) != 0 {
 		t.Errorf("got %d autoPushResult msgs with auto-push disabled, want 0", len(got))
@@ -11561,7 +11539,7 @@ func TestStatsBar_NoPushIndicatorWhenAutoPushDisabled(t *testing.T) {
 // Without this the feature is invisible — there is no flash on success.
 func TestHelpModalContent_MentionsAutoPush(t *testing.T) {
 	m := newTestModelWithOpts(t, Options{})
-	help := m.helpModalContent()
+	help := ansi.Strip(m.helpModalContent())
 
 	for _, want := range []string{
 		"Auto-push",
@@ -11761,7 +11739,7 @@ func TestHelpLine_MultiLineStatusStaysOneRow(t *testing.T) {
 		"fatal: could not read Username for 'https://github.com': No such device or address\n" +
 		"hint: see git help credential\n"
 
-	got := m.helpLine()
+	got := ansi.Strip(m.helpLine())
 
 	if strings.Contains(got, "\n") {
 		t.Errorf("helpLine() spans %d rows, want 1:\n%q", strings.Count(got, "\n")+1, got)
@@ -11781,7 +11759,7 @@ func TestHelpLine_MultiLineErrorStaysOneRow(t *testing.T) {
 	m.width = 40
 	m.err = errors.New("git [commit]: exit status 1\nnothing to commit, working tree clean\n")
 
-	got := m.helpLine()
+	got := ansi.Strip(m.helpLine())
 
 	if strings.Contains(got, "\n") {
 		t.Errorf("helpLine() spans %d rows, want 1:\n%q", strings.Count(got, "\n")+1, got)
@@ -12012,5 +11990,351 @@ func TestAutoPushResult_WarningAlongsideASuccessfulPushIsNotAFailure(t *testing.
 	}
 	if m.err != nil {
 		t.Errorf("m.err = %v, want nil — the warning is non-fatal", m.err)
+	}
+}
+
+// --- bubbletea v2 view settings and modifier-only keys -----------------------
+
+// TestView_SetsAltScreenAndKeyboardEnhancements pins that every View() —
+// including the search overlay, which renders through its own branch — asks
+// for the alt screen and all three kitty keyboard protocol flags.
+func TestView_SetsAltScreenAndKeyboardEnhancements(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "alpha", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*Model)
+
+	check := func(label string) {
+		t.Helper()
+		v := m.View()
+		if !v.AltScreen {
+			t.Errorf("%s: View().AltScreen = false, want true", label)
+		}
+		ke := v.KeyboardEnhancements
+		if !ke.ReportAllKeysAsEscapeCodes || !ke.ReportAlternateKeys || !ke.ReportAssociatedText {
+			t.Errorf("%s: KeyboardEnhancements = %+v, want all three report flags", label, ke)
+		}
+		if v.Content == "" {
+			t.Errorf("%s: View().Content is empty", label)
+		}
+	}
+
+	check("normal mode")
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("mode after '/' = %v, want modeSearch", m.mode)
+	}
+	check("search mode")
+}
+
+// leftShift is the event kitty sends for a bare Shift press under
+// ReportAllKeysAsEscapeCodes.
+func leftShift() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: tea.KeyLeftShift, Mod: tea.ModShift}
+}
+
+func TestModifierOnly_ShiftLeavesHelpOpen(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "h")
+	if m.mode != modeHelp {
+		t.Fatalf("mode = %v, want modeHelp", m.mode)
+	}
+	next, cmd := m.Update(leftShift())
+	m = next.(*Model)
+	if m.mode != modeHelp {
+		t.Errorf("bare Shift closed help: mode = %v, want modeHelp", m.mode)
+	}
+	if cmd != nil {
+		t.Errorf("bare Shift returned a cmd, want nil")
+	}
+}
+
+func TestModifierOnly_ShiftThenYConfirmsDelete(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "delete me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "x")
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("mode = %v, want modeConfirmDelete", m.mode)
+	}
+	// Typing "Y" means pressing Shift first; that press alone must not cancel.
+	next, _ := m.Update(leftShift())
+	m = next.(*Model)
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("bare Shift cancelled delete-confirm: mode = %v", m.mode)
+	}
+	m, cmd := key(t, m, "Y")
+	if cmd == nil {
+		t.Fatal("Y should produce delete cmd")
+	}
+	m = runCmd(t, m, cmd)
+	if got := len(m.lists[0].Items()); got != 0 {
+		t.Errorf("Today tab should be empty after delete, got %d items", got)
+	}
+}
+
+func TestModifierOnly_KeepsStatusMsgInNormalMode(t *testing.T) {
+	m := newTestModel(t)
+	m.statusMsg = "Added: alpha"
+	for _, code := range []rune{tea.KeyLeftShift, tea.KeyRightShift, tea.KeyLeftCtrl,
+		tea.KeyLeftAlt, tea.KeyLeftSuper, tea.KeyCapsLock} {
+		next, cmd := m.Update(tea.KeyPressMsg{Code: code})
+		m = next.(*Model)
+		if cmd != nil {
+			t.Errorf("modifier %U returned a cmd, want nil", code)
+		}
+	}
+	if m.statusMsg != "Added: alpha" {
+		t.Errorf("statusMsg = %q after modifier-only presses, want it kept", m.statusMsg)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal", m.mode)
+	}
+}
+
+// --- paste routing tests ----------------------------------------------------
+
+// paste sends a bracketed paste through Update, the way v2 delivers it.
+func paste(t *testing.T, m *Model, content string) (*Model, tea.Cmd) {
+	t.Helper()
+	next, cmd := m.Update(tea.PasteMsg{Content: content})
+	return next.(*Model), cmd
+}
+
+func TestPaste_AddTitleMultiLineKeepsEveryLineVisible(t *testing.T) {
+	m := newTestModel(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	m, _ = key(t, m, "c")
+	_ = m.titleArea.View() // render cycle populates the viewport, as in production
+	// Three lines: a one-line pre-grow (the keystroke path) would leave the
+	// viewport two lines short and scroll "first" out of view.
+	m, _ = paste(t, m, "first\nsecond\nthird")
+	if got := m.titleArea.Value(); got != "first\nsecond\nthird" {
+		t.Fatalf("title = %q, want the pasted three lines", got)
+	}
+	view := m.titleArea.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("titleArea.View() should render 3 lines, got %d: %q", len(lines), view)
+	}
+	for i, want := range []string{"first", "second", "third"} {
+		if !strings.Contains(ansi.Strip(lines[i]), want) {
+			t.Errorf("line %d = %q, want it to contain %q", i, ansi.Strip(lines[i]), want)
+		}
+	}
+}
+
+func TestPaste_AddTitleRunsAutoTag(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01SEED01", Title: "seed task", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"jean"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = paste(t, m, "jean: pasted title")
+	if got := m.tagInput.Value(); got != "jean" {
+		t.Errorf("tag field = %q, want %q (title-prefix auto-tag on paste)", got, "jean")
+	}
+}
+
+func TestPaste_AddTagFieldRefreshesSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01S1", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, Tags: []string{"work", "personal"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab") // focus tags
+	m, _ = paste(t, m, "wo")
+	if got := m.tagInput.Value(); got != "wo" {
+		t.Fatalf("tag field = %q, want %q", got, "wo")
+	}
+	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
+		t.Errorf("suggestions = %v, want [work]", m.suggestions)
+	}
+	if m.titleArea.Value() != "" {
+		t.Errorf("title = %q, want empty (paste must go to the focused field only)", m.titleArea.Value())
+	}
+}
+
+func TestPaste_AddRecurFieldRefreshesSuggestions(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	m, _ = key(t, m, "tab") // focus recur
+	m, _ = paste(t, m, "weekly:")
+	if got := m.recurInput.Value(); got != "weekly:" {
+		t.Fatalf("recur field = %q, want %q", got, "weekly:")
+	}
+	if len(m.suggestions) == 0 {
+		t.Error("recur suggestions should refresh after a paste")
+	}
+	for _, s := range m.suggestions {
+		if !strings.HasPrefix(s, "weekly:") {
+			t.Errorf("suggestion %q does not match the pasted prefix", s)
+		}
+	}
+}
+
+func TestPaste_RetagRefreshesSuggestions(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "task two", Status: "open", Schedule: "today",
+			Position: 2000, Tags: []string{"work"}, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "t")
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	m, _ = paste(t, m, "wo")
+	if got := m.input.Value(); got != "wo" {
+		t.Fatalf("retag field = %q, want %q", got, "wo")
+	}
+	if len(m.suggestions) != 1 || m.suggestions[0] != "work" {
+		t.Errorf("suggestions = %v, want [work]", m.suggestions)
+	}
+}
+
+func TestPaste_DetailPanelGoesToNoteArea(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+	m, _ = paste(t, m, "line one\nline two")
+	if got := m.noteArea.Value(); got != "line one\nline two" {
+		t.Errorf("noteArea = %q, want the pasted note", got)
+	}
+}
+
+func TestPaste_SearchQueryReranks(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "fix login bug", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+		model.Task{ID: "01B", Title: "write docs", Status: "open",
+			Schedule: expectSchedule(t, schedule.Today), Position: 2000,
+			UpdatedAt: "2026-04-13T00:00:00Z", CreatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "/")
+	if got := len(m.search.results); got != 2 {
+		t.Fatalf("initial results = %d, want 2", got)
+	}
+	m, _ = paste(t, m, "login")
+	if got := m.search.input.Value(); got != "login" {
+		t.Fatalf("query = %q, want %q", got, "login")
+	}
+	if len(m.search.results) != 1 || m.search.results[0].Task.ID != "01A" {
+		t.Errorf("results after paste = %v, want only 01A", m.search.results)
+	}
+}
+
+func TestPaste_ReschedulePickerIgnoresPaste(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "move me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "r")
+	if m.mode != modeReschedule || m.rescheduleSub != 0 {
+		t.Fatalf("precondition: mode = %v sub = %d, want reschedule picker", m.mode, m.rescheduleSub)
+	}
+	// "2" would pick the tomorrow preset if a paste were treated as a key.
+	m, cmd := paste(t, m, "2")
+	if cmd != nil {
+		t.Errorf("paste on the picker returned a cmd; want nil")
+	}
+	if m.mode != modeReschedule || m.rescheduleSub != 0 {
+		t.Errorf("mode = %v sub = %d, want the picker unchanged", m.mode, m.rescheduleSub)
+	}
+	if got := m.input.Value(); got != "" {
+		t.Errorf("input = %q, want empty", got)
+	}
+	if got := len(m.lists[0].Items()); got != 1 {
+		t.Errorf("Today tab = %d items, want 1 (task not rescheduled)", got)
+	}
+}
+
+func TestPaste_RescheduleCustomDateAcceptsPaste(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "move me", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m, _ = key(t, m, "r")
+	m, _ = key(t, m, "6")
+	if m.rescheduleSub != 1 {
+		t.Fatalf("precondition: rescheduleSub = %d, want 1", m.rescheduleSub)
+	}
+	m, _ = paste(t, m, "3d")
+	if got := m.input.Value(); got != "3d" {
+		t.Errorf("input = %q, want %q", got, "3d")
+	}
+}
+
+func TestPaste_NormalModeWithoutPanelIsNoOp(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	m.statusMsg = "keep me"
+	// "d" would complete the task and "x" open delete-confirm if the paste
+	// were dispatched as keys.
+	m, cmd := paste(t, m, "dx")
+	if cmd != nil {
+		t.Errorf("paste in normal mode returned a cmd; want nil")
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal", m.mode)
+	}
+	if m.statusMsg != "keep me" {
+		t.Errorf("statusMsg = %q, want it untouched", m.statusMsg)
+	}
+	got, err := m.store.Get("01A")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got.Status != "open" {
+		t.Errorf("task status = %q, want open", got.Status)
+	}
+	if v := m.noteArea.Value(); v != "" {
+		t.Errorf("noteArea = %q, want empty (panel closed)", v)
+	}
+}
+
+func TestPaste_CommandModesIgnorePaste(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	for _, open := range []string{"h", "m", ",", "x"} {
+		m, _ = key(t, m, open)
+		mode := m.mode
+		var cmd tea.Cmd
+		m, cmd = paste(t, m, "y")
+		if cmd != nil {
+			t.Errorf("after %q: paste returned a cmd; want nil", open)
+		}
+		if m.mode != mode {
+			t.Errorf("after %q: mode = %v, want %v unchanged by paste", open, m.mode, mode)
+		}
+		m, _ = key(t, m, "esc")
+		if m.mode == modeHelp {
+			m.mode = modeNormal
+		}
+	}
+	got, err := m.store.Get("01A")
+	if err != nil {
+		t.Fatalf("store.Get (pasted %q must not confirm delete): %v", "y", err)
+	}
+	if got.Status != "open" {
+		t.Errorf("task status = %q, want open", got.Status)
 	}
 }

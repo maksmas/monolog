@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/maksmas/monolog/internal/config"
 	"github.com/maksmas/monolog/internal/email"
@@ -581,14 +583,27 @@ func TestEmailNoOpMsg_IsAccepted(t *testing.T) {
 	}
 }
 
-func TestInit_EmailDisabledReturnsNil(t *testing.T) {
+// TestInit_EmailDisabledOnlyRequestsBackgroundColor pins that with email
+// disabled (and no watcher, as in tests) Init schedules nothing but the
+// terminal background-color query — no email sync, no ticker.
+func TestInit_EmailDisabledOnlyRequestsBackgroundColor(t *testing.T) {
 	m := newTestModel(t)
 	if m.emailEnabled {
 		t.Fatal("precondition: email should be disabled")
 	}
-	if cmd := m.Init(); cmd != nil {
-		t.Errorf("Init with email disabled returned %v, want nil", cmd)
+	if cmd := m.Init(); !isBackgroundColorCmd(cmd) {
+		t.Errorf("Init with email disabled returned %v, want only tea.RequestBackgroundColor", cmd)
 	}
+	if m.emailSyncing {
+		t.Error("emailSyncing set with email disabled")
+	}
+}
+
+// isBackgroundColorCmd reports whether cmd is tea.RequestBackgroundColor
+// itself. Compared by function pointer rather than by running it, because the
+// other cmds Init batches include a tea.Tick that would block the test.
+func isBackgroundColorCmd(cmd tea.Cmd) bool {
+	return cmd != nil && reflect.ValueOf(cmd).Pointer() == reflect.ValueOf(tea.RequestBackgroundColor).Pointer()
 }
 
 func TestInit_EmailEnabledReturnsBatchWithSyncAndTick(t *testing.T) {
@@ -607,10 +622,20 @@ func TestInit_EmailEnabledReturnsBatchWithSyncAndTick(t *testing.T) {
 	if !ok {
 		t.Fatalf("Init result type %T, want tea.BatchMsg", msg)
 	}
-	// Batch should contain the immediate sync cmd and the ticker cmd. The
-	// ticker is only included when interval > 0 (which it is, 5m by default).
-	if len(cmds) != 2 {
-		t.Errorf("Init batch len = %d, want 2 (sync + tick)", len(cmds))
+	// Batch should contain the background-color request, the immediate sync
+	// cmd and the ticker cmd. The ticker is only included when interval > 0
+	// (which it is, 5m by default).
+	if len(cmds) != 3 {
+		t.Errorf("Init batch len = %d, want 3 (background color + sync + tick)", len(cmds))
+	}
+	bg := 0
+	for _, c := range cmds {
+		if isBackgroundColorCmd(c) {
+			bg++
+		}
+	}
+	if bg != 1 {
+		t.Errorf("Init batch has %d background-color requests, want 1", bg)
 	}
 }
 
@@ -1006,17 +1031,17 @@ func TestStatsBar_SpinnerIndicator(t *testing.T) {
 	m := newTestModelWithEmail(t)
 
 	// Default state: no spinner.
-	if contains(m.statsBarView(), "↻") {
+	if contains(ansi.Strip(m.statsBarView()), "↻") {
 		t.Errorf("statsBarView with emailSyncing=false contains ↻; want absent")
 	}
 	// Flip syncing on.
 	m.emailSyncing = true
-	if !contains(m.statsBarView(), "↻") {
+	if !contains(ansi.Strip(m.statsBarView()), "↻") {
 		t.Errorf("statsBarView with emailSyncing=true missing ↻; want present")
 	}
 	// And back off.
 	m.emailSyncing = false
-	if contains(m.statsBarView(), "↻") {
+	if contains(ansi.Strip(m.statsBarView()), "↻") {
 		t.Errorf("statsBarView with emailSyncing=false (after toggle) contains ↻; want absent")
 	}
 }
@@ -1060,7 +1085,7 @@ func TestHelpLine_SyncCopyEnabled_TagView(t *testing.T) {
 	// rebuild tabs for tag view via toggleViewMode would need data; we
 	// just need the helpLine to render the tag branch, which it does
 	// based on m.viewMode.
-	h := m.helpLine()
+	h := ansi.Strip(m.helpLine())
 	if !contains(h, "full sync (git+email)") {
 		t.Errorf("tag-view helpLine missing 'full sync (git+email)': %q", h)
 	}

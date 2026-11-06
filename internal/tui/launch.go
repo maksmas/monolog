@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/maksmas/monolog/internal/launch"
 	"github.com/maksmas/monolog/internal/store"
