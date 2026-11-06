@@ -54,7 +54,12 @@ func newTestModel(t *testing.T, tasks ...model.Task) *Model {
 // returned cmd.
 func key(t *testing.T, m *Model, s string) (*Model, tea.Cmd) {
 	t.Helper()
-	msg := toKeyMsg(s)
+	return send(t, m, toKeyMsg(s))
+}
+
+// send delivers an arbitrary key press through Update.
+func send(t *testing.T, m *Model, msg tea.KeyPressMsg) (*Model, tea.Cmd) {
+	t.Helper()
 	next, cmd := m.Update(msg)
 	return next.(*Model), cmd
 }
@@ -84,8 +89,6 @@ var namedKeys = map[string]rune{
 	"down":      tea.KeyDown,
 	"pgup":      tea.KeyPgUp,
 	"pgdown":    tea.KeyPgDown,
-	"home":      tea.KeyHome,
-	"end":       tea.KeyEnd,
 	"tab":       tea.KeyTab,
 	"enter":     tea.KeyEnter,
 	"esc":       tea.KeyEscape,
@@ -94,7 +97,9 @@ var namedKeys = map[string]rune{
 
 // toKeyMsg converts a string spec to a tea.KeyPressMsg. Specs are a single
 // rune ("d", "G", " "), a named key ("enter", "pgdown"), "shift+tab", or a
-// ctrl combo ("ctrl+z").
+// ctrl combo ("ctrl+z"). Anything else panics: a silently-built key whose
+// String() merely echoes the spec would let a test match a key no terminal
+// sends.
 func toKeyMsg(s string) tea.KeyPressMsg {
 	if code, ok := namedKeys[s]; ok {
 		return tea.KeyPressMsg{Code: code}
@@ -113,7 +118,7 @@ func toKeyMsg(s string) tea.KeyPressMsg {
 		r, _ := utf8.DecodeRuneInString(s)
 		return runeKey(r)
 	}
-	return tea.KeyPressMsg{Code: tea.KeyExtended, Text: s}
+	panic(fmt.Sprintf("toKeyMsg: unknown key spec %q", s))
 }
 
 // runCmd executes cmd, feeds the resulting msg back through the model, and
@@ -5085,8 +5090,8 @@ func TestActivePanel_HiddenInTagView(t *testing.T) {
 		t.Fatalf("rebuildForTagView: %v", err)
 	}
 
-	if ansi.Strip(m.activePanelView()) != "" {
-		t.Error("active panel should be hidden in tag view")
+	if got := m.activePanelView(); got != "" {
+		t.Errorf("active panel should be hidden in tag view, got %q", got)
 	}
 	if m.activePanelHeight() != 0 {
 		t.Errorf("activePanelHeight should be 0 in tag view, got %d", m.activePanelHeight())
@@ -5102,8 +5107,8 @@ func TestActivePanel_VisibleAgainAfterScheduleView(t *testing.T) {
 	if err := m.rebuildForTagView(); err != nil {
 		t.Fatalf("rebuildForTagView: %v", err)
 	}
-	if ansi.Strip(m.activePanelView()) != "" {
-		t.Error("should be hidden in tag view")
+	if got := m.activePanelView(); got != "" {
+		t.Errorf("should be hidden in tag view, got %q", got)
 	}
 
 	if err := m.rebuildForScheduleView(); err != nil {
@@ -7669,6 +7674,34 @@ func TestDetailPanel_PrintableKeysAlwaysGoToTextarea(t *testing.T) {
 	}
 }
 
+// TestDetailPanel_MetaHyperSuperTextGoesToNote pins that a key carrying Text
+// under meta, hyper or super types into the note rather than falling through
+// to the command switch (where commandKey clears it, so it would run nothing).
+// The decoder keeps Text under these modifiers when the terminal reports
+// associated text.
+func TestDetailPanel_MetaHyperSuperTextGoesToNote(t *testing.T) {
+	for _, mod := range []tea.KeyMod{tea.ModMeta, tea.ModHyper, tea.ModSuper} {
+		m := newTestModel(t,
+			model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
+				Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		)
+		next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+		m = next.(*Model)
+		m, _ = key(t, m, "enter")
+		if !m.detailOpen {
+			t.Fatal("panel should be open")
+		}
+
+		m, _ = send(t, m, tea.KeyPressMsg{Code: 'd', Text: "d", Mod: mod})
+		if got := m.noteArea.Value(); got != "d" {
+			t.Errorf("mod %v: noteArea.Value() = %q, want %q", mod, got, "d")
+		}
+		if m.mode != modeNormal || !m.detailOpen {
+			t.Errorf("mod %v: mode = %d, detailOpen = %v; want modeNormal with panel open", mod, m.mode, m.detailOpen)
+		}
+	}
+}
+
 func TestDetailPanel_TabSwitchResetsScroll(t *testing.T) {
 	m := newTestModel(t,
 		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
@@ -7699,8 +7732,56 @@ func TestDetailPanelView_EmptyWhenClosed(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = next.(*Model)
 
-	if got := ansi.Strip(m.detailPanelView()); got != "" {
+	if got := m.detailPanelView(); got != "" {
 		t.Errorf("detailPanelView() should be empty when panel is closed, got %q", got)
+	}
+}
+
+// TestDetailPanelView_FillsItsWidth pins the lipgloss v2 border compensation:
+// Width includes the border, so the panel renders exactly detailPanelWidth()
+// columns and the list + panel row fills the terminal.
+func TestDetailPanelView_FillsItsWidth(t *testing.T) {
+	m := newTestModel(t,
+		model.Task{ID: "01A", Title: "task one", Body: "some body text", Status: "open",
+			Schedule: expectSchedule(t, "today"), Position: 1000,
+			UpdatedAt: "2026-04-13T00:00:00Z"},
+	)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+	pw := m.detailPanelWidth()
+	for i, line := range strings.Split(ansi.Strip(m.detailPanelView()), "\n") {
+		if w := lipgloss.Width(line); w != pw {
+			t.Errorf("panel line %d width = %d, want %d; line=%q", i, w, pw, line)
+		}
+	}
+	for i, line := range strings.Split(ansi.Strip(m.View().Content), "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("view line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+		}
+	}
+}
+
+// TestModalBox_WrapsAtInnerWidth pins modalBox's lipgloss v2 compensation
+// (Width counts border + padding): the box is innerWidth+6 wide and a word of
+// exactly innerWidth stays on one line.
+func TestModalBox_WrapsAtInnerWidth(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 100, 30
+	iw := m.modalInnerWidth()
+	out := ansi.Strip(m.modalBox(strings.Repeat("x", iw), iw))
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w != iw+6 {
+			t.Errorf("modal line %d width = %d, want %d; line=%q", i, w, iw+6, line)
+		}
+	}
+	// border + padding top, the word, padding + border bottom.
+	if len(lines) != 5 {
+		t.Errorf("modal rendered %d lines, want 5 (word must not wrap): %q", len(lines), out)
 	}
 }
 
@@ -9163,16 +9244,16 @@ func TestSearch_RenderSearchWideSplitPane(t *testing.T) {
 	if out == "" {
 		t.Fatal("renderSearch() returned empty string")
 	}
-	// Render output must fit within the terminal bounds — every line no wider
-	// than m.width, and no more lines than m.height. Regression guard for the
-	// preview border width/height not being accounted for in the split math.
+	// Render output must fill the terminal exactly — every line m.width wide,
+	// m.height lines. Regression guard for the preview border width/height
+	// (lipgloss v2 counts it inside Width/Height) in the split math.
 	for i, line := range strings.Split(out, "\n") {
-		if w := lipgloss.Width(line); w > m.width {
-			t.Errorf("renderSearch wide: line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+		if w := lipgloss.Width(line); w != m.width {
+			t.Errorf("renderSearch wide: line %d width = %d, want %d; line=%q", i, w, m.width, line)
 		}
 	}
-	if lines := strings.Count(out, "\n") + 1; lines > m.height {
-		t.Errorf("renderSearch wide: rendered %d lines, want <= %d", lines, m.height)
+	if lines := strings.Count(out, "\n") + 1; lines != m.height {
+		t.Errorf("renderSearch wide: rendered %d lines, want %d", lines, m.height)
 	}
 	// Strip ANSI so we can substring-match the plain content.
 	plain := ansi.Strip(out)
@@ -9224,14 +9305,14 @@ func TestSearch_RenderSearchNarrowStacked(t *testing.T) {
 	if out == "" {
 		t.Fatal("renderSearch() returned empty string in narrow layout")
 	}
-	// Stacked (narrow) path must also respect terminal bounds.
+	// Stacked (narrow) path must also fill the terminal exactly.
 	for i, line := range strings.Split(out, "\n") {
-		if w := lipgloss.Width(line); w > m.width {
-			t.Errorf("renderSearch narrow: line %d width = %d, want <= %d; line=%q", i, w, m.width, line)
+		if w := lipgloss.Width(line); w != m.width {
+			t.Errorf("renderSearch narrow: line %d width = %d, want %d; line=%q", i, w, m.width, line)
 		}
 	}
-	if lines := strings.Count(out, "\n") + 1; lines > m.height {
-		t.Errorf("renderSearch narrow: rendered %d lines, want <= %d", lines, m.height)
+	if lines := strings.Count(out, "\n") + 1; lines != m.height {
+		t.Errorf("renderSearch narrow: rendered %d lines, want %d", lines, m.height)
 	}
 	if !strings.Contains(out, ">") {
 		t.Errorf("renderSearch narrow output missing input prompt '>': %q", out)
@@ -12105,27 +12186,96 @@ func paste(t *testing.T, m *Model, content string) (*Model, tea.Cmd) {
 }
 
 func TestPaste_AddTitleMultiLineKeepsEveryLineVisible(t *testing.T) {
+	// Terminals may paste with \r or \r\n line endings; the textarea turns
+	// every \r into a newline, and the pre-grow must count them the same way.
+	for _, tt := range []struct{ name, content string }{
+		{"lf", "first\nsecond\nthird\nfourth\nfifth"},
+		{"cr", "first\rsecond\rthird\rfourth\rfifth"},
+		{"crlf", "first\r\nsecond\r\nthird\r\nfourth\r\nfifth"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(t)
+			next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+			m = next.(*Model)
+
+			m, _ = key(t, m, "c")
+			_ = m.titleArea.View() // render cycle populates the viewport, as in production
+			// Five lines: a one-line pre-grow (the keystroke path), or one that
+			// counted \r as no line break, would leave the viewport short and
+			// scroll "first" out of view.
+			m, _ = paste(t, m, tt.content)
+			value := m.titleArea.Value()
+			for _, want := range []string{"first", "second", "third", "fourth", "fifth"} {
+				if !strings.Contains(value, want) {
+					t.Fatalf("title = %q, want it to contain %q", value, want)
+				}
+			}
+			// Every line the textarea holds (\r\n becomes two) must be on screen.
+			want := strings.Split(value, "\n")
+			lines := strings.Split(m.titleArea.View(), "\n")
+			if len(lines) < len(want) {
+				t.Fatalf("titleArea.View() renders %d lines, want >= %d for title %q", len(lines), len(want), value)
+			}
+			for i, w := range want {
+				if got := strings.TrimSpace(ansi.Strip(lines[i])); !strings.Contains(got, w) {
+					t.Errorf("line %d = %q, want it to contain %q", i, got, w)
+				}
+			}
+		})
+	}
+}
+
+func TestVisualLines(t *testing.T) {
+	tests := []struct {
+		name string
+		val  string
+		w    int
+		want int
+	}{
+		{"empty", "", 10, 1},
+		{"fits", "hello", 10, 1},
+		{"exactly width", "0123456789", 10, 1},
+		{"one over", "0123456789x", 10, 2},
+		{"three rows", strings.Repeat("x", 25), 10, 3},
+		{"two short lines", "a\nb", 10, 2},
+		{"long then short", strings.Repeat("x", 15) + "\nb", 10, 3},
+		{"wide runes", "日本語日本語", 6, 2},
+		{"no width counts logical lines", strings.Repeat("x", 50) + "\nb", 0, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := visualLines(tt.val, tt.w); got != tt.want {
+				t.Errorf("visualLines(%q, %d) = %d, want %d", tt.val, tt.w, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPaste_AddTitleLongSingleLineStaysVisible: a one-line paste wider than
+// the title textarea soft-wraps; the pre-grow must count the wrapped rows or
+// the start of the paste scrolls out of view.
+func TestPaste_AddTitleLongSingleLineStaysVisible(t *testing.T) {
 	m := newTestModel(t)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = next.(*Model)
-
 	m, _ = key(t, m, "c")
-	_ = m.titleArea.View() // render cycle populates the viewport, as in production
-	// Three lines: a one-line pre-grow (the keystroke path) would leave the
-	// viewport two lines short and scroll "first" out of view.
-	m, _ = paste(t, m, "first\nsecond\nthird")
-	if got := m.titleArea.Value(); got != "first\nsecond\nthird" {
-		t.Fatalf("title = %q, want the pasted three lines", got)
+	_ = m.titleArea.View()
+	w := m.titleArea.Width()
+	if w <= 0 {
+		t.Fatalf("precondition: titleArea width = %d", w)
 	}
-	view := m.titleArea.View()
-	lines := strings.Split(view, "\n")
-	if len(lines) < 3 {
-		t.Fatalf("titleArea.View() should render 3 lines, got %d: %q", len(lines), view)
+	words := make([]string, 0, 40)
+	for i := 0; len(strings.Join(words, " ")) < 5*w; i++ {
+		words = append(words, fmt.Sprintf("w%02d", i))
 	}
-	for i, want := range []string{"first", "second", "third"} {
-		if !strings.Contains(ansi.Strip(lines[i]), want) {
-			t.Errorf("line %d = %q, want it to contain %q", i, ansi.Strip(lines[i]), want)
-		}
+	content := strings.Join(words, " ")
+	m, _ = paste(t, m, content)
+	if got := m.titleArea.Value(); got != content {
+		t.Fatalf("title = %q, want the pasted line", got)
+	}
+	first := ansi.Strip(strings.Split(m.titleArea.View(), "\n")[0])
+	if !strings.Contains(first, "w00") {
+		t.Errorf("first rendered line = %q, want the start of the paste (w00) visible", first)
 	}
 }
 
@@ -12314,9 +12464,16 @@ func TestPaste_CommandModesIgnorePaste(t *testing.T) {
 		model.Task{ID: "01A", Title: "task one", Status: "open", Schedule: "today",
 			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
 	)
-	for _, open := range []string{"h", "m", ",", "x"} {
+	for _, tt := range []struct {
+		open string
+		mode mode
+	}{{"h", modeHelp}, {"m", modeGrab}, {",", modeSettings}, {"x", modeConfirmDelete}} {
+		open := tt.open
 		m, _ = key(t, m, open)
 		mode := m.mode
+		if mode != tt.mode {
+			t.Fatalf("after %q: mode = %v, want %v (the paste check would be vacuous)", open, mode, tt.mode)
+		}
 		var cmd tea.Cmd
 		m, cmd = paste(t, m, "y")
 		if cmd != nil {
@@ -12336,5 +12493,718 @@ func TestPaste_CommandModesIgnorePaste(t *testing.T) {
 	}
 	if got.Status != "open" {
 		t.Errorf("task status = %q, want open", got.Status)
+	}
+}
+
+// --- layout-independent shortcuts (kitty base-layout keys) -----------------
+
+func layoutTasks() []model.Task {
+	return []model.Task{
+		{ID: "01A", Title: "first", Status: "open", Schedule: "today",
+			Position: 1000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		{ID: "01B", Title: "second", Status: "open", Schedule: "today",
+			Position: 2000, UpdatedAt: "2026-04-13T00:00:00Z"},
+		{ID: "01C", Title: "third", Status: "open", Schedule: "today",
+			Position: 3000, UpdatedAt: "2026-04-13T00:00:00Z"},
+	}
+}
+
+func TestLayout_NormalRussianDMarksDone(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, cmd := send(t, m, ruKey("в", 'в', 'd', 0))
+	if cmd == nil {
+		t.Fatal("в (base d) should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	got, err := m.store.Get("01A")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got.Status != "done" {
+		t.Errorf("status = %q, want done", got.Status)
+	}
+}
+
+// TestLayout_DecodedKittyBytesMarkDone runs raw kitty bytes through the v2
+// decoder and then Update, covering decoder → dispatch → commandKey end to end.
+func TestLayout_DecodedKittyBytesMarkDone(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, cmd := send(t, m, decodeKitty(t, "\x1b[1074::100;1;1074u"))
+	if cmd == nil {
+		t.Fatal("decoded в (base d) should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	got, err := m.store.Get("01A")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got.Status != "done" {
+		t.Errorf("status = %q, want done", got.Status)
+	}
+}
+
+func TestLayout_GrabRussianShiftGMovesToBottom(t *testing.T) {
+	m := newTestModel(t, layoutTasks()...)
+	m.lists[0].Select(0)
+	m, _ = send(t, m, ruKey("ь", 'ь', 'm', 0))
+	if m.mode != modeGrab {
+		t.Fatalf("ь (base m): mode = %v, want modeGrab", m.mode)
+	}
+	m, _ = send(t, m, ruKey("П", 'п', 'g', tea.ModShift))
+	if m.grabIndex != 2 {
+		t.Errorf("shift+п (base g): grabIndex = %d, want 2 (bottom)", m.grabIndex)
+	}
+	m, _ = send(t, m, ruKey("п", 'п', 'g', 0))
+	if m.grabIndex != 0 {
+		t.Errorf("п (base g): grabIndex = %d, want 0 (top)", m.grabIndex)
+	}
+}
+
+func TestLayout_DeleteConfirmRussianY(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, _ = send(t, m, ruKey("ч", 'ч', 'x', 0))
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("ч (base x): mode = %v, want modeConfirmDelete", m.mode)
+	}
+	m, cmd := send(t, m, ruKey("н", 'н', 'y', 0))
+	if cmd == nil {
+		t.Fatal("н (base y) should confirm the delete")
+	}
+	m = runCmd(t, m, cmd)
+	if _, err := m.store.Get("01A"); err == nil {
+		t.Error("task still exists after н (base y) confirm")
+	}
+}
+
+// TestLayout_SuperTextDoesNotRunShortcut pins that a meta/hyper/super key
+// carrying Text (kitty reports associated text under those modifiers) does
+// not run the letter's shortcut with the detail panel closed: String() would
+// return the bare "d" and complete the task.
+func TestLayout_SuperTextDoesNotRunShortcut(t *testing.T) {
+	keys := map[string]tea.KeyPressMsg{
+		"meta+d":          {Code: 'd', Text: "d", Mod: tea.ModMeta},
+		"hyper+d":         {Code: 'd', Text: "d", Mod: tea.ModHyper},
+		"super+d":         {Code: 'd', Text: "d", Mod: tea.ModSuper},
+		"ru super+в":      {Code: 'в', Text: "в", BaseCode: 'd', Mod: tea.ModSuper},
+		"decoded super+d": decodeKitty(t, "\x1b[100;9;100u"),
+	}
+	for name, k := range keys {
+		m := newTestModel(t, layoutTasks()[0])
+		m, cmd := send(t, m, k)
+		if cmd != nil {
+			m = runCmd(t, m, cmd)
+		}
+		got, err := m.store.Get("01A")
+		if err != nil {
+			t.Fatalf("%s: store.Get: %v", name, err)
+		}
+		if got.Status != "open" {
+			t.Errorf("%s: status = %q, want open", name, got.Status)
+		}
+		if m.mode != modeNormal {
+			t.Errorf("%s: mode = %v, want modeNormal", name, m.mode)
+		}
+	}
+}
+
+func TestLayout_DeleteConfirmSuperYDoesNotDelete(t *testing.T) {
+	for _, mod := range []tea.KeyMod{tea.ModMeta, tea.ModHyper, tea.ModSuper} {
+		m := newTestModel(t, layoutTasks()[0])
+		m, _ = key(t, m, "x")
+		if m.mode != modeConfirmDelete {
+			t.Fatalf("precondition: mode = %v, want modeConfirmDelete", m.mode)
+		}
+		m, cmd := send(t, m, tea.KeyPressMsg{Code: 'y', Text: "y", Mod: mod})
+		if cmd != nil {
+			t.Errorf("mod %v: y with Text returned a cmd; want the delete cancelled", mod)
+		}
+		if m.mode != modeNormal {
+			t.Errorf("mod %v: mode = %v, want modeNormal (cancelled)", mod, m.mode)
+		}
+		if _, err := m.store.Get("01A"); err != nil {
+			t.Errorf("mod %v: task deleted: %v", mod, err)
+		}
+	}
+}
+
+func TestLayout_DeleteConfirmRussianShiftY(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, _ = key(t, m, "x")
+	m, cmd := send(t, m, ruKey("Н", 'н', 'y', tea.ModShift))
+	if cmd == nil {
+		t.Fatal("shift+н (base y) should confirm the delete like Y")
+	}
+	m = runCmd(t, m, cmd)
+	if _, err := m.store.Get("01A"); err == nil {
+		t.Error("task still exists after shift+н (base y) confirm")
+	}
+}
+
+func TestLayout_RussianCommaOpensSettings(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = send(t, m, ruKey("б", 'б', ',', 0))
+	if m.mode != modeSettings {
+		t.Errorf("б (base ,): mode = %v, want modeSettings", m.mode)
+	}
+}
+
+// TestLayout_RussianShiftSlashDoesNotOpenSettings pins the probe's real
+// shift+/ event: Russian types "," there, which must not reach the settings key.
+func TestLayout_RussianShiftSlashDoesNotOpenSettings(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = send(t, m, ruKey(",", '.', '/', tea.ModShift))
+	if m.mode != modeNormal {
+		t.Errorf("shift+/ on Russian: mode = %v, want modeNormal", m.mode)
+	}
+}
+
+func TestLayout_RussianSlashOpensSearch(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, _ = send(t, m, ruKey(".", '.', '/', 0))
+	if m.mode != modeSearch {
+		t.Errorf(". (base /): mode = %v, want modeSearch", m.mode)
+	}
+}
+
+func TestLayout_SettingsRussianLCyclesDateFormat(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = send(t, m, ruKey("б", 'б', ',', 0))
+	if m.mode != modeSettings {
+		t.Fatalf("precondition: mode = %v, want modeSettings", m.mode)
+	}
+	initial := m.settingsFmt
+	m, _ = send(t, m, ruKey("д", 'д', 'l', 0))
+	if m.settingsFmt == initial {
+		t.Errorf("д (base l): settingsFmt unchanged (%q), want the next format", initial)
+	}
+}
+
+func TestLayout_RussianCtrlZUndoes(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = send(t, m, ruKey("", 'я', 'z', tea.ModCtrl))
+	if m.statusMsg != "nothing to undo" {
+		t.Errorf("ctrl+я (base z): statusMsg = %q, want %q", m.statusMsg, "nothing to undo")
+	}
+}
+
+func TestLayout_RussianCtrlYRedoes(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = send(t, m, ruKey("", 'н', 'y', tea.ModCtrl))
+	if m.statusMsg != "nothing to redo" {
+		t.Errorf("ctrl+н (base y): statusMsg = %q, want %q", m.statusMsg, "nothing to redo")
+	}
+}
+
+// TestLayout_SearchRussianCtrlNPNavigate: ctrl+т / ctrl+з (bases n / p) move
+// the search selection like ctrl+n / ctrl+p.
+func TestLayout_SearchRussianCtrlNPNavigate(t *testing.T) {
+	m := newTestModel(t, layoutTasks()...)
+	m, _ = key(t, m, "/")
+	if m.mode != modeSearch {
+		t.Fatalf("precondition: mode = %v, want modeSearch", m.mode)
+	}
+	if m.search.cursor != 0 {
+		t.Fatalf("precondition: cursor = %d, want 0", m.search.cursor)
+	}
+	m, _ = send(t, m, ruKey("", 'т', 'n', tea.ModCtrl))
+	if m.search.cursor != 1 {
+		t.Fatalf("ctrl+т (base n): cursor = %d, want 1", m.search.cursor)
+	}
+	m, _ = send(t, m, ruKey("", 'з', 'p', tea.ModCtrl))
+	if m.search.cursor != 0 {
+		t.Errorf("ctrl+з (base p): cursor = %d, want 0", m.search.cursor)
+	}
+}
+
+// --- Latin layouts that move letters: the typed letter wins ----------------
+// A kitty-protocol terminal reports the PC-101 key under a relocated Latin
+// letter as BaseCode. These pin that Update matches the typed letter, not
+// the physical key (preferTypedLatin). Shapes match the decoder
+// (TestCommandKey_KittyDecoder's dvorak/qwertz rows).
+
+func TestLayout_DvorakDMarksDone(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, cmd := send(t, m, ruKey("d", 'd', 'h', 0))
+	if m.mode == modeHelp {
+		t.Fatal("Dvorak d (physical h) opened help")
+	}
+	if cmd == nil {
+		t.Fatal("Dvorak d (physical h) should return a save cmd")
+	}
+	m = runCmd(t, m, cmd)
+	got, err := m.store.Get("01A")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got.Status != "done" {
+		t.Errorf("status = %q, want done", got.Status)
+	}
+}
+
+func TestLayout_QwertzYConfirmsDelete(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, _ = key(t, m, "x")
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("precondition: mode = %v, want modeConfirmDelete", m.mode)
+	}
+	m, cmd := send(t, m, ruKey("y", 'y', 'z', 0))
+	if cmd == nil {
+		t.Fatal("QWERTZ y (physical z) should confirm the delete")
+	}
+	m = runCmd(t, m, cmd)
+	if _, err := m.store.Get("01A"); err == nil {
+		t.Error("task still exists after QWERTZ y (physical z) confirm")
+	}
+}
+
+func TestLayout_QwertzCtrlZUndoesNotRedoes(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = send(t, m, ruKey("", 'z', 'y', tea.ModCtrl))
+	if m.statusMsg != "nothing to undo" {
+		t.Errorf("QWERTZ ctrl+z (physical y): statusMsg = %q, want %q", m.statusMsg, "nothing to undo")
+	}
+}
+
+func TestLayout_DvorakApostropheDoesNotQuit(t *testing.T) {
+	m := newTestModel(t, layoutTasks()...)
+	m, cmd := send(t, m, ruKey("'", '\'', 'q', 0))
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("Dvorak ' (physical q) quit the TUI")
+		}
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal", m.mode)
+	}
+}
+
+func TestLayout_AzertyShiftedDigitSwitchesTab(t *testing.T) {
+	m := newTestModel(t, layoutTasks()...)
+	m.activeTab = 2
+	m, _ = send(t, m, ruKey("1", '&', '1', tea.ModShift))
+	if m.activeTab != 0 {
+		t.Errorf("AZERTY shift+& (types 1): activeTab = %d, want 0", m.activeTab)
+	}
+}
+
+func TestLayout_AddModalKeepsRussianText(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = send(t, m, ruKey("в", 'в', 'd', 0))
+	if m.mode != modeAdd {
+		t.Fatalf("в in add modal: mode = %v, want modeAdd", m.mode)
+	}
+	if got := m.titleArea.Value(); got != "в" {
+		t.Errorf("title after в = %q, want %q", got, "в")
+	}
+	m, _ = send(t, m, ruKey("П", 'п', 'g', tea.ModShift))
+	if got := m.titleArea.Value(); got != "вП" {
+		t.Errorf("title after shift+п = %q, want %q", got, "вП")
+	}
+}
+
+func TestLayout_DetailPanelNoteKeepsRussianText(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("panel should be open")
+	}
+	m, cmd := send(t, m, ruKey("в", 'в', 'd', 0))
+	if got := m.noteArea.Value(); got != "в" {
+		t.Errorf("noteArea = %q, want %q", got, "в")
+	}
+	if cmd != nil {
+		m = runCmd(t, m, cmd)
+	}
+	got, err := m.store.Get("01A")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got.Status != "open" {
+		t.Errorf("status = %q, want open (в in the note must not mark done)", got.Status)
+	}
+}
+
+// TestDetailPanel_AltWordBindingsReachNote: v2 clears Text under alt, so
+// alt+b (word backward) must still be routed to the note textarea, as v1's
+// alt-modified runes were — on a Russian layout too (alt+и, base b).
+func TestDetailPanel_AltWordBindingsReachNote(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		altB tea.KeyPressMsg
+	}{
+		{"us", tea.KeyPressMsg{Code: 'b', Mod: tea.ModAlt}},
+		{"ru", ruKey("", 'и', 'b', tea.ModAlt)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(t, layoutTasks()[0])
+			next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+			m = next.(*Model)
+			m, _ = key(t, m, "enter")
+			if !m.detailOpen {
+				t.Fatal("panel should be open")
+			}
+			m = typeString(t, m, "ab cd")
+			m, _ = send(t, m, tt.altB)
+			m = typeString(t, m, "X")
+			if got, want := m.noteArea.Value(), "ab Xcd"; got != want {
+				t.Errorf("noteArea after alt+b, X = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestShiftTab_NormalModeWrapsToLastTab: shift+tab moves one tab left with
+// wrap-around, like left.
+func TestShiftTab_NormalModeWrapsToLastTab(t *testing.T) {
+	m := newTestModel(t)
+	if m.activeTab != 0 || len(m.tabs) < 2 {
+		t.Fatalf("precondition: activeTab = %d, tabs = %d", m.activeTab, len(m.tabs))
+	}
+	m, _ = key(t, m, "shift+tab")
+	if want := len(m.tabs) - 1; m.activeTab != want {
+		t.Errorf("activeTab after shift+tab = %d, want %d (wrap to last)", m.activeTab, want)
+	}
+	m, _ = key(t, m, "shift+tab")
+	if want := len(m.tabs) - 2; m.activeTab != want {
+		t.Errorf("activeTab after second shift+tab = %d, want %d", m.activeTab, want)
+	}
+}
+
+// TestShiftTab_AddModalDoesNotCycleFocus: only plain Tab cycles the add
+// modal's fields. v2 reports shift+tab with Code == KeyTab, so a Code check
+// would make it cycle too (v1's KeyShiftTab never did).
+func TestShiftTab_AddModalDoesNotCycleFocus(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd || m.addFocus != addFocusTitle {
+		t.Fatalf("precondition: mode = %v, addFocus = %v", m.mode, m.addFocus)
+	}
+	m, _ = key(t, m, "shift+tab")
+	if m.addFocus != addFocusTitle {
+		t.Errorf("addFocus after shift+tab = %v, want addFocusTitle (unchanged)", m.addFocus)
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTags {
+		t.Errorf("addFocus after tab = %v, want addFocusTags", m.addFocus)
+	}
+}
+
+func TestLayout_SearchQueryKeepsRussianText(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, _ = key(t, m, "/")
+	m, _ = send(t, m, ruKey("в", 'в', 'd', 0))
+	if m.mode != modeSearch {
+		t.Fatalf("mode = %v, want modeSearch", m.mode)
+	}
+	if got := m.search.input.Value(); got != "в" {
+		t.Errorf("query = %q, want %q", got, "в")
+	}
+}
+
+func TestLayout_RetagKeepsRussianText(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, _ = key(t, m, "t")
+	if m.mode != modeRetag {
+		t.Fatalf("mode = %v, want modeRetag", m.mode)
+	}
+	m, _ = send(t, m, ruKey("в", 'в', 'd', 0))
+	if got := m.input.Value(); got != "в" {
+		t.Errorf("retag field = %q, want %q", got, "в")
+	}
+}
+
+func TestLayout_RescheduleCustomDateKeepsRussianText(t *testing.T) {
+	m := newTestModel(t, layoutTasks()[0])
+	m, _ = key(t, m, "r")
+	m, _ = key(t, m, "6")
+	if m.rescheduleSub != 1 {
+		t.Fatalf("precondition: rescheduleSub = %d, want 1", m.rescheduleSub)
+	}
+	m, _ = send(t, m, ruKey("в", 'в', 'd', 0))
+	if got := m.input.Value(); got != "в" {
+		t.Errorf("custom date field = %q, want %q", got, "в")
+	}
+}
+
+// --- acceptance sweeps: every command shortcut, every mode -----------------
+
+// keySnap is the observable result of one key press: everything a shortcut
+// in a command context or a keystroke in a text input can change, plus
+// whether Update returned a cmd and the stored tasks. The sweep runs only
+// the cmds of mutating shortcuts (settle); quit / sync / $EDITOR and the
+// modal openers' cursor-blink cmds stay unrun.
+type keySnap struct {
+	mode           mode
+	activeTab      int
+	viewMode       viewMode
+	sel            int
+	detailOpen     bool
+	detailScroll   int
+	grabIndex      int
+	pendingAction  bool
+	settingsCursor int
+	settingsFmt    string
+	settingsTheme  string
+	rescheduleSub  int
+	addFocus       addField
+	title          string
+	tagField       string
+	recurField     string
+	input          string
+	query          string
+	note           string
+	statusMsg      string
+	err            string
+	cmd            bool
+	tasks          string
+}
+
+func snapKey(m *Model, cmd tea.Cmd) keySnap {
+	s := keySnap{
+		mode:           m.mode,
+		activeTab:      m.activeTab,
+		viewMode:       m.viewMode,
+		sel:            -1,
+		detailOpen:     m.detailOpen,
+		detailScroll:   m.detailScroll,
+		grabIndex:      m.grabIndex,
+		pendingAction:  m.pendingAction != nil,
+		settingsCursor: m.settingsCursor,
+		settingsFmt:    m.settingsFmt,
+		settingsTheme:  m.settingsTheme,
+		rescheduleSub:  m.rescheduleSub,
+		addFocus:       m.addFocus,
+		title:          m.titleArea.Value(),
+		tagField:       m.tagInput.Value(),
+		recurField:     m.recurInput.Value(),
+		input:          m.input.Value(),
+		query:          m.search.input.Value(),
+		note:           m.noteArea.Value(),
+		statusMsg:      m.statusMsg,
+		cmd:            cmd != nil,
+	}
+	if m.activeTab < len(m.lists) {
+		s.sel = m.lists[m.activeTab].Index()
+	}
+	if m.err != nil {
+		s.err = m.err.Error()
+	}
+	if all, err := m.store.List(store.ListOptions{}); err != nil {
+		s.tasks = "list: " + err.Error()
+	} else {
+		var b strings.Builder
+		for _, tk := range all {
+			fmt.Fprintf(&b, "%s %s %s %v %v;", tk.ID, tk.Status, tk.Schedule, tk.Position, tk.Tags)
+		}
+		s.tasks = b.String()
+	}
+	return s
+}
+
+// TestLayout_EveryCommandShortcutMatchesLatin is the acceptance sweep for the
+// command contexts: for every letter/punctuation shortcut in normal, grab,
+// settings and delete-confirm, the Russian-layout key (BaseCode = the US key)
+// must leave the model in exactly the state the US key does, through Update.
+// A shortcut that only works on the US layout — e.g. one dispatched before
+// commandKey runs — shows up as a state mismatch.
+func TestLayout_EveryCommandShortcutMatchesLatin(t *testing.T) {
+	type ctx struct {
+		name  string
+		setup []string // US keys sent first, from normal mode
+		want  mode     // precondition after setup
+		keys  []string
+		noop  map[string]bool // keys allowed to change nothing in this state
+		// settle lists the mutating shortcuts whose cmd is run before the
+		// snapshot, so a Russian key reaching a different cmd-producing
+		// handler shows up as a store / status mismatch, not just cmd != nil.
+		settle map[string]bool
+	}
+	ctxs := []ctx{
+		{
+			name: "normal",
+			want: modeNormal,
+			keys: []string{"q", "d", "r", "t", "c", "x", "m", "a", "o", "e", "s",
+				"u", "v", "h", ",", "/", "j", "k", "g", "G", "[", "]"},
+			// [ and ] only scroll the detail body, which is closed here.
+			noop:   map[string]bool{"[": true, "]": true},
+			settle: map[string]bool{"d": true, "a": true, "u": true},
+		},
+		{
+			name:   "grab",
+			setup:  []string{"m"},
+			want:   modeGrab,
+			keys:   []string{"g", "G", "e", "r", "t", "d", "a", "c", "x", "s"},
+			settle: map[string]bool{"g": true, "G": true, "d": true, "a": true},
+		},
+		{
+			name:  "settings",
+			setup: []string{","},
+			want:  modeSettings,
+			keys:  []string{"j", "k", "l", "h"},
+			// The cursor starts on the first row, so k has nowhere to go.
+			noop: map[string]bool{"k": true},
+		},
+		{
+			name:  "delete-confirm",
+			setup: []string{"x"},
+			want:  modeConfirmDelete,
+			// d stands in for "anything else cancels".
+			keys:   []string{"y", "Y", "d"},
+			settle: map[string]bool{"y": true, "Y": true},
+		},
+	}
+	for _, c := range ctxs {
+		for _, k := range c.keys {
+			t.Run(c.name+"/"+k, func(t *testing.T) {
+				fresh := func() *Model {
+					m := newTestModel(t, layoutTasks()...)
+					m.lists[0].Select(1)
+					for _, s := range c.setup {
+						m, _ = key(t, m, s)
+					}
+					if m.mode != c.want {
+						t.Fatalf("setup %v: mode = %v, want %v", c.setup, m.mode, c.want)
+					}
+					return m
+				}
+
+				press := func(m *Model, msg tea.KeyPressMsg) keySnap {
+					next, cmd := send(t, m, msg)
+					if cmd != nil && c.settle[k] {
+						next = drive(t, next, cmd)
+					}
+					return snapKey(next, cmd)
+				}
+
+				before := fresh()
+				initial := snapKey(before, nil)
+				want := press(before, toKeyMsg(k))
+				if want == initial && !c.noop[k] {
+					t.Fatalf("US %q changed nothing; the sweep would be vacuous", k)
+				}
+
+				ru := ruShortcut(t, k)
+				if got := press(fresh(), ru); got != want {
+					t.Errorf("Russian %q (base %q):\n got  %+v\n want %+v", ru.Text, ru.BaseCode, got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestLayout_AddTagAndRecurFieldsKeepRussianText covers the add modal's other
+// two inputs; the title is covered by TestLayout_AddModalKeepsRussianText.
+func TestLayout_AddTagAndRecurFieldsKeepRussianText(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = key(t, m, "c")
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusTags {
+		t.Fatalf("precondition: addFocus = %v, want addFocusTags", m.addFocus)
+	}
+	m, _ = send(t, m, ruKey("в", 'в', 'd', 0))
+	m, _ = send(t, m, ruKey("П", 'п', 'g', tea.ModShift))
+	if got := m.tagInput.Value(); got != "вП" {
+		t.Errorf("tag field = %q, want %q", got, "вП")
+	}
+	m, _ = key(t, m, "tab")
+	if m.addFocus != addFocusRecur {
+		t.Fatalf("precondition: addFocus = %v, want addFocusRecur", m.addFocus)
+	}
+	m, _ = send(t, m, ruKey("в", 'в', 'd', 0))
+	if got := m.recurInput.Value(); got != "в" {
+		t.Errorf("recur field = %q, want %q", got, "в")
+	}
+	if m.mode != modeAdd {
+		t.Errorf("mode = %v, want modeAdd", m.mode)
+	}
+}
+
+// modifierOnlyKeys is every modifier/lock key kitty reports on its own under
+// ReportAllKeysAsEscapeCodes, each carrying its own modifier bit as the probe
+// recorded.
+var modifierOnlyKeys = []tea.KeyPressMsg{
+	{Code: tea.KeyLeftShift, Mod: tea.ModShift},
+	{Code: tea.KeyRightShift, Mod: tea.ModShift},
+	{Code: tea.KeyLeftCtrl, Mod: tea.ModCtrl},
+	{Code: tea.KeyRightCtrl, Mod: tea.ModCtrl},
+	{Code: tea.KeyLeftAlt, Mod: tea.ModAlt},
+	{Code: tea.KeyRightAlt, Mod: tea.ModAlt},
+	{Code: tea.KeyLeftSuper, Mod: tea.ModSuper},
+	{Code: tea.KeyRightSuper, Mod: tea.ModSuper},
+	{Code: tea.KeyLeftHyper, Mod: tea.ModHyper},
+	{Code: tea.KeyLeftMeta, Mod: tea.ModMeta},
+	{Code: tea.KeyIsoLevel3Shift},
+	{Code: tea.KeyIsoLevel5Shift},
+	{Code: tea.KeyCapsLock, Mod: tea.ModCapsLock},
+	{Code: tea.KeyNumLock, Mod: tea.ModNumLock},
+	{Code: tea.KeyScrollLock, Mod: tea.ModScrollLock},
+}
+
+// TestModifierOnly_NoOpInEveryMode sends every bare modifier press in every
+// mode and input — with text already in the focused input and a status line
+// set — and requires that nothing changes and no cmd is returned.
+func TestModifierOnly_NoOpInEveryMode(t *testing.T) {
+	type ctx struct {
+		name  string
+		setup func(t *testing.T, m *Model) *Model
+	}
+	keys := func(ks ...string) func(t *testing.T, m *Model) *Model {
+		return func(t *testing.T, m *Model) *Model {
+			for _, k := range ks {
+				m, _ = key(t, m, k)
+			}
+			return m
+		}
+	}
+	ctxs := []ctx{
+		{"normal", keys()},
+		{"detail panel", func(t *testing.T, m *Model) *Model {
+			next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+			m = keys("enter")(t, next.(*Model))
+			if !m.detailOpen {
+				t.Fatal("precondition: detail panel should be open")
+			}
+			return typeString(t, m, "note")
+		}},
+		{"help", keys("h")},
+		{"grab", keys("m", "j")},
+		{"settings", keys(",", "j", "l")},
+		{"delete-confirm", keys("x")},
+		{"add title", func(t *testing.T, m *Model) *Model {
+			return typeString(t, keys("c")(t, m), "ti")
+		}},
+		{"add tags", func(t *testing.T, m *Model) *Model {
+			return typeString(t, keys("c", "tab")(t, m), "wo")
+		}},
+		{"add recur", func(t *testing.T, m *Model) *Model {
+			return typeString(t, keys("c", "tab", "tab")(t, m), "da")
+		}},
+		{"retag", func(t *testing.T, m *Model) *Model {
+			return typeString(t, keys("t")(t, m), "ta")
+		}},
+		{"reschedule picker", keys("r")},
+		{"reschedule custom date", func(t *testing.T, m *Model) *Model {
+			return typeString(t, keys("r", "6")(t, m), "3d")
+		}},
+		{"search", func(t *testing.T, m *Model) *Model {
+			return typeString(t, keys("/")(t, m), "fi")
+		}},
+	}
+	for _, c := range ctxs {
+		t.Run(c.name, func(t *testing.T) {
+			m := c.setup(t, newTestModel(t, layoutTasks()...))
+			m.statusMsg = "keep me"
+			want := snapKey(m, nil)
+			for _, k := range modifierOnlyKeys {
+				var cmd tea.Cmd
+				m, cmd = send(t, m, k)
+				if got := snapKey(m, cmd); got != want {
+					t.Fatalf("bare %q changed the model:\n got  %+v\n want %+v", k.String(), got, want)
+				}
+			}
+		})
 	}
 }

@@ -38,7 +38,7 @@ func writeThemeFile(t *testing.T, monologDir, name string, payload any) {
 }
 
 func TestThemeFile_RoundTrip(t *testing.T) {
-	got, err := themeToFile(defaultTheme).toTheme()
+	got, err := themeFile(defaultTheme).toTheme()
 	if err != nil {
 		t.Fatalf("toTheme: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestThemeFile_RoundTrip(t *testing.T) {
 }
 
 func TestThemeFile_ToTheme_EmptyLight(t *testing.T) {
-	tf := themeToFile(defaultTheme)
+	tf := themeFile(defaultTheme)
 	tf.ActiveBorder.Light = ""
 	_, err := tf.toTheme()
 	if err == nil {
@@ -60,7 +60,7 @@ func TestThemeFile_ToTheme_EmptyLight(t *testing.T) {
 }
 
 func TestThemeFile_ToTheme_EmptyDark(t *testing.T) {
-	tf := themeToFile(defaultTheme)
+	tf := themeFile(defaultTheme)
 	tf.SelectedText.Dark = ""
 	_, err := tf.toTheme()
 	if err == nil {
@@ -98,7 +98,7 @@ func TestLoadUserThemes_EmptyDir(t *testing.T) {
 
 func TestLoadUserThemes_Valid(t *testing.T) {
 	dir := t.TempDir()
-	writeThemeFile(t, dir, "mytheme", themeToFile(defaultTheme))
+	writeThemeFile(t, dir, "mytheme", themeFile(defaultTheme))
 
 	got, errs := loadUserThemes(dir)
 	if len(errs) != 0 {
@@ -136,7 +136,7 @@ func TestLoadUserThemes_InvalidJSON(t *testing.T) {
 
 func TestLoadUserThemes_MissingField(t *testing.T) {
 	dir := t.TempDir()
-	tf := themeToFile(defaultTheme)
+	tf := themeFile(defaultTheme)
 	raw, err := json.Marshal(tf)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -162,7 +162,7 @@ func TestLoadUserThemes_MissingField(t *testing.T) {
 
 func TestLoadUserThemes_EmptyColorString(t *testing.T) {
 	dir := t.TempDir()
-	tf := themeToFile(defaultTheme)
+	tf := themeFile(defaultTheme)
 	tf.Hotkey.Light = ""
 	writeThemeFile(t, dir, "empty", tf)
 
@@ -180,7 +180,7 @@ func TestLoadUserThemes_EmptyColorString(t *testing.T) {
 
 func TestLoadUserThemes_ExtraFields(t *testing.T) {
 	dir := t.TempDir()
-	raw, err := json.Marshal(themeToFile(defaultTheme))
+	raw, err := json.Marshal(themeFile(defaultTheme))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -225,7 +225,7 @@ func snapshotThemes(t *testing.T) {
 func TestInitThemes_MergesUserAndBuiltin(t *testing.T) {
 	snapshotThemes(t)
 	dir := t.TempDir()
-	writeThemeFile(t, dir, "mytheme", themeToFile(defaultTheme))
+	writeThemeFile(t, dir, "mytheme", themeFile(defaultTheme))
 
 	errs := initThemes(dir)
 	if len(errs) != 0 {
@@ -249,7 +249,7 @@ func TestInitThemes_SkipsCollisionWithBuiltin(t *testing.T) {
 
 	// Write a "default.json" with a tweaked color so we can detect if
 	// it accidentally overrode the built-in.
-	tf := themeToFile(defaultTheme)
+	tf := themeFile(defaultTheme)
 	tf.ActiveBorder.Dark = "#ff0000"
 	writeThemeFile(t, dir, "default", tf)
 
@@ -334,7 +334,7 @@ func TestBootstrapExampleTheme_NoOpWhenExampleExists(t *testing.T) {
 func TestInitThemes_PropagatesLoadErrors(t *testing.T) {
 	snapshotThemes(t)
 	dir := t.TempDir()
-	writeThemeFile(t, dir, "good", themeToFile(defaultTheme))
+	writeThemeFile(t, dir, "good", themeFile(defaultTheme))
 	writeThemeFile(t, dir, "bad", "{not json}")
 
 	errs := initThemes(dir)
@@ -370,7 +370,7 @@ func TestTuiRun_BootstrapOnFreshRepo(t *testing.T) {
 
 func TestLoadUserThemes_IgnoresNonJSON(t *testing.T) {
 	dir := t.TempDir()
-	writeThemeFile(t, dir, "ok", themeToFile(defaultTheme))
+	writeThemeFile(t, dir, "ok", themeFile(defaultTheme))
 
 	// Drop a non-json file alongside.
 	themes := filepath.Join(dir, ".monolog", "themes")

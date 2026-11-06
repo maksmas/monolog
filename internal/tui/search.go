@@ -538,8 +538,8 @@ func (m *Model) renderSearchPreview(width, height int) string {
 }
 
 // renderPreviewBox wraps content in the bordered preview style. width and
-// height are the size inside the border (lipgloss v1 semantics); lipgloss v2
-// counts the border inside Width/Height, so add it back here.
+// height are the size inside the border; the rendered box is 2 columns
+// wider and 2 rows taller.
 func (m *Model) renderPreviewBox(width, height int, content string) string {
 	return m.styles.searchPreviewBorderStyle.Width(width + 2).Height(height + 2).Render(content)
 }

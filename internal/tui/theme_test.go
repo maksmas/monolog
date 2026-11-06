@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"image/color"
+	"os/exec"
 	"reflect"
 	"strconv"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/maksmas/monolog/internal/config"
+	"github.com/maksmas/monolog/internal/model"
+	"github.com/maksmas/monolog/internal/schedule"
 )
 
 // TestUnknownThemeFallback verifies that when MONOLOG_THEME is set to an
@@ -198,10 +201,14 @@ func TestBackgroundColorMsg_LightRestyles(t *testing.T) {
 	if got, want := m.grabStyles.SelectedTitle.GetForeground(), defaultTheme.GrabText.Resolve(false); got != want {
 		t.Errorf("grab SelectedTitle foreground = %v, want light %v", got, want)
 	}
-	// The bubbles input defaults are background-aware too.
-	if got, want := m.input.Styles(), textinput.DefaultStyles(false); got.Blurred.Text.GetForeground() != want.Blurred.Text.GetForeground() {
-		t.Errorf("input blurred text foreground = %v, want light default %v",
-			got.Blurred.Text.GetForeground(), want.Blurred.Text.GetForeground())
+	// The bubbles input defaults are background-aware too, on every input.
+	want := textinput.DefaultStyles(false).Blurred.Text.GetForeground()
+	for name, ti := range map[string]*textinput.Model{
+		"input": &m.input, "tagInput": &m.tagInput, "recurInput": &m.recurInput, "search.input": &m.search.input,
+	} {
+		if got := ti.Styles().Blurred.Text.GetForeground(); got != want {
+			t.Errorf("%s blurred text foreground = %v, want light default %v", name, got, want)
+		}
 	}
 
 	next, _ = m.Update(tea.BackgroundColorMsg{Color: color.Black})
@@ -214,6 +221,70 @@ func TestBackgroundColorMsg_LightRestyles(t *testing.T) {
 	}
 }
 
+// TestBackgroundColorMsg_LightResolvesInlineBorders pins that the inline
+// BorderForeground colors (active panel, detail panel, modal) follow the
+// terminal background. Dracula is used because its border pairs differ
+// between sides; the default theme's do not.
+func TestBackgroundColorMsg_LightResolvesInlineBorders(t *testing.T) {
+	task := makeTask(t, "01APR1", "active task", schedule.Today, []string{model.ActiveTag})
+	m := newTestModel(t, task)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(*Model)
+	m.theme = draculaTheme
+	next, _ = m.Update(tea.BackgroundColorMsg{Color: color.White})
+	m = next.(*Model)
+	if m.isDark {
+		t.Fatal("isDark still true after a white BackgroundColorMsg")
+	}
+
+	check := func(name, out string, c AdaptiveColor) {
+		t.Helper()
+		if !strings.Contains(out, fgSGR(t, c.Light)) {
+			t.Errorf("%s: missing light border color %s", name, c.Light)
+		}
+		if strings.Contains(out, fgSGR(t, c.Dark)) {
+			t.Errorf("%s: contains dark border color %s", name, c.Dark)
+		}
+	}
+	check("activePanelView", m.activePanelView(), draculaTheme.ActiveBorder)
+
+	m, _ = key(t, m, "enter")
+	if !m.detailOpen {
+		t.Fatal("precondition: detail panel should be open")
+	}
+	check("detailPanelView", m.detailPanelView(), draculaTheme.ModalBorder)
+	m, _ = key(t, m, "esc")
+
+	m, _ = key(t, m, "c")
+	if m.mode != modeAdd {
+		t.Fatalf("precondition: mode = %v, want modeAdd", m.mode)
+	}
+	check("modalView", m.modalView(), draculaTheme.ModalBorder)
+}
+
+// TestNoLipglossCompatDependency pins that nothing the binary links pulls in
+// charm.land/lipgloss/v2/compat: its package init queries the terminal for
+// its background, which would run on every CLI invocation (cmd imports
+// internal/tui), including Raycast and Claude-skill `monolog add` runs.
+func TestNoLipglossCompatDependency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go list")
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not on PATH")
+	}
+	out, err := exec.Command(goBin, "list", "-deps", "github.com/maksmas/monolog/...").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps: %v\n%s", err, out)
+	}
+	for _, pkg := range strings.Fields(string(out)) {
+		if strings.HasPrefix(pkg, "charm.land/lipgloss/v2/compat") {
+			t.Errorf("%s is a dependency; its init queries the terminal on every CLI run", pkg)
+		}
+	}
+}
+
 // TestRestyle_KeepsFlatTextareaOverrides pins that restyle re-applies the
 // flattened cursor-line/base styles on both textareas after loading the
 // background-aware bubbles defaults, which do paint a cursor-line background.
@@ -222,8 +293,12 @@ func TestRestyle_KeepsFlatTextareaOverrides(t *testing.T) {
 		t.Fatal("precondition: textarea default focused CursorLine should have a background")
 	}
 	m := newTestModel(t)
-	for _, isDark := range []bool{true, false} {
-		next, _ := m.Update(tea.BackgroundColorMsg{Color: map[bool]color.Color{true: color.Black, false: color.White}[isDark]})
+	for _, tc := range []struct {
+		isDark bool
+		bg     color.Color
+	}{{true, color.Black}, {false, color.White}} {
+		isDark := tc.isDark
+		next, _ := m.Update(tea.BackgroundColorMsg{Color: tc.bg})
 		m = next.(*Model)
 		for name, ta := range map[string]textarea.Model{"titleArea": m.titleArea, "noteArea": m.noteArea} {
 			st := ta.Styles()

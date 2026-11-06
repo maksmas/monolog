@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/list"
@@ -1012,9 +1013,11 @@ func (m *Model) skipSeparator(dir int) {
 }
 
 // Init is the Bubble Tea Init hook. It arms the filesystem watcher (when
-// available) and, when email integration is enabled, kicks off an immediate
-// email sync plus the periodic ticker. tea.Batch silently drops nil entries
-// so each cmd is added unconditionally; missing pieces just no-op.
+// available), asks the terminal for its background color
+// (tea.RequestBackgroundColor) and, when email integration is enabled, kicks
+// off an immediate email sync plus the periodic ticker. tea.Batch silently
+// drops nil entries so each cmd is added unconditionally; missing pieces
+// just no-op.
 func (m *Model) Init() tea.Cmd {
 	// Ask the terminal for its background color; the reply arrives as a
 	// tea.BackgroundColorMsg and switches the theme to its light variant
@@ -1249,6 +1252,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.routePaste(msg)
 
 	case tea.KeyPressMsg:
+		msg = preferTypedLatin(msg)
 		// Under the kitty keyboard protocol (ReportAllKeysAsEscapeCodes) a
 		// modifier pressed on its own arrives as a key event. Drop it before
 		// any mode dispatch: otherwise a bare Shift would dismiss help,
@@ -1260,14 +1264,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeNormal:
 			return m.updateNormal(msg)
 		case modeGrab:
-			return m.updateGrab(msg)
+			return m.updateGrab(commandKey(msg))
 		case modeHelp:
 			m.mode = modeNormal
 			return m, nil
 		case modeSearch:
 			return m.updateSearch(msg)
 		case modeSettings:
-			return m.updateSettings(msg)
+			return m.updateSettings(commandKey(msg))
 		default:
 			return m.updateModal(msg)
 		}
@@ -1309,27 +1313,16 @@ func (m *Model) routePaste(msg tea.PasteMsg) tea.Cmd {
 	return nil
 }
 
-// isModifierOnly reports whether code is a modifier or lock key pressed on
-// its own (kitty reports these under ReportAllKeysAsEscapeCodes).
-func isModifierOnly(code rune) bool {
-	switch {
-	case code >= tea.KeyLeftShift && code <= tea.KeyIsoLevel5Shift:
-		return true
-	case code == tea.KeyCapsLock, code == tea.KeyNumLock, code == tea.KeyScrollLock:
-		return true
-	}
-	return false
-}
-
 // updateNormal handles keys when no modal is open.
 func (m *Model) updateNormal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = ""
 
 	// When the detail panel is open, the note textarea owns the keyboard so
 	// notes can start with any letter (including action-key shortcuts like
-	// d/q/t). Esc closes the panel; Enter submits; Alt+Enter inserts a
-	// newline. Non-rune keys (arrows, Home/End, PgUp/PgDn, Tab) fall through
-	// for task/tab navigation. [/] still scroll the detail body.
+	// d/q/t), and alt+letter word editing reaches it too. Esc closes the
+	// panel; Enter submits; Alt+Enter inserts a newline. Non-rune keys
+	// (arrows, Home/End, PgUp/PgDn, Tab) fall through for task/tab
+	// navigation. [/] still scroll the detail body.
 	if m.detailOpen {
 		switch msg.Code {
 		case tea.KeyEscape:
@@ -1344,6 +1337,9 @@ func (m *Model) updateNormal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.submitNote()
 		}
 
+		// Only ctrl and alt are excluded, not every chordMods modifier: a
+		// meta/hyper/super key that carries Text types into the note, as it
+		// did before; below, commandKey clears its Text so it runs nothing.
 		if msg.Text != "" && !msg.Mod.Contains(tea.ModCtrl) && !msg.Mod.Contains(tea.ModAlt) {
 			switch msg.Text {
 			case "[", "]":
@@ -1354,12 +1350,19 @@ func (m *Model) updateNormal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
-		if msg.Code == tea.KeySpace || msg.Code == tea.KeyBackspace {
+		// The decoder clears Text under alt, so the textarea's alt+letter
+		// word bindings (alt+b/f/d, alt+c/l/u) need their own check.
+		if msg.Code == tea.KeyBackspace || (msg.Mod&chordMods == tea.ModAlt && unicode.IsPrint(msg.Code)) {
 			var cmd tea.Cmd
 			m.noteArea, cmd = m.noteArea.Update(msg)
 			return m, cmd
 		}
 	}
+
+	// From here on every key is a command, so resolve it to its US-layout
+	// key (Russian `в` → "d"). This must stay below the detail-panel block,
+	// which feeds the raw key to the note textarea.
+	msg = commandKey(msg)
 
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -1533,7 +1536,7 @@ func (m *Model) updateModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case modeAdd:
 		return m.updateAdd(msg)
 	case modeConfirmDelete:
-		return m.updateConfirmDelete(msg)
+		return m.updateConfirmDelete(commandKey(msg))
 	}
 	return m, nil
 }

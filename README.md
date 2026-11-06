@@ -278,6 +278,8 @@ Running `monolog` with no subcommand launches the interactive TUI. Tabs across t
 | `h` | Help modal |
 | `q` | Quit |
 
+Shortcuts also work on non-Latin keyboard layouts (e.g. Russian) in terminals that support the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/), such as kitty: a Latin letter matches as typed, and any other key (a Cyrillic letter, punctuation) matches by its position on a US keyboard, while text you type into inputs stays in your layout. Punctuation typed on a US letter key (Dvorak `'` on `q`) matches as typed too, so it never fires that letter's shortcut; punctuation moved onto another punctuation key follows the US key position (Dvorak `/` acts as `[`). On layouts with punctuation on letter keys (Greek, Hebrew), the `q` key therefore does not quit; use ctrl+c. Other terminals keep Latin-only shortcuts.
+
 Active tasks render in green in the list and appear in a dedicated panel above the tab bar. The panel auto-hides when no tasks are active.
 
 The running TUI also auto-refreshes when another process mutates the store — a Raycast capture, a second terminal running `monolog add`, or an external `git pull`. Set `MONOLOG_NO_WATCH=1` to disable the file watcher.
@@ -331,7 +333,7 @@ cp ~/.monolog/.monolog/themes/example.json ~/.monolog/.monolog/themes/mytheme.js
 # "theme": "mytheme" in <MONOLOG_DIR>/.monolog/config.json
 ```
 
-A theme file is plain JSON with one `{"light", "dark"}` pair per color role. All 19 fields are required; values are hex (`#ff79c6`) or ANSI codes (`"240"`):
+A theme file is plain JSON with one `{"light", "dark"}` pair per color role. All 19 fields are required; values are hex (`#ff79c6`) or ANSI codes (`"240"`). The TUI asks the terminal for its background color at startup and uses the matching side; until the terminal answers (or if it never does) the `dark` side is used:
 
 ```json
 {

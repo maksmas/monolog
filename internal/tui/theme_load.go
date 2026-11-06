@@ -10,38 +10,31 @@ import (
 	"strings"
 )
 
-// colorPair is the on-disk representation of a single AdaptiveColor:
-// a light value and a dark value for terminals with the matching background.
-type colorPair struct {
-	Light string `json:"light"`
-	Dark  string `json:"dark"`
-}
-
 // themeFile mirrors Theme for JSON encoding. Fields use snake_case tags to
-// match the wider config.json style; field order follows the in-memory
-// Theme struct for easy auditing.
+// match the wider config.json style; names, types and order must match Theme
+// exactly so the two convert directly (Theme(tf), themeFile(t)).
 type themeFile struct {
-	ActiveBorder colorPair `json:"active_border"`
-	ModalBorder  colorPair `json:"modal_border"`
-	Hotkey       colorPair `json:"hotkey"`
-	ActiveTabBg  colorPair `json:"active_tab_bg"`
-	ActiveTabFg  colorPair `json:"active_tab_fg"`
-	TabFg        colorPair `json:"tab_fg"`
-	Borders      colorPair `json:"borders"`
+	ActiveBorder AdaptiveColor `json:"active_border"`
+	ModalBorder  AdaptiveColor `json:"modal_border"`
+	Hotkey       AdaptiveColor `json:"hotkey"`
+	ActiveTabBg  AdaptiveColor `json:"active_tab_bg"`
+	ActiveTabFg  AdaptiveColor `json:"active_tab_fg"`
+	TabFg        AdaptiveColor `json:"tab_fg"`
+	Borders      AdaptiveColor `json:"borders"`
 
-	NormalText     colorPair `json:"normal_text"`
-	SelectedText   colorPair `json:"selected_text"`
-	DimText        colorPair `json:"dim_text"`
-	GrabText       colorPair `json:"grab_text"`
-	ActiveNormal   colorPair `json:"active_normal"`
-	ActiveSelected colorPair `json:"active_selected"`
+	NormalText     AdaptiveColor `json:"normal_text"`
+	SelectedText   AdaptiveColor `json:"selected_text"`
+	DimText        AdaptiveColor `json:"dim_text"`
+	GrabText       AdaptiveColor `json:"grab_text"`
+	ActiveNormal   AdaptiveColor `json:"active_normal"`
+	ActiveSelected AdaptiveColor `json:"active_selected"`
 
-	SearchDone          colorPair `json:"search_done"`
-	SearchActive        colorPair `json:"search_active"`
-	SearchCount         colorPair `json:"search_count"`
-	SearchMeta          colorPair `json:"search_meta"`
-	SearchPreviewBorder colorPair `json:"search_preview_border"`
-	SearchPreviewDim    colorPair `json:"search_preview_dim"`
+	SearchDone          AdaptiveColor `json:"search_done"`
+	SearchActive        AdaptiveColor `json:"search_active"`
+	SearchCount         AdaptiveColor `json:"search_count"`
+	SearchMeta          AdaptiveColor `json:"search_meta"`
+	SearchPreviewBorder AdaptiveColor `json:"search_preview_border"`
+	SearchPreviewDim    AdaptiveColor `json:"search_preview_dim"`
 }
 
 // themeFileFields enumerates every (json-key, accessor) pair. Keeping this
@@ -72,76 +65,19 @@ func themeFileFields(tf *themeFile) []themeField {
 }
 
 type themeField struct {
-	key  string
-	pair *colorPair
+	key   string
+	color *AdaptiveColor
 }
 
 // toTheme converts the on-disk form to the in-memory Theme. Returns an
 // error naming the first field that has an empty light or dark value.
 func (tf themeFile) toTheme() (Theme, error) {
 	for _, f := range themeFileFields(&tf) {
-		if f.pair.Light == "" || f.pair.Dark == "" {
+		if f.color.Light == "" || f.color.Dark == "" {
 			return Theme{}, fmt.Errorf("empty color for field %q", f.key)
 		}
 	}
-	adapt := func(p colorPair) AdaptiveColor {
-		return AdaptiveColor{Light: p.Light, Dark: p.Dark}
-	}
-	return Theme{
-		ActiveBorder: adapt(tf.ActiveBorder),
-		ModalBorder:  adapt(tf.ModalBorder),
-		Hotkey:       adapt(tf.Hotkey),
-		ActiveTabBg:  adapt(tf.ActiveTabBg),
-		ActiveTabFg:  adapt(tf.ActiveTabFg),
-		TabFg:        adapt(tf.TabFg),
-		Borders:      adapt(tf.Borders),
-
-		NormalText:     adapt(tf.NormalText),
-		SelectedText:   adapt(tf.SelectedText),
-		DimText:        adapt(tf.DimText),
-		GrabText:       adapt(tf.GrabText),
-		ActiveNormal:   adapt(tf.ActiveNormal),
-		ActiveSelected: adapt(tf.ActiveSelected),
-
-		SearchDone:          adapt(tf.SearchDone),
-		SearchActive:        adapt(tf.SearchActive),
-		SearchCount:         adapt(tf.SearchCount),
-		SearchMeta:          adapt(tf.SearchMeta),
-		SearchPreviewBorder: adapt(tf.SearchPreviewBorder),
-		SearchPreviewDim:    adapt(tf.SearchPreviewDim),
-	}, nil
-}
-
-// themeToFile is the inverse of toTheme — used by the example-bootstrap
-// step to serialize defaultTheme back to disk, keeping the file schema
-// and the in-memory schema in sync via a single pair of functions.
-func themeToFile(t Theme) themeFile {
-	pair := func(c AdaptiveColor) colorPair {
-		return colorPair{Light: c.Light, Dark: c.Dark}
-	}
-	return themeFile{
-		ActiveBorder: pair(t.ActiveBorder),
-		ModalBorder:  pair(t.ModalBorder),
-		Hotkey:       pair(t.Hotkey),
-		ActiveTabBg:  pair(t.ActiveTabBg),
-		ActiveTabFg:  pair(t.ActiveTabFg),
-		TabFg:        pair(t.TabFg),
-		Borders:      pair(t.Borders),
-
-		NormalText:     pair(t.NormalText),
-		SelectedText:   pair(t.SelectedText),
-		DimText:        pair(t.DimText),
-		GrabText:       pair(t.GrabText),
-		ActiveNormal:   pair(t.ActiveNormal),
-		ActiveSelected: pair(t.ActiveSelected),
-
-		SearchDone:          pair(t.SearchDone),
-		SearchActive:        pair(t.SearchActive),
-		SearchCount:         pair(t.SearchCount),
-		SearchMeta:          pair(t.SearchMeta),
-		SearchPreviewBorder: pair(t.SearchPreviewBorder),
-		SearchPreviewDim:    pair(t.SearchPreviewDim),
-	}
+	return Theme(tf), nil
 }
 
 // themesDir returns the filesystem location of user theme files, given the
@@ -276,7 +212,7 @@ func bootstrapExampleTheme(monologDir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create themes dir: %w", err)
 	}
-	data, err := json.MarshalIndent(themeToFile(defaultTheme), "", "  ")
+	data, err := json.MarshalIndent(themeFile(defaultTheme), "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal example theme: %w", err)
 	}

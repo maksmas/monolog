@@ -11,10 +11,11 @@ import (
 // in its package init, which would run on every CLI command since cmd
 // imports this package. Instead the pair is resolved explicitly against
 // Model.isDark, which the TUI learns from the terminal's BackgroundColorMsg.
-// Values are any string lipgloss.Color accepts (ANSI index or hex).
+// Values are any string lipgloss.Color accepts (ANSI index or hex). The json
+// tags are the on-disk theme file format (see themeFile).
 type AdaptiveColor struct {
-	Light string
-	Dark  string
+	Light string `json:"light"`
+	Dark  string `json:"dark"`
 }
 
 // Resolve returns the Dark color on a dark background, the Light one otherwise.
