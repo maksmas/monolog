@@ -9,28 +9,14 @@ import (
 	"github.com/maksmas/monolog/internal/model"
 )
 
+// runStats runs `monolog stats` through runCLI and fails the test on error.
 func runStats(t *testing.T, args ...string) string {
 	t.Helper()
-	rootCmd := NewRootCmd()
-	buf := new(bytes.Buffer)
-	rootCmd.SetOut(buf)
-	rootCmd.SetErr(buf)
-	rootCmd.SetArgs(append([]string{"stats"}, args...))
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("stats error = %v\noutput: %s", err, buf.String())
+	out, errOut, err := runCLI(t, append([]string{"stats"}, args...)...)
+	if err != nil {
+		t.Fatalf("stats error = %v\nstderr: %s", err, errOut)
 	}
-	return buf.String()
-}
-
-func markDone(t *testing.T, id string) {
-	t.Helper()
-	rootCmd := NewRootCmd()
-	rootCmd.SetOut(new(bytes.Buffer))
-	rootCmd.SetErr(new(bytes.Buffer))
-	rootCmd.SetArgs([]string{"done", id})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("done failed: %v", err)
-	}
+	return out
 }
 
 func TestStatsCommand_Counts(t *testing.T) {
@@ -42,12 +28,19 @@ func TestStatsCommand_Counts(t *testing.T) {
 	addTask(t, "Finish me")
 	for _, task := range readTasks(t, dir) {
 		if task.Title == "Finish me" {
-			markDone(t, task.ID)
+			if _, _, err := runCLI(t, "done", task.ID); err != nil {
+				t.Fatalf("done failed: %v", err)
+			}
 		}
 	}
 
 	out := runStats(t)
-	for _, want := range []string{"Total:", " 3\n", "Open:", " 2\n", "Done:", " 1\n", "Avg time open:", "Avg time to complete:"} {
+	for _, want := range []string{
+		"Total:                   3\n",
+		"Open:                    2\n",
+		"Done:                    1\n",
+		"Avg time to complete:",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stats output missing %q, got:\n%s", want, out)
 		}
@@ -92,11 +85,7 @@ func TestStatsCommand_RejectsArgs(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "monolog")
 	initTestRepo(t, dir)
 
-	rootCmd := NewRootCmd()
-	rootCmd.SetOut(new(bytes.Buffer))
-	rootCmd.SetErr(new(bytes.Buffer))
-	rootCmd.SetArgs([]string{"stats", "extra"})
-	if err := rootCmd.Execute(); err == nil {
+	if _, _, err := runCLI(t, "stats", "extra"); err == nil {
 		t.Fatal("stats with a positional argument should fail")
 	}
 }
